@@ -1,0 +1,61 @@
+[project]
+name = "d3p2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pylint>=3.3.6",
+    "ruff>=0.11.4",
+]
+
+#########################################################
+
+[tool.ruff]
+
+line-length = 120
+indent-width = 4
+
+[tool.ruff.lint]
+extend-select = [
+    "ARG", # flake8-unused-arguments
+    "C90", # mccabe complexity
+    "COM", # commas 
+    "C4",  # flake8-comprehensions
+    "E",   # pycodestyle
+    "F",   # Pyflakes
+    "I",   # isort
+    "PL",  # pylint
+    "SIM", # flake8-simplify
+    "TID", # flake8-tidy-imports
+    "W",   # pycodestyle warnings
+]
+ignore = [
+    "PLR2004", # magic number
+    ]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+
+# Ignore import violations in all `__init__.py` files.
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401", "F403", "F811"]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
