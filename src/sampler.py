@@ -2,18 +2,29 @@
 Minimalist diffusion sampler
 """
 
+from dataclasses import dataclass
 from typing import Optional
 
+import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
 
 from configs.config import Config, get_config
+from dpp import sample_dpp
 from mdlm.modeling_mdlm import MDLM, MDLMConfig
 from utils import get_tokenizer, sample_categorical, seed_all
 
 
 NEG_INFINITY = -1_000_000.0
+
+
+@dataclass
+class Cache:
+    x: Optional[torch.Tensor] = None
+    log_p_x0: Optional[torch.Tensor] = None
+    embeddings: Optional[torch.Tensor] = None
 
 
 class DPPSampler(nn.Module):
@@ -32,10 +43,24 @@ class DPPSampler(nn.Module):
         self.model.to(self.device)
         self.model.eval()
 
+    def _subs_parameterization(self, logits, xt):
+        """Mask out impossible transitions and apply"""
+        logits[:, :, self.mask_index] += NEG_INFINITY
+        logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
+
+        unmasked_indices = xt != self.mask_index
+        logits[unmasked_indices] = NEG_INFINITY
+        logits[unmasked_indices, xt[unmasked_indices]] = 0
+        return logits
+
+    def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
+            out = self.model.forward(x, return_dict=True, output_hidden_states=True)
+            logits = out.logits
+            embeddings = out.hidden_states
+        return self._subs_parameterization(logits=logits, xt=x), embeddings
+
     def _sample_prior(self, *batch_dims) -> torch.Tensor:
-        """
-        Sample from the prior.
-        """
         return self.mask_index * torch.ones(*batch_dims, dtype=torch.int64)
 
     def _ddpm_cache_update(
@@ -43,8 +68,9 @@ class DPPSampler(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         dt: float,
-        p_x0: Optional[torch.Tensor] = None,
-    ):
+        cache: Optional[Cache] = None,
+    ) -> tuple[Cache, torch.Tensor]:
+        # B = x.size(0)
         if t.ndim > 1:
             t = t.squeeze(-1)
 
@@ -53,55 +79,66 @@ class DPPSampler(nn.Module):
 
         assert move_chance_t.ndim == 3, move_chance_t.shape
 
-        if p_x0 is None:
-            p_x0 = self.forward(x).exp()
+        if cache is None:
+            log_p_x0, out = self._forward_model(x)
+            embeddings = out[-1] if out is not None else None
+            cache = Cache(log_p_x0=log_p_x0, embeddings=embeddings, x=x)
+
+        slice_idx = self._apply_dpp(cache)
+
+        p_x0 = cache.log_p_x0.exp()
+        p_x0 = p_x0[slice_idx]  # k x L x V
+        x = x[slice_idx]  # k x L
 
         assert move_chance_t.ndim == p_x0.ndim
 
+        # move_chance_s * one_hot_mask + (move_chance_t - move_chance_s) * p_x0
         q_xs = p_x0 * (move_chance_t - move_chance_s)
-
         q_xs[:, :, self.mask_index] = move_chance_s[:, :, 0]
 
-        q_xs /= self.config.cat_temperature  # modulate the categorical distribution
-        _x = sample_categorical(q_xs)
+        q_xs /= self.config.cat_temperature
+
+        _x = sample_categorical(q_xs, expand=self.config.expansion_factor)
 
         copy_flag = (x != self.mask_index).to(x.dtype)
 
-        return p_x0, copy_flag * x + (1 - copy_flag) * _x
+        return cache, copy_flag * x + (1 - copy_flag) * _x
 
-    def _subs_parameterization(self, logits, xt):
-        # log prob at the mask index = - infinity
-        logits[:, :, self.mask_index] += NEG_INFINITY
+    def _apply_dpp(
+        self,
+        cache: Cache,
+        # x: torch.Tensor,
+    ) -> torch.Tensor:
+        B = cache.log_p_x0.size(0)
+        dtype = cache.log_p_x0.dtype
 
-        # Normalize the logits such that x.exp() is
-        # a probability distribution over vocab_size.
-        logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
+        mask_indices = cache.x != self.mask_index  # B x T
 
-        # Apply updates directly in the logits matrix.
-        # For the logits of the unmasked tokens, set all values
-        # to -infinity except for the indices corresponding to
-        # the unmasked tokens.
-        unmasked_indices = xt != self.mask_index
-        logits[unmasked_indices] = NEG_INFINITY
-        logits[unmasked_indices, xt[unmasked_indices]] = 0
-        return logits
+        # average the logprobs over the mask tokens
+        scores = torch.where(
+            mask_indices.unsqueeze(-1),
+            cache.log_p_x0,
+            torch.zeros_like(cache.log_p_x0).to(dtype),
+        )
+        scores /= mask_indices.sum(dim=-1, keepdim=True).clamp(min=1).to(dtype)  # B
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.amp.autocast(
-            device_type="cuda" if "cuda" in str(self.device) else "cpu",
-            dtype=torch.float32,
-        ):
-            out = self.model.forward(x, return_dict=True, output_hidden_states=True)
+        embeddings = cache.embeddings.view(B, -1)  # B x (T*E)
+        cos_sim = (
+            torch.nn.functional.cosine_similarity(
+                embeddings[:, None, :],
+                embeddings[None, :, :],
+                dim=-1,
+            )
+            * self.config.alpha
+        )  # B x B
 
-            logits = out.logits
+        cos_sim.fill_diagonal_(0)
+        cos_sim += torch.diag(scores)
+        cos_sim = cos_sim.cpu().numpy()
 
-            # h_states = out.hidden_states
+        selected_indices = sample_dpp(cos_sim, self.config.k)
 
-            # print(f"Logits shape: {logits.shape}")
-            # print(len(h_states))
-            # print(f"Hidden states shape: {h_states[0].shape}")
-
-        return self._subs_parameterization(logits=logits, xt=x)
+        return torch.tensor(selected_indices, device=self.device, dtype=torch.int64)
 
     def sample(
         self,
@@ -119,37 +156,19 @@ class DPPSampler(nn.Module):
 
         timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
         dt = (1 - eps) / num_steps
-        p_x0_cache = None
+
+        cache = None
 
         for i in tqdm(range(num_steps), desc="Generating", leave=False):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-            p_x0_cache, x_next = self._ddpm_cache_update(x=x, t=t, dt=dt, p_x0=p_x0_cache)
+            cache, x_next = self._ddpm_cache_update(x=x, t=t, dt=dt, cache=cache)
 
             if not torch.allclose(x_next, x):
-                # disable caching
-                p_x0_cache = None
+                # clear cache if there was a change
+                cache = None
             x = x_next
 
         return x
-
-
-def test_dpp():
-    from dpp import compute_kernel
-
-    cfg = get_config()
-    seed_all(cfg.seed)
-
-    mdlm_model = MDLM.from_pretrained(cfg.mdlm_model_path, cache_dir=cfg.cache_dir)
-    sampler = DPPSampler(mdlm_model, cfg)
-
-    x = sampler._sample_prior(cfg.batch_size, sampler.model_length)
-    x = x.to(sampler.device)
-
-    out = sampler.model.forward(x, return_dict=True, output_hidden_states=True)
-
-    K = compute_kernel(out, cfg.alpha)
-
-    print("Kernel shape:", K.shape)
 
 
 def main():
@@ -161,16 +180,37 @@ def main():
 
     samples = sampler.sample()
 
-    # remaining mask tokens ?
-    print((samples == sampler.mask_index).sum())
-
-    return
-
     text_samples = sampler.tokenizer.batch_decode(samples, skip_special_tokens=True)
     for j, text in enumerate(text_samples):
         print(f"Sample {j}: {text}")
 
+    MODEL_ID = "bert-base-uncased"
+    bert = AutoModel.from_pretrained(MODEL_ID, cache_dir=cfg.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=cfg.cache_dir)
+
+    inputs = tokenizer(text_samples, return_tensors="pt", padding=True, truncation=True)
+    embeddings = bert(**inputs, return_dict=True).last_hidden_state
+    embeddings = embeddings[:, 0, :]  # B x D
+
+    print("Embeddings shape:", embeddings.shape)
+
+    # compute average intra-batch cosine similarity
+    cos_sim = torch.nn.functional.cosine_similarity(
+        embeddings[:, None, :],
+        embeddings[None, :, :],
+        dim=-1,
+    )
+
+    # plot the cosine similarity matrix
+
+    plt.imshow(cos_sim.cpu().detach().numpy(), cmap="hot", interpolation="nearest")
+    plt.colorbar()
+    plt.title("Cosine Similarity Matrix")
+    plt.savefig("cosine_similarity_matrix.png")
+    plt.close()
+
+    print(f"Average Cosine Similarity: {cos_sim.mean().item()}")
+
 
 if __name__ == "__main__":
-    # main()
-    test_dpp()
+    main()

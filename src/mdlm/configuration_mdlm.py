@@ -1,9 +1,9 @@
 """MDLM config for Hugging Face."""
 
-import transformers
+from transformers import PretrainedConfig
 
 
-class MDLMConfig(transformers.PretrainedConfig):
+class MDLMConfig(PretrainedConfig):
     """Hugging Face configuration class for MDLM."""
 
     model_type = "mdlm"

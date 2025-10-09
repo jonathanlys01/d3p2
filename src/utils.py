@@ -11,8 +11,11 @@ def seed_all(seed: int):
     transformers.set_seed(seed)
 
 
-def sample_categorical(categorical_probs: torch.Tensor) -> torch.Tensor:
-    gumbel_norm = 1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()
+def sample_categorical(categorical_probs: torch.Tensor, expand: int = None) -> torch.Tensor:
+    if expand is not None:
+        categorical_probs = categorical_probs.repeat(expand, 1, 1)
+
+    gumbel_norm: torch.Tensor = 1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()
     return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
 

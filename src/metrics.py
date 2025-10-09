@@ -33,8 +33,3 @@ class Perplexity(Metric):
         super().__init__()
 
         self.model = AutoModel.from_pretrained(model_id)
-
-
-class AverageCosine(Metric):
-    def forward(self, embeddings: torch.Tensor, *args, **kwargs) -> None:
-        pass

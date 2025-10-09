@@ -4,9 +4,8 @@ Config file for the project
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
-from omegaconf import MISSING, OmegaConf
+from omegaconf import OmegaConf
 
 
 class EmbeddingType(Enum):
@@ -17,35 +16,28 @@ class EmbeddingType(Enum):
     cached_all = "cached_all"
 
 
-@dataclass(frozen=True)
+@dataclass()
 class Config:
     seed: int = 0
 
     # sampling
     num_steps: int = 1_024  # match sequence length
-    batch_size: int = 1
     cat_temperature: float = 1.0
     # MDLM
     mdlm_model_path: str = "kuleshov-group/mdlm-owt"
     mdlm_tokenizer = "gpt2"
 
-    # embedding
-    embedding_type: EmbeddingType = MISSING
-    embedding_model: Optional[str] = None
-
     # dpp
-    dpp: bool = False
-    k = 10  # number of samples to keep
-    k_dpp: bool = True  # true for k-DPP, false for DPP
-    alpha: float = 0.1
+    k: int = 4
+    expansion_factor: int = 2
+
+    alpha: float = 0.1  # weight for the cosine similarity in the DPP kernel
 
     # utils
     cache_dir: str = "./.cache"
 
     def __post_init__(self):
-        assert self.num_steps > 0, "num_steps must be positive"
-        if self.embedding_type == EmbeddingType.external:
-            assert self.embedding_model is not None, "embedding_model must be specified for external embeddings"
+        self.batch_size = self.k * self.expansion_factor
 
 
 def get_config() -> Config:
