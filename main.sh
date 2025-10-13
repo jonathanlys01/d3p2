@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source $JOME/d3p2/.venv/bin/activate
+# source $JOME/d3p2/.venv/bin/activate
 
 ROOT=$JOME/d3p2/src
 

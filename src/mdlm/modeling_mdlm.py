@@ -224,7 +224,7 @@ class DDiTBlock(nn.Module):
         else:
             return bias_dropout_add_scale_fused_inference
 
-    def forward(self, x, rotary_cos_sin, c, seqlens=None):
+    def forward(self, x, rotary_cos_sin, c, seqlens: torch.Tensor = None):
         batch_size, seq_len = x.shape[0], x.shape[1]
 
         bias_dropout_scale_fn = self._get_bias_dropout_scale()
@@ -334,7 +334,7 @@ class DITBackbone(nn.Module):
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
             for i in range(len(self.blocks)):
-                x = self.blocks[i](x, rotary_cos_sin, c, seqlens=None)
+                x = self.blocks[i](x, rotary_cos_sin, c)
                 if output_hidden_states:
                     all_hidden_states.append(x)
             logits = self.output_layer(x, c)

@@ -43,14 +43,15 @@ class DPPSampler(nn.Module):
         self.model.to(self.device)
         self.model.eval()
 
-    def _subs_parameterization(self, logits, xt):
-        """Mask out impossible transitions and apply"""
-        logits[:, :, self.mask_index] += NEG_INFINITY
-        logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
+        self.eps = 1e-5
 
-        unmasked_indices = xt != self.mask_index
-        logits[unmasked_indices] = NEG_INFINITY
-        logits[unmasked_indices, xt[unmasked_indices]] = 0
+    def _subs_parameterization(self, logits, xt):
+        with torch.no_grad():
+            logits[:, :, self.mask_index] = NEG_INFINITY
+            logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # log softmax
+            unmasked_indices = xt != self.mask_index
+            logits[unmasked_indices] = NEG_INFINITY
+            logits[unmasked_indices, xt[unmasked_indices]] = 0
         return logits
 
     def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -84,59 +85,49 @@ class DPPSampler(nn.Module):
             embeddings = out[-1] if out is not None else None
             cache = Cache(log_p_x0=log_p_x0, embeddings=embeddings, x=x)
 
-        slice_idx = self._apply_dpp(cache)
+        APPLY_DPP = 0.45 <= t[0] <= 0.55  # FIXME: hardcoded values
+        slice_idx = self._apply_dpp(cache) if APPLY_DPP else torch.arange(x.size(0), device=self.device)
+        copy_flag = (x != self.mask_index).to(x.dtype)  # before slicing
 
         p_x0 = cache.log_p_x0.exp()
         p_x0 = p_x0[slice_idx]  # k x L x V
-        x = x[slice_idx]  # k x L
 
         assert move_chance_t.ndim == p_x0.ndim
 
         # move_chance_s * one_hot_mask + (move_chance_t - move_chance_s) * p_x0
-        q_xs = p_x0 * (move_chance_t - move_chance_s)
-        q_xs[:, :, self.mask_index] = move_chance_s[:, :, 0]
+        q_xs = p_x0 * (move_chance_t - move_chance_s)[slice_idx]  # k x L x V
+        q_xs[:, :, self.mask_index] = move_chance_s[slice_idx, :, 0]
 
         q_xs /= self.config.cat_temperature
 
-        _x = sample_categorical(q_xs, expand=self.config.expansion_factor)
+        _x = sample_categorical(q_xs, expand=self.config.expansion_factor if APPLY_DPP else None)
 
-        copy_flag = (x != self.mask_index).to(x.dtype)
+        return cache, _x * (1 - copy_flag) + x * copy_flag
 
-        return cache, copy_flag * x + (1 - copy_flag) * _x
-
-    def _apply_dpp(
-        self,
-        cache: Cache,
-        # x: torch.Tensor,
-    ) -> torch.Tensor:
+    def _apply_dpp(self, cache: Cache) -> torch.Tensor:
         B = cache.log_p_x0.size(0)
-        dtype = cache.log_p_x0.dtype
 
-        mask_indices = cache.x != self.mask_index  # B x T
+        # --- scores --- (entropy of the predicted distribution)
+        p = cache.log_p_x0.float().exp()  # [B, L, V]
+        scores = -torch.sum(p * cache.log_p_x0.float(), dim=-1).mean(dim=-1)  # [B]
+        scores = (scores - scores.min()) / (scores.max() - scores.min() + self.eps)  # [0, 1]
+        # low entropy = low uncertainty = high confidence = high quality
+        scores = 1 - scores  # invert, so that high score = high quality (like a probability)
 
-        # average the logprobs over the mask tokens
-        scores = torch.where(
-            mask_indices.unsqueeze(-1),
-            cache.log_p_x0,
-            torch.zeros_like(cache.log_p_x0).to(dtype),
-        )
-        scores /= mask_indices.sum(dim=-1, keepdim=True).clamp(min=1).to(dtype)  # B
+        # --- DPP kernel ---
+        flat = cache.embeddings.reshape(B, -1)  # [B, L*E]
+        flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)
+        S = self.config.alpha * flat @ flat.t()  # [B, B] cosine similarity
 
-        embeddings = cache.embeddings.view(B, -1)  # B x (T*E)
-        cos_sim = (
-            torch.nn.functional.cosine_similarity(
-                embeddings[:, None, :],
-                embeddings[None, :, :],
-                dim=-1,
-            )
-            * self.config.alpha
-        )  # B x B
+        # K[idx, idx] = scores.to(dtype=K.dtype)
 
-        cos_sim.fill_diagonal_(0)
-        cos_sim += torch.diag(scores)
-        cos_sim = cos_sim.cpu().numpy()
+        # fill diagonal with scores
+        S.fill_diagonal_(1 + self.eps)  # ensure positive definiteness
+        K = S * scores[:, None] * scores[None, :]  # [B, B] DPP kernel
 
-        selected_indices = sample_dpp(cos_sim, self.config.k)
+        print("DPP Kernel:\n", K)
+
+        selected_indices = sample_dpp(K.detach().cpu().numpy(), self.config.k)
 
         return torch.tensor(selected_indices, device=self.device, dtype=torch.int64)
 
