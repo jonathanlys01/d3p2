@@ -33,15 +33,25 @@ class Perplexity(Metric):
         self.model = AutoModel.from_pretrained(model_id, cache_dir="./.cache")
         self.model.eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir="./.cache")
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=self.tokenizer.pad_token_id)
         self.loss = None
 
+        self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
+        self.lm_head.weight = self.model.wte.weight  # tie weights
+
     def forward(self, texts: list[str]) -> None:
-        inputs = self.tokenizer(texts, return_tensor="pt")
+        inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(
+            "cuda" if torch.cuda.is_available() else "cpu",
+        )
+
+        self.model.to("cuda" if torch.cuda.is_available() else "cpu")
 
         with torch.no_grad():
-            logits: torch.Tensor = self.model(**inputs, return_dict=True).xogits
+            last_hidden_states: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
+            logits = self.lm_head(last_hidden_states)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = inputs["input_ids"][..., 1:].contiguous()
 
@@ -55,3 +65,15 @@ class Perplexity(Metric):
     def compute(self) -> float:
         ppl = torch.exp(self.loss.mean()).item()
         return ppl
+
+
+if __name__ == "__main__":
+    # Example usage
+    texts = [
+        "This is a test sentence.",
+        "Another example sentence for computing perplexity.",
+    ]
+    ppl_metric = Perplexity("gpt2")
+    ppl_metric.forward(texts)
+    perplexity = ppl_metric.compute()
+    print(f"Perplexity: {perplexity}")

@@ -2,10 +2,13 @@
 Minimalist diffusion sampler
 """
 
-from dataclasses import dataclass
+import json
+import random
+from builtins import print as bprint
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Optional
 
-import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -14,10 +17,18 @@ from transformers import AutoModel, AutoTokenizer
 from configs.config import Config, get_config
 from dpp import sample_dpp
 from mdlm.modeling_mdlm import MDLM, MDLMConfig
+from metrics import Perplexity
 from utils import get_tokenizer, sample_categorical, seed_all
 
 
 NEG_INFINITY = -1_000_000.0
+DEBUG = False
+
+
+def print(*args, **kwargs):
+    # only print if DEBUG is True
+    if DEBUG:
+        bprint(*args, **kwargs)
 
 
 @dataclass
@@ -43,8 +54,6 @@ class DPPSampler(nn.Module):
         self.model.to(self.device)
         self.model.eval()
 
-        self.eps = 1e-5
-
     def _subs_parameterization(self, logits, xt):
         with torch.no_grad():
             logits[:, :, self.mask_index] = NEG_INFINITY
@@ -69,6 +78,7 @@ class DPPSampler(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         dt: float,
+        step: int,
         cache: Optional[Cache] = None,
     ) -> tuple[Cache, torch.Tensor]:
         # B = x.size(0)
@@ -85,8 +95,12 @@ class DPPSampler(nn.Module):
             embeddings = out[-1] if out is not None else None
             cache = Cache(log_p_x0=log_p_x0, embeddings=embeddings, x=x)
 
-        APPLY_DPP = 0.45 <= t[0] <= 0.55  # FIXME: hardcoded values
-        slice_idx = self._apply_dpp(cache) if APPLY_DPP else torch.arange(x.size(0), device=self.device)
+        subsample_step = self.config.subsample_start <= step <= self.config.subsample_end
+        last_step = step == -1
+
+        slice_idx = (
+            self._apply_dpp(cache) if subsample_step or last_step else torch.arange(x.size(0), device=self.device)
+        )
         copy_flag = (x != self.mask_index).to(x.dtype)  # before slicing
 
         p_x0 = cache.log_p_x0.exp()
@@ -100,31 +114,53 @@ class DPPSampler(nn.Module):
 
         q_xs /= self.config.cat_temperature
 
-        _x = sample_categorical(q_xs, expand=self.config.expansion_factor if APPLY_DPP else None)
+        _x = sample_categorical(
+            q_xs,
+            expand=self.config.expansion_factor if subsample_step else None,
+        )
+
+        copy_flag = copy_flag[slice_idx]  # k x L
+
+        if last_step and self.config.expansion_factor > 1:
+            return cache, _x * (1 - copy_flag) + x[slice_idx] * copy_flag
+
+        if subsample_step and self.config.expansion_factor > 1:
+            copy_flag = copy_flag.repeat_interleave(self.config.expansion_factor, dim=0)
+            x = x[slice_idx].repeat_interleave(self.config.expansion_factor, dim=0)
 
         return cache, _x * (1 - copy_flag) + x * copy_flag
 
     def _apply_dpp(self, cache: Cache) -> torch.Tensor:
         B = cache.log_p_x0.size(0)
 
-        # --- scores --- (entropy of the predicted distribution)
-        p = cache.log_p_x0.float().exp()  # [B, L, V]
-        scores = -torch.sum(p * cache.log_p_x0.float(), dim=-1).mean(dim=-1)  # [B]
-        scores = (scores - scores.min()) / (scores.max() - scores.min() + self.eps)  # [0, 1]
-        # low entropy = low uncertainty = high confidence = high quality
-        scores = 1 - scores  # invert, so that high score = high quality (like a probability)
+        if not self.config.dpp:
+            return torch.tensor(
+                random.sample(range(B), self.config.k),
+                device=self.device,
+                dtype=torch.int64,
+            )
+
+        # scores: (entropy of the predicted distribution)
+        z = cache.log_p_x0.float()
+        logZ = z - torch.logsumexp(z, dim=-1, keepdim=True)  # log softmax
+        H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
+        # max proba per sequence
+
+        scores = H.mean(dim=-1)  # [B] average entropy per sequence
+        scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)  # [0, 1]
+        scores = 1 - scores
+
+        sum_scores = scores.sum()
+        scores = torch.softmax(scores, dim=0) * sum_scores
 
         # --- DPP kernel ---
-        flat = cache.embeddings.reshape(B, -1)  # [B, L*E]
+        flat = cache.embeddings.float().reshape(B, -1)  # [B, L*E]
         flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)
-        S = self.config.alpha * flat @ flat.t()  # [B, B] cosine similarity
+        S = flat @ flat.t()  # [B, B] cosine similarity
 
-        # K[idx, idx] = scores.to(dtype=K.dtype)
+        K = self.config.alpha * S + torch.diag(scores.to(dtype=S.dtype))
 
-        # fill diagonal with scores
-        S.fill_diagonal_(1 + self.eps)  # ensure positive definiteness
-        K = S * scores[:, None] * scores[None, :]  # [B, B] DPP kernel
-
+        print("scores:", scores)
         print("DPP Kernel:\n", K)
 
         selected_indices = sample_dpp(K.detach().cpu().numpy(), self.config.k)
@@ -152,12 +188,16 @@ class DPPSampler(nn.Module):
 
         for i in tqdm(range(num_steps), desc="Generating", leave=False):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-            cache, x_next = self._ddpm_cache_update(x=x, t=t, dt=dt, cache=cache)
+            cache, x_next = self._ddpm_cache_update(x=x, t=t, dt=dt, cache=cache, step=i)
 
             if not torch.allclose(x_next, x):
                 # clear cache if there was a change
                 cache = None
             x = x_next
+
+        if self.config.expansion_factor > 1:
+            t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
+            _, x = self._ddpm_cache_update(x=x, t=t, dt=0, cache=None, step=-1)
 
         return x
 
@@ -165,6 +205,7 @@ class DPPSampler(nn.Module):
 def main():
     cfg = get_config()
     seed_all(cfg.seed)
+    print("Config:", asdict(cfg))
 
     mdlm_model = MDLM.from_pretrained(cfg.mdlm_model_path, cache_dir=cfg.cache_dir)
     sampler = DPPSampler(mdlm_model, cfg)
@@ -183,8 +224,6 @@ def main():
     embeddings = bert(**inputs, return_dict=True).last_hidden_state
     embeddings = embeddings[:, 0, :]  # B x D
 
-    print("Embeddings shape:", embeddings.shape)
-
     # compute average intra-batch cosine similarity
     cos_sim = torch.nn.functional.cosine_similarity(
         embeddings[:, None, :],
@@ -194,13 +233,33 @@ def main():
 
     # plot the cosine similarity matrix
 
-    plt.imshow(cos_sim.cpu().detach().numpy(), cmap="hot", interpolation="nearest")
-    plt.colorbar()
-    plt.title("Cosine Similarity Matrix")
-    plt.savefig("cosine_similarity_matrix.png")
-    plt.close()
+    # plt.imshow(cos_sim.cpu().detach().numpy(), cmap="hot", interpolation="nearest")
+    # plt.colorbar()
+    # plt.title("Cosine Similarity Matrix")
+    # plt.savefig("cosine_similarity_matrix.png")
+    # plt.close()
 
-    print(f"Average Cosine Similarity: {cos_sim.mean().item()}")
+    avg_cos_sim = cos_sim.mean().item()
+    print(f"Average Cosine Similarity: {avg_cos_sim}")
+
+    # compute perplexity using a pretrained language model
+    ppl_metric = Perplexity("gpt2")
+    ppl_metric.forward(text_samples)
+    perplexity = ppl_metric.compute()
+    print(f"Average Perplexity: {perplexity}")
+
+    # dump
+
+    results = {
+        "text_samples": text_samples,
+        "average_cosine_similarity": avg_cos_sim,
+        "perplexity": perplexity,
+        "config": asdict(cfg),
+    }
+
+    name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    with open(f"results/exp-{name}.json", "w") as f:
+        json.dump(results, f, indent=4)
 
 
 if __name__ == "__main__":

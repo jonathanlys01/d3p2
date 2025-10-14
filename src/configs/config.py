@@ -3,17 +3,8 @@ Config file for the project
 """
 
 from dataclasses import dataclass
-from enum import Enum
 
 from omegaconf import OmegaConf
-
-
-class EmbeddingType(Enum):
-    """Embedding types."""
-
-    external = "external"
-    cached_last = "cached_last"
-    cached_all = "cached_all"
 
 
 @dataclass()
@@ -30,6 +21,10 @@ class Config:
     # dpp
     k: int = 4
     expansion_factor: int = 2
+    dpp: bool = True
+
+    subsample_start: int = 100
+    subsample_end: int = 200
 
     alpha: float = 0.1  # weight for the cosine similarity in the DPP kernel
 
@@ -62,4 +57,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print("Config file for the project")
     main()
