@@ -2,16 +2,20 @@
 # average cosine
 
 
+import argparse
 import json
-from dataclasses import asdict
-from datetime import datetime
+import os
 
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from config import CACHE_DIR
 
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -36,7 +40,7 @@ class Perplexity(torch.nn.Module):
 
         self.model.to(device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             last_hidden_states: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
             logits = self.lm_head(last_hidden_states)
             shift_logits = logits[..., :-1, :].contiguous()
@@ -52,10 +56,14 @@ class Perplexity(torch.nn.Module):
         ppl = torch.exp(loss.mean()).item()
         return ppl
 
-    def forward(self, texts: list[str], batch_size: int = 0) -> float:
+    def forward(self, texts: list[list[str]], batch_size: int = 0) -> float:
         """
         Compute perplexity for a list of texts, optionally in batches.
         """
+
+        # flatten because independent evaluation
+        texts = [text for sublist in texts for text in sublist]
+
         if batch_size == 0:
             return self._forward(texts)
 
@@ -80,7 +88,7 @@ class AverageCosineSimilarity(torch.nn.Module):
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
         self.model.to(device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             embeddings: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
             embeddings = embeddings[:, 0, :]  # n_samples x B, D
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
@@ -90,65 +98,87 @@ class AverageCosineSimilarity(torch.nn.Module):
 
             S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
 
-            avg_cos_sim = S.mean().item()
+            n = S.size(0)
+            avg_cos_sim = S.sum() / max(n * (n - 1), 1)  # unbiased average
 
-        return avg_cos_sim
+        return avg_cos_sim.item()
 
+    def forward(self, texts: list[list[str]]) -> float:
+        """
+        Compute average cosine similarity for a list of texts, optionally in batches.
+        """
 
-# TODO: finish
-def eval_bert(text_samples: list[str], cfg) -> None:
-    MODEL_ID = "bert-base-uncased"
-    bert = AutoModel.from_pretrained(MODEL_ID, cache_dir=cfg.cache_dir)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=cfg.cache_dir)
+        avg_cos_sims = []
+        for group in texts:
+            avg_cos_sim = self._forward(group)
+            avg_cos_sims.append(avg_cos_sim)
 
-    inputs = tokenizer(text_samples, return_tensors="pt", padding=True, truncation=True)
-    embeddings = bert(**inputs, return_dict=True).last_hidden_state
-    embeddings = embeddings[:, 0, :]  # n_samples x B, D
-
-    # reshape instead of view to avoid issues with non-contiguous tensors
-    x = embeddings.reshape(cfg.n_samples, cfg.batch_size, -1)  # n_samples x batch_size x D
-    x = F.normalize(x, p=2, dim=-1)
-
-    S = torch.einsum("n b d, n B d -> n b B", x, x)  # n_samples x batch_size x batch_size
-
-    S = S - torch.eye(cfg.batch_size, device=S.device).unsqueeze(0)  # remove self-similarity
-
-    avg_cos_sim = S.mean().item()
-    print(f"Average Cosine Similarity: {avg_cos_sim}")
-
-    # compute perplexity using a pretrained language model
-    ppl_metric = Perplexity("gpt2")
-    ppl_metric.forward(text_samples)
-    perplexity = ppl_metric.compute()
-    print(f"Average Perplexity: {perplexity}")
-
-    results = {
-        "text_samples": text_samples,
-        "average_cosine_similarity": avg_cos_sim,
-        "perplexity": perplexity,
-        "config": asdict(cfg),
-    }
-
-    name = datetime.now().strftime("%Y%m%d_%H%M%S")
-    with open(f"results/exp-{name}.json", "w") as f:
-        json.dump(results, f, indent=4)
-
-    if cfg.interactive:
-        print(results)
+        return sum(avg_cos_sims) / len(avg_cos_sims)
 
 
-def eval_all(texts: list[str], batch_size: int = 0) -> float:
-    ppl_metric = Perplexity("gpt2")
-    perplexity = ppl_metric(texts, batch_size=batch_size)
-    return {"perplexity": perplexity}
+class Evaluator:
+    def __init__(
+        self,
+        batch_size: int = 0,
+        force: bool = False,
+        ppl_model_id: str = "gpt2",
+        cos_model_id: str = "bert-base-uncased",
+    ):
+        self.perplexity_model = Perplexity(ppl_model_id)
+        self.cosine_model = AverageCosineSimilarity(cos_model_id)
+
+        self.batch_size = batch_size
+        self.force = force
+
+    def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
+        ppl = self.perplexity_model(texts, batch_size=self.batch_size)
+        avg_cos_sim = self.cosine_model(texts)
+
+        return {
+            "perplexity": ppl,
+            "average_cosine_similarity": avg_cos_sim,
+        }
+
+    def eval_from_file(self, file_path: str) -> None:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+
+        metrics = data.get("metrics", None)
+        if not self.force and metrics is not None:
+            print(f"Metrics already exist in {file_path}, skipping evaluation.")
+            return
+
+        texts = data["text_samples"]
+        metrics = self.evaluate(texts)
+
+        data["metrics"] = metrics
+
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=4)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate text samples.")
+    parser.add_argument(
+        "--folder_path",
+        "-f",
+        type=str,
+        required=True,
+        help="Path to the folder containing text samples.",
+    )
+    parser.add_argument("--batch_size", "-b", type=int, default=0, help="Batch size for evaluation.")
+    parser.add_argument("--force", action="store_true", help="Force re-evaluation even if metrics exist.")
+    args = parser.parse_args()
+
+    files = [f for f in os.listdir(args.folder_path) if f.endswith(".json")]
+    evaluator = Evaluator(args.batch_size, args.force)
+    pbar = tqdm(files, desc="Evaluating files")
+
+    for file_name in pbar:
+        file_path = os.path.join(args.folder_path, file_name)
+        evaluator.eval_from_file(file_path)
+        pbar.set_postfix({"Last evaluated": file_name})
 
 
 if __name__ == "__main__":
-    # Example usage
-    texts = [
-        "This is a test sentence.",
-        "Another example sentence for computing perplexity.",
-    ]
-    ppl_metric = Perplexity("gpt2")
-    perplexity = ppl_metric(texts, batch_size=1)
-    print(f"Perplexity: {perplexity}")
+    main()

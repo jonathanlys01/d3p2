@@ -1,8 +1,15 @@
+from builtins import print as bprint
+
 import idr_torch
 import torch
 import transformers
 
 from config import Config
+
+
+def print(*args, **kwargs):
+    if idr_torch.rank == 0 or kwargs.pop("force", False):
+        bprint(*args, **kwargs)
 
 
 def seed_all(seed: int):
@@ -105,15 +112,22 @@ class DistributedUtils:
 
         return self.embeddings, self.qualities
 
-    def dispatch_sequences(self, seq_ids: torch.Tensor | None) -> torch.Tensor:
+    def dispatch_sequences(self, seq_ids: torch.Tensor | None, last: bool = False) -> torch.Tensor:
         assert self.is_distributed(), "dispatch_sequences can only be called in distributed mode"
 
         gather_indices = [None for _ in range(self.world_size)]
+
+        if seq_ids is not None:
+            seq_ids = seq_ids.to(dtype=torch.int32, device="cuda")
 
         torch.distributed.all_gather_object(gather_indices, seq_ids)
 
         all_indices_ = [idx.to("cuda") for idx in gather_indices if idx is not None]
         all_indices = torch.cat(all_indices_, dim=0)
+
+        if last:
+            print(f"Rank {self.rank} dispatching {all_indices.size(0)} sequences for last step")
+            return all_indices
 
         assert all_indices.size(0) == self.world_size * self.cfg.batch_size, "All indices size mismatch"
 
@@ -127,7 +141,7 @@ class DistributedUtils:
         assert self.is_distributed(), "dispatch_batch_indices can only be called in distributed mode"
 
         if ids is not None:
-            ids = ids.to(dtype=torch.int8, device="cpu")
+            ids = ids.to(dtype=torch.int16, device="cuda")
 
         gather_indices = [None for _ in range(self.world_size)]
 

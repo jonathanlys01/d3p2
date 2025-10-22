@@ -151,4 +151,7 @@ class DDM(nn.Module):
             t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
             x = self._ddpm_update(x=x, t=t, dt=0, step=-1)
 
+        if self.distributed_utils:
+            x = self.distributed_utils.dispatch_sequences(x, last=True)  # get last full batch
+
         return x

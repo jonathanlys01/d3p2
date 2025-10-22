@@ -7,7 +7,7 @@ from omegaconf import OmegaConf
 
 SEQUENCE_LENGTH = 1_024
 HIDDEN_SIZE = 768
-
+RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
 
 
@@ -28,7 +28,6 @@ class Config:
 
     seed: int = 0
     n_runs: int = 4
-    interactive: bool = False
     eval_batch_size: int = 8
     compile_model: bool = False
 

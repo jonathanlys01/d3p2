@@ -3,9 +3,14 @@ Main 5D3P experiment script.
 (Distributed DPP Sampling for Discrete Diffusion Models)
 """
 
-from config import Config
+import json
+import os
+from dataclasses import asdict
+from datetime import datetime
+
+from config import RESULTS_DIR, Config
 from diffusion import DDM
-from utils import seed_all
+from utils import print, seed_all
 
 
 def main():
@@ -19,12 +24,17 @@ def main():
     for i in range(config.n_runs):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
         samples = model.sample(num_steps=config.num_steps)
-        print(samples)
-        texts.extend(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
+        texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
 
-    print("\nGenerated Samples:")
-    for i, text in enumerate(texts):
-        print(f"Sample {i + 1}: {text}")
+    samples = {
+        "text_samples": texts,  # list of lists of strings
+        "config": asdict(config),
+    }
+
+    name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
+        json.dump(samples, f, indent=4)
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
