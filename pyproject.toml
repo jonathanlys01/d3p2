@@ -10,6 +10,7 @@ dependencies = [
     "flash-attn>=2.8.3",
     "omegaconf>=2.3.0",
     "dppy>=0.3.3",
+    "idr-torch>=2.4.0",
 ]
 
 [tool.uv.extra-build-dependencies]

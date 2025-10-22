@@ -117,8 +117,8 @@ def apply_rotary_pos_emb(qkv, cos, sin):
 
 
 # function overload
-def modulate(x, shift, scale):  # noqa: F811
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+# def modulate(x, shift, scale):  # noqa: F811
+#     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 ############################################################

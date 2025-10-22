@@ -181,6 +181,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "dppy" },
     { name = "flash-attn" },
+    { name = "idr-torch" },
     { name = "omegaconf" },
     { name = "torch" },
     { name = "transformers" },
@@ -190,6 +191,7 @@ dependencies = [
 requires-dist = [
     { name = "dppy", specifier = ">=0.3.3" },
     { name = "flash-attn", specifier = ">=2.8.3" },
+    { name = "idr-torch", specifier = ">=2.4.0" },
     { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "transformers", specifier = ">=4.57.0" },
@@ -336,6 +338,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f1/70/7703c29685631f5a7590aa73f1f1d3fa9a380e654b86af429e0934a32f7d/idna-3.10.tar.gz", hash = "sha256:12f65c9b470abda6dc35cf8e63cc574b1c52b11df2c86030af0ac09b01b13ea9", size = 190490, upload-time = "2024-09-15T18:07:39.745Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/76/c6/c88e154df9c4e1a2a66ccf0005a88dfb2650c1dffb6f5ce603dfbd452ce3/idna-3.10-py3-none-any.whl", hash = "sha256:946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3", size = 70442, upload-time = "2024-09-15T18:07:37.964Z" },
+]
+
+[[package]]
+name = "idr-torch"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/f6/8920a8bba7e9b0b2669ac2802be560fff7fbbf884acbc835271a17d053c3/idr_torch-2.4.0.tar.gz", hash = "sha256:ed8c480acbe2421fb90952f8b2a94fb2e298716e94470a882e156243323932fc", size = 11680, upload-time = "2025-02-27T10:39:18.869Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/25/42/e88d880dea9911e848504f17e6e02c4c6eb6faf13605c924c6068fd89624/idr_torch-2.4.0-py3-none-any.whl", hash = "sha256:ba6a562a11477cbf28eca37cccd0173a1102194ec9eaa3e6ea0f3a1436e4e865", size = 15244, upload-time = "2025-02-27T10:39:17.456Z" },
 ]
 
 [[package]]
