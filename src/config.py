@@ -38,7 +38,7 @@ class Config:
 
     # MDLM
     mdlm_model_path: str = "kuleshov-group/mdlm-owt"
-    mdlm_tokenizer = "gpt2"
+    mdlm_tokenizer: str = "gpt2"
 
     # subset selection
     n_groups: int = 4

@@ -31,12 +31,12 @@ TOKENIZER_PATH=$DSDIR/HuggingFace_Models/gpt2/
 
 set -x
 
-cd $WORK/projects/d3p2/src
+cd $WORK/projects/d3p2
 
 COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
 
 echo "Running random subsample baseline"
-srun python main.py $COMMON dpp=False
+srun python src/main.py $COMMON dpp=False
 
 echo "Running DPP with w_interaction=0.1"
 srun python src/main.py $COMMON dpp=True w_interaction=0.1
