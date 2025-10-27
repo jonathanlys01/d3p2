@@ -42,10 +42,11 @@ module purge
 module load arch/a100
 module load pytorch-gpu/py3/2.8.0
 
+MODEL_PATH=$SCRATCH/models/kuleshov-group/mdlm-owt/
 
 set -x
 
-COMMON="n_groups=8 group_size=4 n_runs=1"
+COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH"
 
 
 echo "Running random subsample baseline"
