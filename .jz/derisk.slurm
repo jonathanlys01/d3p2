@@ -30,9 +30,9 @@ MODEL_PATH=$SCRATCH/models/kuleshov-group/mdlm-owt/
 
 set -x
 
-COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH"
-
 cd $WORK/projects/d3p2/src
+
+COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH"
 
 echo "Running random subsample baseline"
 srun python main.py $COMMON dpp=False
