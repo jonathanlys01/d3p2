@@ -27,12 +27,13 @@ module load arch/a100
 source .venv/bin/activate
 
 MODEL_PATH=$SCRATCH/models/kuleshov-group/mdlm-owt/
+TOKENIZER_PATH=$DSDIR/HuggingFace_Models/gpt2/
 
 set -x
 
 cd $WORK/projects/d3p2/src
 
-COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH"
+COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
 
 echo "Running random subsample baseline"
 srun python main.py $COMMON dpp=False

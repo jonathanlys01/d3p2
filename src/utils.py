@@ -44,7 +44,9 @@ def get_tokenizer(config: Config, model: str):
     elif model == "embedding":
         path = config.embedding_model if config.embedding_type == "external" else config.mdlm_model_path
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(path, cache_dir=config.cache_dir)
+    add_args = {"local_files_only": True} if os.path.isdir(path) else {}
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(path, cache_dir=config.cache_dir, **add_args)
 
     if tokenizer.bos_token is None:
         if tokenizer.cls_token is None:
