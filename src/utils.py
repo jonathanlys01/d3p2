@@ -1,3 +1,4 @@
+import os
 from builtins import print as bprint
 
 import idr_torch
@@ -17,6 +18,17 @@ def seed_all(seed: int):
     Set the seed for all random number generators.
     """
     transformers.set_seed(seed)
+
+
+def process_model_args(config: Config):
+    model_id_or_path = config.mdlm_model_path
+    ret = {
+        "pretrained_model_name_or_path": model_id_or_path,
+        "cache_dir": config.cache_dir,
+    }
+    if os.path.isdir(model_id_or_path):
+        ret["local_files_only"] = True
+    return ret
 
 
 def get_tokenizer(config: Config, model: str):

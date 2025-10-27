@@ -11,7 +11,7 @@ from tqdm import tqdm
 from config import Cache, Config
 from dpp import SubsetSelector
 from mdlm.modeling_mdlm import MDLM, MDLMConfig
-from utils import get_tokenizer, sample_categorical
+from utils import get_tokenizer, process_model_args, sample_categorical
 
 
 NEG_INFINITY = -1_000_000.0
@@ -24,7 +24,8 @@ class MDLMSampler(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
 
-        self.model = MDLM.from_pretrained(config.mdlm_model_path, cache_dir=config.cache_dir)
+        model_args = process_model_args(config)
+        self.model = MDLM.from_pretrained(**model_args)
         self.selector = SubsetSelector(config)
         self.config = config
         self.tokenizer = get_tokenizer(config, "mdlm")
