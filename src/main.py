@@ -10,14 +10,14 @@ from dataclasses import asdict
 from datetime import datetime
 
 from config import RESULTS_DIR, Config
-from diffusion import DDM
+from diffusion_mdlm import MDLMSampler
 from utils import print, seed_all
 
 
 def main():
     config = Config()
 
-    model = DDM(config)
+    model = MDLMSampler(config)
 
     offset = 0
     if model.distributed_utils:
