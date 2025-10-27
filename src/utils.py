@@ -126,7 +126,6 @@ class DistributedUtils:
         all_indices = torch.cat(all_indices_, dim=0)
 
         if last:
-            print(f"Rank {self.rank} dispatching {all_indices.size(0)} sequences for last step")
             return all_indices
 
         assert all_indices.size(0) == self.world_size * self.cfg.batch_size, "All indices size mismatch"

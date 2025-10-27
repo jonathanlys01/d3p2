@@ -5,6 +5,7 @@ Main 5D3P experiment script.
 
 import json
 import os
+import uuid
 from dataclasses import asdict
 from datetime import datetime
 
@@ -15,10 +16,14 @@ from utils import print, seed_all
 
 def main():
     config = Config()
-    seed_all(config.seed)
 
     model = DDM(config)
 
+    offset = 0
+    if model.distributed_utils:
+        offset = model.distributed_utils.rank
+
+    seed_all(config.seed + offset)
     texts = []
 
     for i in range(config.n_runs):
@@ -31,10 +36,12 @@ def main():
         "config": asdict(config),
     }
 
-    name = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
-        json.dump(samples, f, indent=4)
+    if model.distributed_utils is None or model.distributed_utils.rank == 0:  # save on master only (or non-distributed)
+        postfix = str(uuid.uuid4())[:8]
+        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{postfix}"
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
+            json.dump(samples, f, indent=4)
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

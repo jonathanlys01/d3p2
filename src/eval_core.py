@@ -92,9 +92,11 @@ class AverageCosineSimilarity(torch.nn.Module):
             embeddings: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
             embeddings = embeddings[:, 0, :]  # n_samples x B, D
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
-            x = F.normalize(x, p=2, dim=-1)
 
-            S = x @ x.t()  # n_samples x n_samples
+            # x = F.normalize(x, p=2, dim=-1)
+            # S = x @ x.t()  # n_samples x n_samples
+
+            S = F.cosine_similarity(x.unsqueeze(1), x.unsqueeze(0), dim=-1)
 
             S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
 

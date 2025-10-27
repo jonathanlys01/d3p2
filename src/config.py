@@ -10,6 +10,8 @@ HIDDEN_SIZE = 768
 RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
 
+CONFIG_FLAGS = ("--config", "-c", "config", "cfg")
+
 
 @dataclass(frozen=True)
 class Config:
@@ -27,8 +29,7 @@ class Config:
         return HIDDEN_SIZE
 
     seed: int = 0
-    n_runs: int = 4
-    eval_batch_size: int = 8
+    n_runs: int = 16
     compile_model: bool = False
 
     # sampling
@@ -44,11 +45,11 @@ class Config:
     group_size: int = 2
     split_groups: bool = True
     dpp: bool = True
-    w_interaction: float = 0.1  # weight for diversity term in DPP
+    w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
     w_split: float = 0.0  # weight for split groups in DPP
 
-    subsample_start: int = 100
-    subsample_end: int = 200
+    subsample_start: int = 300
+    subsample_end: int = 400
 
     # cache
     cache_dir: str = CACHE_DIR
@@ -56,6 +57,19 @@ class Config:
     batch_size: int = 0  # to be set in __post_init__
 
     def __post_init__(self):
+        self_args = OmegaConf.structured(self)
+        sys_args = OmegaConf.from_cli()
+
+        if any(flag in sys_args for flag in CONFIG_FLAGS):
+            flag = next(flag for flag in CONFIG_FLAGS if flag in sys_args)
+            cfg_file = sys_args.pop(flag)  # remove the flag from sys_args (not in struct)
+            add_args = OmegaConf.load(cfg_file)
+        else:
+            add_args = sys_args
+
+        args = OmegaConf.merge(self_args, add_args)
+        self.__dict__.update(args)
+
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 
         if self.n_runs == 1:
@@ -63,12 +77,6 @@ class Config:
 
         if self.dpp is False:
             object.__setattr__(self, "w", 0.0)
-
-        self_args = OmegaConf.structured(self)
-        sys_args = OmegaConf.from_cli()
-
-        args = OmegaConf.merge(self_args, sys_args)
-        self.__dict__.update(args)
 
 
 @dataclass
@@ -81,4 +89,4 @@ class Cache:
 if __name__ == "__main__":
     print("Config file for the project")
     config = Config()
-    print(config.__dict__)
+    print(OmegaConf.to_yaml(OmegaConf.structured(config)))

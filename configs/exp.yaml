@@ -1,0 +1,18 @@
+# Default configurations for experiments
+
+seed: 0
+n_runs: 16
+compile_model: false
+num_steps: 1024
+cat_temperature: 1.0
+mdlm_model_path: kuleshov-group/mdlm-owt
+n_groups: 4
+group_size: 2
+split_groups: true
+dpp: true
+w_interaction: 0.1
+w_split: 0.0
+subsample_start: 300
+subsample_end: 400
+cache_dir: ./.cache
+batch_size: 8

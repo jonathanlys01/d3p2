@@ -20,12 +20,12 @@ def _sample_dpp(L: np.ndarray, k: int) -> np.ndarray:
     return np.array(dpp.sample_exact_k_dpp(size=k))
 
 
-def _generate_expansion_mask(g_size: int, expansion_factor: int) -> np.ndarray:
+def _generate_expansion_mask(g_size: int, expansion_factor: int) -> torch.Tensor:
     """
     Generate a mask to prevent selecting multiple samples from the same group.
     """
-    block = np.ones((g_size, g_size), dtype=np.float32)
-    mask = np.kron(np.eye(expansion_factor, dtype=np.float32), block)
+    block = torch.ones((g_size, g_size), dtype=torch.float32)
+    mask = torch.kron(torch.eye(expansion_factor, dtype=torch.float32), block)
     return mask
 
 
@@ -48,8 +48,10 @@ class SubsetSelector:
 
         if self.config.split_groups:
             gr_size = self.config.group_size
-            indices = np.random.randint(0, gr_size, size=self.config.n_groups) + np.arange(0, B, gr_size)
-            return torch.tensor(indices, device=self.device, dtype=torch.int64)
+            n_groups = self.config.n_groups
+            indices = np.random.randint(0, gr_size, size=n_groups) + np.arange(n_groups) * gr_size
+
+            return torch.from_numpy(indices).to(self.device)
 
         return torch.tensor(random.sample(range(B), self.config.n_groups), device=self.device, dtype=torch.int64)
 
@@ -83,10 +85,14 @@ class SubsetSelector:
             expansion_factor = self.config.n_groups
             if self.distributed_utils:
                 expansion_factor *= self.distributed_utils.world_size
-            mask = torch.from_numpy(_generate_expansion_mask(g_size, expansion_factor)).to(S.device)
+            mask = _generate_expansion_mask(g_size, expansion_factor).to(S.device)
             S += self.config.w_split * mask
 
-        K = self.config.w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
+        K = (
+            S + 1e-4 * torch.eye(S.size(0), device=S.device)  # make the matrix PSD
+            if self.config.w_interaction < 0
+            else self.config.w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
+        )
 
         n_elts_sampled = (
             self.config.n_groups
