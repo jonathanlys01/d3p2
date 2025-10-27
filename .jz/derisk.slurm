@@ -33,7 +33,7 @@ set -x
 
 cd $WORK/projects/d3p2
 
-COMMON="n_groups=8 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
+COMMON="n_groups=4 group_size=4 n_runs=1 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
 
 echo "Running random subsample baseline"
 srun python src/main.py $COMMON dpp=False
