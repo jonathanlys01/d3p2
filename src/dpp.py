@@ -20,6 +20,16 @@ def _sample_dpp(L: np.ndarray, k: int) -> np.ndarray:
     return np.array(dpp.sample_exact_k_dpp(size=k))
 
 
+def _fallback_greedy(L: np.ndarray, k: int) -> np.ndarray:
+    """
+    Fallback to a simple greedy selection based on the diagonal of L.
+    """
+
+    diag = np.diag(L)
+    selected_indices = np.argsort(-diag)[:k]
+    return selected_indices
+
+
 def _generate_expansion_mask(g_size: int, expansion_factor: int) -> torch.Tensor:
     """
     Generate a mask to prevent selecting multiple samples from the same group.
@@ -88,18 +98,19 @@ class SubsetSelector:
             mask = _generate_expansion_mask(g_size, expansion_factor).to(S.device)
             S += self.config.w_split * mask
 
-        K = (
-            S + 1e-4 * torch.eye(S.size(0), device=S.device)  # make the matrix PSD
-            if self.config.w_interaction < 0
-            else self.config.w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
-        )
+        K = S if self.config.w_interaction < 0 else self.config.w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
+        K += 1e-3 * torch.eye(S.size(0), device=S.device)  # make the matrix PSD
 
         n_elts_sampled = (
             self.config.n_groups
             if not self.distributed_utils
             else self.config.n_groups * self.distributed_utils.world_size
         )
-        selected_indices = _sample_dpp(K.detach().cpu().numpy(), n_elts_sampled)
+        try:
+            selected_indices = _sample_dpp(K.detach().cpu().numpy(), n_elts_sampled)
+        except Exception as e:
+            print(f"DPP sampling failed with error: {e}. Falling back to greedy selection.")
+            selected_indices = _fallback_greedy(K.detach().cpu().numpy(), n_elts_sampled)
 
         selected_indices = torch.from_numpy(selected_indices).to(self.device)
 

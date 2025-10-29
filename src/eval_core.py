@@ -1,6 +1,6 @@
 # perplexity
 # average cosine
-
+# TODO: mauve
 
 import argparse
 import json
@@ -35,7 +35,7 @@ class Perplexity(torch.nn.Module):
         self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
         self.lm_head.weight = self.model.wte.weight  # tie weights
 
-    def _forward(self, texts: list[str]) -> None:
+    def _forward(self, texts: list[str]) -> torch.Tensor:
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
 
         self.model.to(device)
@@ -53,10 +53,10 @@ class Perplexity(torch.nn.Module):
 
             loss = loss.view(shift_labels.size())
 
-        ppl = torch.exp(loss.mean()).item()
-        return ppl
+        ppl = torch.exp(loss.mean(dim=1))  # perplexity per sample
+        return ppl.cpu().tolist()
 
-    def forward(self, texts: list[list[str]], batch_size: int = 0) -> float:
+    def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float]:
         """
         Compute perplexity for a list of texts, optionally in batches.
         """
@@ -64,33 +64,33 @@ class Perplexity(torch.nn.Module):
         # flatten because independent evaluation
         texts = [text for sublist in texts for text in sublist]
 
-        if batch_size == 0:
-            return self._forward(texts)
+        batch_size = batch_size or len(texts)
 
-        total_loss = 0.0
-        n_batches = (len(texts) + batch_size - 1) // batch_size
+        ppls = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            ppls.extend(self._forward(batch))
 
-        for i in range(n_batches):
-            batch_texts = texts[i * batch_size : (i + 1) * batch_size]
-            batch_loss = self._forward(batch_texts)
-            total_loss += batch_loss
+        ppls_tensor = torch.tensor(ppls)
 
-        return total_loss / n_batches
+        mean_ppl = ppls_tensor.mean().item()
+        min_ppl = ppls_tensor.min().item()
+        max_ppl = ppls_tensor.max().item()
+        std_ppl = ppls_tensor.std().item()
+
+        return mean_ppl, min_ppl, max_ppl, std_ppl
 
 
 class AverageCosineSimilarity(torch.nn.Module):
     def __init__(self, model_id: str):
         super().__init__()
-        self.model = AutoModel.from_pretrained(model_id, cache_dir=CACHE_DIR)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=CACHE_DIR)
+        self.model = AutoModel.from_pretrained(model_id, cache_dir=CACHE_DIR, trust_remote_code=True)
 
     def _forward(self, texts: list[str]) -> float:
-        inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
         self.model.to(device)
 
         with torch.inference_mode():
-            embeddings: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
-            embeddings = embeddings[:, 0, :]  # n_samples x B, D
+            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
 
             # x = F.normalize(x, p=2, dim=-1)
@@ -115,7 +115,9 @@ class AverageCosineSimilarity(torch.nn.Module):
             avg_cos_sim = self._forward(group)
             avg_cos_sims.append(avg_cos_sim)
 
-        return sum(avg_cos_sims) / len(avg_cos_sims)
+        cos_sims_tensor = torch.tensor(avg_cos_sims)
+
+        return cos_sims_tensor.mean().item(), cos_sims_tensor.std().item() if len(cos_sims_tensor) > 1 else -1.0
 
 
 class Evaluator:
@@ -124,7 +126,7 @@ class Evaluator:
         batch_size: int = 0,
         force: bool = False,
         ppl_model_id: str = "gpt2",
-        cos_model_id: str = "bert-base-uncased",
+        cos_model_id: str = "jinaai/jina-embeddings-v2-base-en",
     ):
         self.perplexity_model = Perplexity(ppl_model_id)
         self.cosine_model = AverageCosineSimilarity(cos_model_id)
@@ -133,12 +135,16 @@ class Evaluator:
         self.force = force
 
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
-        ppl = self.perplexity_model(texts, batch_size=self.batch_size)
-        avg_cos_sim = self.cosine_model(texts)
+        ppl, min_ppl, max_ppl, std_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
+        avg_cos_sim, std_cos_sim = self.cosine_model(texts)
 
         return {
             "perplexity": ppl,
+            "min_perplexity": min_ppl,
+            "max_perplexity": max_ppl,
+            "std_perplexity": std_ppl,
             "average_cosine_similarity": avg_cos_sim,
+            "std_cosine_similarity": std_cos_sim,
         }
 
     def eval_from_file(self, file_path: str) -> None:

@@ -43,7 +43,7 @@ class Config:
     # subset selection
     n_groups: int = 4
     group_size: int = 2
-    split_groups: bool = True
+    split_groups: bool = False
     dpp: bool = True
     w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
     w_split: float = 0.0  # weight for split groups in DPP
@@ -60,10 +60,16 @@ class Config:
         self_args = OmegaConf.structured(self)
         sys_args = OmegaConf.from_cli()
 
+        # Priority:
+        # 1. Command-line config file (if any)
+        # 2. Command-line args
+        # 3. Default args
+
         if any(flag in sys_args for flag in CONFIG_FLAGS):
             flag = next(flag for flag in CONFIG_FLAGS if flag in sys_args)
             cfg_file = sys_args.pop(flag)  # remove the flag from sys_args (not in struct)
-            add_args = OmegaConf.load(cfg_file)
+            cfg_args = OmegaConf.load(cfg_file)
+            add_args = OmegaConf.merge(cfg_args, sys_args)
         else:
             add_args = sys_args
 

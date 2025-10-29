@@ -11,13 +11,14 @@ from datetime import datetime
 
 from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
-from utils import print, seed_all
+from utils import compile_model, print, seed_all
 
 
 def main():
     config = Config()
 
     model = MDLMSampler(config)
+    model.model = compile_model(model.model, config)
 
     offset = 0
     if model.distributed_utils:

@@ -53,8 +53,8 @@ fixable = ["ALL"]
 "__init__.py" = ["E402", "F401", "F403", "F811"]
 
 # external modelling code
-"src/llada/*" = ["ALL"]
-"src/mdlm/*" = ["ALL"]
+"src/llada_ref/*" = ["ALL"]
+"src/mdlm_ref/*" = ["ALL"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2

@@ -1,0 +1,24 @@
+# Default configurations for experiments
+
+
+mdlm_model_path: ${oc.env:SCRATCH,.}/models/kuleshov-group/mdlm-owt/
+mdlm_tokenizer: ${oc.env:DSDIR,.}/models/kuleshov-group/gpt2-tokenizer/
+
+seed: 0
+cache_dir: ./.cache
+n_runs: 64
+compile_model: true
+num_steps: 1024
+cat_temperature: 1.0
+
+n_groups: 16
+group_size: 8
+
+split_groups: true
+dpp: true
+w_interaction: 1.0
+w_split: 0.0
+subsample_start: 300
+subsample_end: 400
+
+batch_size: 8 # ignored anyways

@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from config import Cache, Config
 from dpp import SubsetSelector
-from mdlm.modeling_mdlm import MDLM, MDLMConfig
+from mdlm_ref.modeling_mdlm import MDLM, MDLMConfig
 from utils import get_tokenizer, process_model_args, sample_categorical
 
 

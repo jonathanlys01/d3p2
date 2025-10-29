@@ -79,12 +79,13 @@ def get_log_likelihood(model, prompt, answer, mc_num=128, batch_size=16, cfg_sca
 def main():
     device = "cuda"
 
-    model = (
-        AutoModel.from_pretrained("GSAI-ML/LLaDA-8B-Base", trust_remote_code=True, torch_dtype=torch.bfloat16)
-        .to(device)
-        .eval()
-    )
-    tokenizer = AutoTokenizer.from_pretrained("GSAI-ML/LLaDA-8B-Base", trust_remote_code=True)
+    MODEL_ID = "/Brain/public/models/GSAI-ML/LLaDA-8B-Base/"
+
+    model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True, dtype=torch.bfloat16).to(device).eval()
+
+    exit()
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 
     # this prompt and answer is from Hellaswag dataset
     prompt = "Roof shingle removal: A man is sitting on a roof. He"

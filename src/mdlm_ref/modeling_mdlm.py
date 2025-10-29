@@ -12,7 +12,7 @@ from einops import rearrange
 from torch import nn
 from transformers import modeling_outputs
 
-from mdlm.configuration_mdlm import MDLMConfig
+from mdlm_ref.configuration_mdlm import MDLMConfig
 
 
 # Flags required to enable jit fusion kernels
