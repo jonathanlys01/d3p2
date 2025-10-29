@@ -1,4 +1,4 @@
-# Default configurations for experiments
+# Default configurations for experiments on JZ
 
 
 mdlm_model_path: ${oc.env:SCRATCH,.}/models/kuleshov-group/mdlm-owt/
