@@ -2,7 +2,7 @@
 
 
 mdlm_model_path: ${oc.env:SCRATCH,.}/models/kuleshov-group/mdlm-owt/
-mdlm_tokenizer: ${oc.env:DSDIR,.}/models/kuleshov-group/gpt2-tokenizer/
+mdlm_tokenizer: ${oc.env:DSDIR,.}/HuggingFace_Models/gpt2/
 
 seed: 0
 cache_dir: ./.cache

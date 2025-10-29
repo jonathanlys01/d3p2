@@ -11,6 +11,8 @@ dependencies = [
     "omegaconf>=2.3.0",
     "dppy>=0.3.3",
     "idr-torch>=2.4.0",
+    "scikit-learn>=1.7.2",
+    "faiss-cpu>=1.12.0",
 ]
 
 [tool.uv.extra-build-dependencies]
@@ -55,6 +57,7 @@ fixable = ["ALL"]
 # external modelling code
 "src/llada_ref/*" = ["ALL"]
 "src/mdlm_ref/*" = ["ALL"]
+"src/mauve/*" = ["ALL"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2

@@ -12,7 +12,7 @@
 #SBATCH --job-name=d5p3
 #SBATCH --output=slurm-logs/%j-%x.out
 #SBATCH --error=slurm-logs/%j-%x.err
-#SBATCH --time=03:00:00
+#SBATCH --time=00:30:00
 #SBATCH --qos=qos_gpu_a100-t3
 
 
