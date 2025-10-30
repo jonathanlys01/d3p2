@@ -11,8 +11,8 @@ compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
 
-n_groups: 16
-group_size: 8
+n_groups: 8
+group_size: 4
 
 split_groups: true
 dpp: true
@@ -20,5 +20,3 @@ w_interaction: 1.0
 w_split: 0.0
 subsample_start: 300
 subsample_end: 400
-
-batch_size: 8 # ignored anyways
