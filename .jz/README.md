@@ -2,15 +2,12 @@
 
 Setting up the environment and downloading the model on Jean-Zay.
 
+`main.sh` launches the script on the A100 partition.
+`volta.sh` launches the script on the V100 partition.
+
+To chain jobs, use the `--dependency` option of `sbatch`. For example, to launch `volta.sh` after `main.sh` completes successfully:
+
 ```bash
-
-module load pytorch-gpu/py3/2.8.0 # load pytorch module + other dependencies (transfo, flash...)
-
-hf download kuleshov-group/mdlm-owt --local-dir $SCRATCH/models
-
-pip install --user --no-cache-dir dppy
-
+jobid=$(sbatch --parsable main.sh)
+sbatch --dependency=afterok:$jobid volta.sh
 ```
-
-
-

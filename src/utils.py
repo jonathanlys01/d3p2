@@ -9,7 +9,7 @@ from config import Config
 
 
 def print(*args, **kwargs):
-    if idr_torch.rank == 0 or kwargs.pop("force", False):
+    if kwargs.pop("force", False) or idr_torch.rank == 0:
         bprint(*args, **kwargs)
 
 
