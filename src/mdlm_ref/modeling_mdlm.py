@@ -14,6 +14,7 @@ from transformers import modeling_outputs
 
 from mdlm_ref.configuration_mdlm import MDLMConfig
 
+SUPPORTS_FLASH = torch.cuda.get_device_properties(0).major >= 8 if torch.cuda.is_available() else False
 
 # Flags required to enable jit fusion kernels
 torch._C._jit_set_profiling_mode(False)
@@ -244,11 +245,22 @@ class DDiTBlock(nn.Module):
             cos, sin = rotary_cos_sin
             qkv = apply_rotary_pos_emb(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))
         qkv = rearrange(qkv, "b s ... -> (b s) ...")
-        if seqlens is None:
-            cu_seqlens = torch.arange(0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=qkv.device)
+
+        if SUPPORTS_FLASH:
+            if seqlens is None:
+                cu_seqlens = torch.arange(
+                    0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=qkv.device
+                )
+            else:
+                cu_seqlens = seqlens.cumsum(-1)
+            x = flash_attn.flash_attn_varlen_qkvpacked_func(qkv, cu_seqlens, seq_len, 0.0, causal=False)
         else:
-            cu_seqlens = seqlens.cumsum(-1)
-        x = flash_attn.flash_attn_varlen_qkvpacked_func(qkv, cu_seqlens, seq_len, 0.0, causal=False)
+            q, k, v = qkv.chunk(3, dim=1)
+            (q, k, v) = map(lambda t: rearrange(t.squeeze(1), "(b s) h d -> b h s d", b=batch_size), (q, k, v))
+            x = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False
+            )
+            x = rearrange(x, "b h s d -> (b s) h d")
 
         x = rearrange(x, "(b s) h d -> b s (h d)", b=batch_size)
 
