@@ -89,6 +89,7 @@ class SubsetSelector:
                 return self.distributed_utils.dispatch_batch_indices(None)
 
         S = torch.matmul(flat, flat.t())  # [B, B] cosine similarity
+        K = torch.zeros_like(S)  # placeholder
 
         if self.config.split_groups:
             g_size = self.config.group_size
@@ -96,9 +97,10 @@ class SubsetSelector:
             if self.distributed_utils:
                 expansion_factor *= self.distributed_utils.world_size
             mask = _generate_expansion_mask(g_size, expansion_factor).to(S.device)
-            S += self.config.w_split * mask
+            K += self.config.w_split * mask
 
-        K = S if self.config.w_interaction < 0 else self.config.w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
+        w_interaction = self.config.w_interaction
+        K += S if w_interaction < 0 else w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
         K += 1e-3 * torch.eye(S.size(0), device=S.device)  # make the matrix PSD
 
         n_elts_sampled = (

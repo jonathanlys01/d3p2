@@ -73,13 +73,35 @@ def compile_model(model, config: Config):
     return model
 
 
-def sample_categorical(categorical_probs: torch.Tensor, expand: int = None) -> torch.Tensor:
+def sample_categorical_deprecated(categorical_probs: torch.Tensor, expand: int = None) -> torch.Tensor:
+    """
+    Gumbel-max trick for sampling from categorical distribution.
+    categorical_probs: [B, T, V] tensor of categorical probabilities
+    expand: if not None, number of samples to draw per input
+    returns: [B, T] or [B*expand, T] tensor of sampled
+
+    NB: This function is deprecated, the repeat_interleave operation is inefficient as it materializes large
+    intermediate tensors on the GPU. Use sample_categorical instead.
+    """
     if expand is not None:
         assert categorical_probs.dim() == 3, "categorical_probs must be of shape [B, T, V] to expand"
-        categorical_probs = categorical_probs.repeat(expand, 1, 1)
+        categorical_probs = torch.repeat_interleave(categorical_probs, repeats=expand, dim=0)
 
     gumbel_norm: torch.Tensor = 1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()
     return (categorical_probs / gumbel_norm).argmax(dim=-1)
+
+
+def sample_categorical(categorical_probs: torch.Tensor, expand: int = None) -> torch.Tensor:
+    expand = expand or 1
+    B, T, V = categorical_probs.shape
+
+    flat = categorical_probs.reshape(B * T, V)
+    idx = torch.multinomial(flat, num_samples=expand, replacement=True)
+
+    if expand == 1:
+        return idx.view(B, T)
+
+    return idx.view(B, T, expand).permute(0, 2, 1).reshape(B * expand, T)
 
 
 # Distributed utilities
