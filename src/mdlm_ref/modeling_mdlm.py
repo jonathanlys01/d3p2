@@ -1,5 +1,6 @@
 """MDLM model for Hugging Face."""
 
+from contextlib import nullcontext
 import math
 import typing
 
@@ -7,6 +8,7 @@ import flash_attn
 import flash_attn.layers.rotary
 import torch
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 import transformers
 from einops import rearrange
 from torch import nn
@@ -257,9 +259,8 @@ class DDiTBlock(nn.Module):
         else:
             q, k, v = qkv.chunk(3, dim=1)
             (q, k, v) = map(lambda t: rearrange(t.squeeze(1), "(b s) h d -> b h s d", b=batch_size), (q, k, v))
-            x = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False
-            )
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+                x = F.scaled_dot_product_attention(q, k, v)
             x = rearrange(x, "b h s d -> (b s) h d")
 
         x = rearrange(x, "(b s) h d -> b s (h d)", b=batch_size)
@@ -344,7 +345,14 @@ class DITBackbone(nn.Module):
 
         rotary_cos_sin = self.rotary_emb(x)
 
-        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+        ctx = (
+            torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if SUPPORTS_FLASH
+            # else torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+            else nullcontext()
+        )
+
+        with ctx:
             for i in range(len(self.blocks)):
                 x = self.blocks[i](x, rotary_cos_sin, c)
                 if output_hidden_states:
