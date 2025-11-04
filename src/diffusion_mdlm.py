@@ -24,7 +24,7 @@ class MDLMSampler(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
 
-        model_args = process_model_args(config)
+        model_args = process_model_args(config.mdlm_model_path, config.cache_dir)
         self.model = MDLM.from_pretrained(**model_args)
         self.selector = SubsetSelector(config)
         self.config = config

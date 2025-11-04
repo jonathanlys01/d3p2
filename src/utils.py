@@ -20,11 +20,11 @@ def seed_all(seed: int):
     transformers.set_seed(seed)
 
 
-def process_model_args(config: Config):
-    model_id_or_path = config.mdlm_model_path
+def process_model_args(path, cache_dir):
+    model_id_or_path = path
     ret = {
         "pretrained_model_name_or_path": model_id_or_path,
-        "cache_dir": config.cache_dir,
+        "cache_dir": cache_dir,
     }
     if os.path.isdir(model_id_or_path):
         ret["local_files_only"] = True
@@ -205,15 +205,17 @@ class DistributedUtils:
         return local_indices
 
     def _setup_pg(self):
-        torch.distributed.init_process_group(
-            backend="nccl",
-            init_method="env://",
-            world_size=self.world_size,
-            rank=self.rank,
-        )
+        if not torch.distributed.is_initialized():
+            print("Initializing process group")
+            torch.distributed.init_process_group(
+                backend="nccl",
+                init_method="env://",
+                world_size=self.world_size,
+                rank=self.rank,
+            )
 
-        device = f"cuda:{self.local_rank}"
-        torch.cuda.set_device(device)
+            device = f"cuda:{self.local_rank}"
+            torch.cuda.set_device(device)
 
     def cleanup(self):
         if not self.is_distributed():

@@ -1,4 +1,6 @@
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -11,6 +13,14 @@ RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
 
 CONFIG_FLAGS = ("--config", "-c", "config", "cfg")
+
+
+def env_path_or(env_name: str, suffix: str, fallback: str) -> str:
+    val = os.getenv(env_name)
+    return str(Path(val) / suffix) if val else fallback
+
+
+OmegaConf.register_new_resolver("env_path_or", env_path_or, use_cache=True)
 
 
 @dataclass(frozen=True)
@@ -28,6 +38,8 @@ class Config:
     def embedding_dim(self) -> int:
         return HIDDEN_SIZE
 
+    disable_sys_args: bool = False
+
     seed: int = 0
     n_runs: int = 16
     compile_model: bool = False
@@ -41,9 +53,9 @@ class Config:
     mdlm_tokenizer: str = "gpt2"
 
     # subset selection
-    n_groups: int = 4
+    n_groups: int = 2
     group_size: int = 2
-    split_groups: bool = False
+    split_groups: bool = True
     dpp: bool = True
     w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
     w_split: float = 0.0  # weight for split groups in DPP
@@ -51,12 +63,19 @@ class Config:
     subsample_start: int = 300
     subsample_end: int = 400
 
+    # eval
+    ppl_model_id: str = "gpt2"
+    cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
+
     # cache
     cache_dir: str = CACHE_DIR
 
     batch_size: int = 0  # to be set in __post_init__
 
     def __post_init__(self):
+        if self.disable_sys_args:
+            return
+
         self_args = OmegaConf.structured(self)
         sys_args = OmegaConf.from_cli()
 
@@ -82,7 +101,8 @@ class Config:
             object.__setattr__(self, "interactive", True)
 
         if self.dpp is False:
-            object.__setattr__(self, "w", 0.0)
+            object.__setattr__(self, "w_interaction", 0.0)
+            object.__setattr__(self, "w_split", 0.0)
 
 
 @dataclass

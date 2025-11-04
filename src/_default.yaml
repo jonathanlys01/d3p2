@@ -1,17 +1,20 @@
 # Default configurations for experiments on JZ
 
+# Paths
+mdlm_model_path: ${env_path_or:WORK,models/kuleshov-group/mdlm-owt/,/Brain/public/models/kuleshov-group/mdlm-owt/}
+mdlm_tokenizer: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
 
-mdlm_model_path: ${oc.env:SCRATCH,.}/models/kuleshov-group/mdlm-owt/
-mdlm_tokenizer: ${oc.env:DSDIR,.}/HuggingFace_Models/gpt2/
+ppl_model_id: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
+cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,jinaai/jina-embeddings-v2-base-en}
 
-seed: 0
+seed: 42
 cache_dir: ./.cache
-n_runs: 64
+n_runs: 4
 compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
 
-n_groups: 8
+n_groups: 4
 group_size: 4
 
 split_groups: true

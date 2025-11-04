@@ -105,19 +105,19 @@ def main(config: Config):
 
 
 def _objective(trial: optuna.Trial, og_config: Config):
-    w_interaction = trial.suggest_float("w_interaction", 0.0, 30.0, step=1.0)
-    w_split = trial.suggest_float("w_split", 0.0, 100.0, step=1.0)
+    start_sample = trial.suggest_int("subsample_start", 0, 900)
+    end_sample = trial.suggest_int("subsample_end", start_sample + 100, 1024)
 
     dict_config = asdict(og_config)
-    dict_config["w_interaction"] = w_interaction
-    dict_config["w_split"] = w_split
+    dict_config["subsample_start"] = start_sample
+    dict_config["subsample_end"] = end_sample
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
     _bcast(True)  # sync before starting -> proceed
     _bcast(config)  # broadcast config to all workers
 
-    print(f"Trial {trial.number}: w_interaction={w_interaction}, w_split={w_split}")
+    print(f"Trial {trial.number}: subsample_start={start_sample}, subsample_end={end_sample}")
 
     metrics = main(config)
 
@@ -147,20 +147,25 @@ if __name__ == "__main__":
         study = optuna.create_study(
             directions=["minimize", "minimize"],
             study_name="d3p2_optuna_study",
-            storage="sqlite:///optuna_d3p2.db",
+            storage="sqlite:///window_exp.db",
             load_if_exists=True,
         )
 
-        if len(study.trials) == 0:
-            study.enqueue_trial({"w_interaction": og_config.w_interaction, "w_split": og_config.w_split})
+        assert len(study.trials) == 0, "Study already has trials!"
 
-        study.optimize(lambda trial: _objective(trial, og_config), n_trials=200)
+        study.enqueue_trial({"subsample_start": 0, "subsample_end": 1024})  # full
+
+        # exhaustive subsample trials
+        for start in range(0, 901, 100):
+            end = start + 100
+            study.enqueue_trial({"subsample_start": start, "subsample_end": end})
+
+        study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)
         _bcast(False)
 
-        fig = optuna.visualization.plot_pareto_front(study)
-        fig.write_image("pareto_front_d3p2.png")
-
         dist.destroy_process_group()
+
+        print("Window study completed.")
 
     else:
         while True:

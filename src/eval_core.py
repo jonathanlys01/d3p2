@@ -12,6 +12,7 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from config import CACHE_DIR
+from utils import process_model_args
 
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -23,9 +24,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class Perplexity(torch.nn.Module):
     def __init__(self, model_id: str):
         super().__init__()
-        self.model = AutoModel.from_pretrained(model_id, cache_dir=CACHE_DIR)
+        models_args = process_model_args(model_id, CACHE_DIR)
+
+        self.model = AutoModel.from_pretrained(**models_args)
+        self.tokenizer = AutoTokenizer.from_pretrained(**models_args)
+
         self.model.eval()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=CACHE_DIR)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -92,10 +96,6 @@ class AverageCosineSimilarity(torch.nn.Module):
         with torch.inference_mode():
             embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
-
-            # x = F.normalize(x, p=2, dim=-1)
-            # S = x @ x.t()  # n_samples x n_samples
-
             S = F.cosine_similarity(x.unsqueeze(1), x.unsqueeze(0), dim=-1)
 
             S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
@@ -116,8 +116,12 @@ class AverageCosineSimilarity(torch.nn.Module):
             avg_cos_sims.append(avg_cos_sim)
 
         cos_sims_tensor = torch.tensor(avg_cos_sims)
+        min_cos_sim = cos_sims_tensor.min().item()
+        max_cos_sim = cos_sims_tensor.max().item()
+        mean_cos_sim = cos_sims_tensor.mean().item()
+        std_cos_sim = cos_sims_tensor.std().item() if len(cos_sims_tensor) > 1 else -1.0
 
-        return cos_sims_tensor.mean().item(), cos_sims_tensor.std().item() if len(cos_sims_tensor) > 1 else -1.0
+        return mean_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim
 
 
 class Evaluator:
@@ -136,18 +140,22 @@ class Evaluator:
 
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
         ppl, min_ppl, max_ppl, std_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
-        avg_cos_sim, std_cos_sim = self.cosine_model(texts)
+        avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
 
         return {
+            # PPL
             "perplexity": ppl,
             "min_perplexity": min_ppl,
             "max_perplexity": max_ppl,
             "std_perplexity": std_ppl,
-            "average_cosine_similarity": avg_cos_sim,
+            # Cosine similarity
+            "cosine_similarity": avg_cos_sim,
             "std_cosine_similarity": std_cos_sim,
+            "min_cosine_similarity": min_cos_sim,
+            "max_cosine_similarity": max_cos_sim,
         }
 
-    def eval_from_file(self, file_path: str) -> None:
+    def eval_from_file(self, file_path: str) -> dict[str, float] | None:
         with open(file_path, "r") as f:
             data = json.load(f)
 
@@ -163,6 +171,8 @@ class Evaluator:
 
         with open(file_path, "w") as f:
             json.dump(data, f, indent=4)
+
+        return metrics
 
 
 def main():

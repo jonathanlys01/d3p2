@@ -47,7 +47,7 @@ class SubsetSelector:
         self.config = config
         self.device = "cuda"
 
-        self.distributed_utils = DistributedUtils(config) if config.dpp and DistributedUtils.is_distributed() else None
+        self.distributed_utils = DistributedUtils(config) if DistributedUtils.is_distributed() else None
 
     def subsample(self, cache: Cache) -> torch.Tensor:
         if self.config.dpp:
