@@ -20,13 +20,11 @@ def seed_all(seed: int):
     transformers.set_seed(seed)
 
 
-def process_model_args(path, cache_dir):
-    model_id_or_path = path
-    ret = {
-        "pretrained_model_name_or_path": model_id_or_path,
-        "cache_dir": cache_dir,
-    }
-    if os.path.isdir(model_id_or_path):
+def process_model_args(path, **kwargs):
+    ret = dict(kwargs.items())
+    ret["pretrained_model_name_or_path"] = path
+
+    if os.path.isdir(path):
         ret["local_files_only"] = True
     return ret
 
@@ -36,16 +34,18 @@ def get_tokenizer(config: Config, model: str):
     Get the tokenizer from the config.
     """
 
-    assert model in ["mdlm", "embedding"], f"model must be either 'mdlm' or 'embedding', got {model}"
+    assert model in ["mdlm", "llada"], f"Unknown model type: {model}"
 
-    if model == "mdlm":
-        path = config.mdlm_tokenizer
-
-    elif model == "embedding":
-        path = config.embedding_model if config.embedding_type == "external" else config.mdlm_model_path
+    if model == "llada":
+        path = config.llada_tokenizer
+        return transformers.AutoTokenizer.from_pretrained(
+            config.llada_model_path,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            local_files_only=os.path.isdir(path),
+        )
 
     add_args = {"local_files_only": True} if os.path.isdir(path) else {}
-
     tokenizer = transformers.AutoTokenizer.from_pretrained(path, cache_dir=config.cache_dir, **add_args)
 
     if tokenizer.bos_token is None:
@@ -129,6 +129,7 @@ class DistributedUtils:
             (self.world_size * self.cfg.batch_size, self.cfg.embedding_dim * self.cfg.sequence_length),
             device="cuda",
         )
+        # self.embeddings = torch.zeros((self.world_size * self.cfg.batch_size, self.cfg.embedding_dim), device="cuda")
         self.qualities = torch.zeros((self.world_size * self.cfg.batch_size,), device="cuda")
 
     def all_gather(

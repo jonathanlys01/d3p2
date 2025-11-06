@@ -1,15 +1,21 @@
 # Default configurations for experiments on JZ
 
 # Paths
+
+# MDLM
 mdlm_model_path: ${env_path_or:WORK,models/kuleshov-group/mdlm-owt/,/Brain/public/models/kuleshov-group/mdlm-owt/}
 mdlm_tokenizer: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
+
+# LLADA
+llada_model_path: /Brain/public/models/GSAI-ML/LLaDA-8B-Base/
+llada_tokenizer: /Brain/public/models/GSAI-ML/LLaDA-8B-Base/
 
 ppl_model_id: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
 cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,jinaai/jina-embeddings-v2-base-en}
 
 seed: 42
 cache_dir: ./.cache
-n_runs: 4
+n_runs: 8
 compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
@@ -20,6 +26,6 @@ group_size: 4
 split_groups: true
 dpp: true
 w_interaction: 1.0
-w_split: 0.0
-subsample_start: 300
-subsample_end: 400
+w_split: 1.0
+subsample_start: 500
+subsample_end: 600

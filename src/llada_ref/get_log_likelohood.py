@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer
 
 
 def forward_process(batch, prompt_index, mask_id):
@@ -68,6 +68,8 @@ def get_log_likelihood(model, prompt, answer, mc_num=128, batch_size=16, cfg_sca
 
         logits = get_logits(model, perturbed_seq, prompt_index, cfg_scale, mask_id)
 
+        print(logits.shape, seq.shape, mask_index.shape, p_mask.shape)
+
         loss = F.cross_entropy(logits[mask_index], seq[mask_index], reduction="none") / p_mask[mask_index]
         loss = loss.sum() / batch_size
 
@@ -77,22 +79,24 @@ def get_log_likelihood(model, prompt, answer, mc_num=128, batch_size=16, cfg_sca
 
 
 def main():
+    from llada_ref.modeling_llada import LLaDAModelLM
+
     device = "cuda"
 
     MODEL_ID = "/Brain/public/models/GSAI-ML/LLaDA-8B-Base/"
 
-    model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True, dtype=torch.bfloat16).to(device).eval()
-
-    exit()
-
+    model = LLaDAModelLM.from_pretrained(MODEL_ID, trust_remote_code=True, dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-
     # this prompt and answer is from Hellaswag dataset
     prompt = "Roof shingle removal: A man is sitting on a roof. He"
     answer = " is using wrap to wrap a pair of skis."
 
     prompt = torch.tensor(tokenizer(prompt)["input_ids"]).to(device)
     answer = torch.tensor(tokenizer(answer)["input_ids"]).to(device)
+
+    print("prompt shape:", prompt.shape)
+    print("answer shape:", answer.shape)
+
     print(get_log_likelihood(model, prompt, answer, mc_num=128))
 
 

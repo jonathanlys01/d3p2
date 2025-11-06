@@ -105,8 +105,8 @@ def main(config: Config):
 
 
 def _objective(trial: optuna.Trial, og_config: Config):
-    w_interaction = trial.suggest_float("w_interaction", 0.0, 30.0, step=1.0)
-    w_split = trial.suggest_float("w_split", 0.0, 100.0, step=1.0)
+    w_interaction = trial.suggest_float("w_interaction", 0.0, 5.0)
+    w_split = trial.suggest_float("w_split", 0.0, 5.0)
 
     dict_config = asdict(og_config)
     dict_config["w_interaction"] = w_interaction
@@ -154,11 +154,8 @@ if __name__ == "__main__":
         if len(study.trials) == 0:
             study.enqueue_trial({"w_interaction": og_config.w_interaction, "w_split": og_config.w_split})
 
-        study.optimize(lambda trial: _objective(trial, og_config), n_trials=200)
+        study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)
         _bcast(False)
-
-        fig = optuna.visualization.plot_pareto_front(study)
-        fig.write_image("pareto_front_d3p2.png")
 
         dist.destroy_process_group()
 

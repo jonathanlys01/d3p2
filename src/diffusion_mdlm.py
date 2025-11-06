@@ -19,12 +19,12 @@ torch.set_float32_matmul_precision("high")
 
 
 class MDLMSampler(nn.Module):
-    """Discrete Diffusion Model base class."""
+    """Discrete Diffusion Model base class. (MDLM version)"""
 
     def __init__(self, config: Config):
         super().__init__()
 
-        model_args = process_model_args(config.mdlm_model_path, config.cache_dir)
+        model_args = process_model_args(config.mdlm_model_path, cache_dir=config.cache_dir)
         self.model = MDLM.from_pretrained(**model_args)
         self.selector = SubsetSelector(config)
         self.config = config
@@ -132,8 +132,7 @@ class MDLMSampler(nn.Module):
         eps: float = 1e-5,
         init_x: Optional[torch.Tensor] = None,
     ):
-        if num_steps is None:
-            num_steps = self.config.num_steps
+        num_steps = num_steps or self.config.num_steps
 
         if init_x is None:
             init_x = self._sample_prior(self.config.batch_size, self.model_length)

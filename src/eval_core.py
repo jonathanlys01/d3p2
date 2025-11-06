@@ -82,7 +82,10 @@ class Perplexity(torch.nn.Module):
         max_ppl = ppls_tensor.max().item()
         std_ppl = ppls_tensor.std().item()
 
-        return mean_ppl, min_ppl, max_ppl, std_ppl
+        _median = ppls_tensor.median().item()
+        mad_ppm = torch.mean(torch.abs(ppls_tensor - _median)).item()
+
+        return mean_ppl, min_ppl, max_ppl, std_ppl, mad_ppm
 
 
 class AverageCosineSimilarity(torch.nn.Module):
@@ -139,7 +142,7 @@ class Evaluator:
         self.force = force
 
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
-        ppl, min_ppl, max_ppl, std_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
+        ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
         avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
 
         return {
@@ -148,6 +151,7 @@ class Evaluator:
             "min_perplexity": min_ppl,
             "max_perplexity": max_ppl,
             "std_perplexity": std_ppl,
+            "mad_perplexity": mad_ppl,
             # Cosine similarity
             "cosine_similarity": avg_cos_sim,
             "std_cosine_similarity": std_cos_sim,

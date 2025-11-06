@@ -77,8 +77,8 @@ class SubsetSelector:
         scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)  # [0, 1]
         scores = 1 - scores
 
-        sum_scores = scores.sum()
-        scores = torch.softmax(scores, dim=0) * sum_scores
+        # sum_scores = scores.sum()
+        scores = torch.softmax(scores, dim=0)  # * sum_scores
 
         flat = cache.embeddings.float().reshape(B, -1)  # [B, L*E]
         flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)

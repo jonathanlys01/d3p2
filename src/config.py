@@ -52,6 +52,10 @@ class Config:
     mdlm_model_path: str = "kuleshov-group/mdlm-owt"
     mdlm_tokenizer: str = "gpt2"
 
+    # LLaDA
+    llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
+    llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
+
     # subset selection
     n_groups: int = 2
     group_size: int = 2
