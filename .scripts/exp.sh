@@ -8,48 +8,18 @@ cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 export OMP_NUM_THREADS=1
 
-MODEL_PATH=/Brain/public/models/kuleshov-group/mdlm-owt/
-N_RUNS=16
+N_RUNS=8
 
-# Generate a seed offset based on the hostname to ensure different nodes run different seeds
-seed=$((16#$(hostname | sha256sum | awk '{print substr($1,1,8)}')))
-echo "Seed offset: $seed"
+echo "all steps experiment"
+torchrun --nproc_per_node=gpu single_run.py --config=_default.yaml n_runs=$N_RUNS subsample_start=0 subsample_end=1024
 
-COMMON="mdlm_model_path=$MODEL_PATH n_groups=4 group_size=6 n_runs=$N_RUNS compile_model=True"
+echo "partial steps experiment"
+torchrun --nproc_per_node=gpu single_run.py --config=_default.yaml n_runs=$N_RUNS subsample_start=300 subsample_end=400
 
-set -x
+echo "no subsampling experiment"
+torchrun --nproc_per_node=gpu single_run.py --config=_default.yaml n_runs=$N_RUNS subsample_start=0 subsample_end=0
 
-for temp in 1.0; do
-    
-    # TODO: implement IID baseline
+cd src
 
-    # Random subsample baseline
-    CUDA_VISIBLE_DEVICES=0 python main.py $COMMON dpp=False seed=$seed cat_temperature=$temp &
-    # CUDA_VISIBLE_DEVICES=1 python main.py $COMMON dpp=False seed=$((seed + 1)) &
+python eval_core.py -f results/ --batch_size 8
 
-    # wait
-
-    # No quality DPP
-    torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_interaction=-1.0
-
-    # Quality only DPP
-    # torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_interaction=0.0
-
-    # DPP@1.0 
-    # torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_interaction=1.0
-
-    # DPP@3.0
-    # torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_interaction=3.0
-
-    # DPP@10.0
-    # torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_interaction=10.0
-
-    torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_split=1.0 split_groups=True
-
-    torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_split=3.0 split_groups=True
-
-    torchrun --nproc_per_node=gpu main.py $COMMON dpp=True seed=$seed cat_temperature=$temp w_split=10.0 split_groups=True
-
-done
-
-echo "All experiments completed."

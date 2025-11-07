@@ -45,6 +45,7 @@ def get_tokenizer(config: Config, model: str):
             local_files_only=os.path.isdir(path),
         )
 
+    path = config.mdlm_tokenizer
     add_args = {"local_files_only": True} if os.path.isdir(path) else {}
     tokenizer = transformers.AutoTokenizer.from_pretrained(path, cache_dir=config.cache_dir, **add_args)
 

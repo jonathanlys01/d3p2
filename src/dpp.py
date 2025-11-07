@@ -8,7 +8,33 @@ from config import Cache, Config
 from utils import DistributedUtils
 
 
+# Transversal utils
+
+
+def group_cartesian(group_size: int, n_groups: int) -> torch.Tensor:
+    grids = torch.meshgrid(*[torch.arange(group_size) + i * group_size for i in range(n_groups)], indexing="ij")
+    stacked = torch.stack(grids, axis=-1)
+    reshaped = stacked.reshape(-1, n_groups)
+    return reshaped
+
+
 # DPP sampling utils
+
+
+def sample_dpp_logdet(
+    L: torch.Tensor,
+    k: int,
+    group_size: int,
+    cached_group_cartesian: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if cached_group_cartesian is None:
+        cached_group_cartesian = group_cartesian(group_size, k)
+    L_sub = L[cached_group_cartesian[:, :, None], cached_group_cartesian[:, None, :]]
+    sign, logdet = torch.linalg.slogdet(L_sub)
+    det = sign * torch.exp(logdet)
+    det[sign <= 0] = 0.0
+    sampled_index = torch.multinomial(det, num_samples=1).squeeze(-1)
+    return cached_group_cartesian[sampled_index]
 
 
 def _sample_dpp(L: np.ndarray, k: int) -> np.ndarray:
@@ -48,6 +74,14 @@ class SubsetSelector:
         self.device = "cuda"
 
         self.distributed_utils = DistributedUtils(config) if DistributedUtils.is_distributed() else None
+        self.distributed_mul = self.distributed_utils.world_size if self.distributed_utils else 1
+
+        self.cached_group_cartesian = None
+        if self.config.dpp:
+            self.cached_group_cartesian = group_cartesian(
+                self.config.group_size,
+                self.config.n_groups * self.distributed_mul,
+            ).to(self.device)
 
     def subsample(self, cache: Cache) -> torch.Tensor:
         if self.config.dpp:
@@ -91,30 +125,30 @@ class SubsetSelector:
         S = torch.matmul(flat, flat.t())  # [B, B] cosine similarity
         K = torch.zeros_like(S)  # placeholder
 
-        if self.config.split_groups:
-            g_size = self.config.group_size
-            expansion_factor = self.config.n_groups
-            if self.distributed_utils:
-                expansion_factor *= self.distributed_utils.world_size
-            mask = _generate_expansion_mask(g_size, expansion_factor).to(S.device)
-            K += self.config.w_split * mask
+        # if self.config.split_groups:
+        #     g_size = self.config.group_size
+        #     expansion_factor = self.config.n_groups
+        #     if self.distributed_utils:
+        #         expansion_factor *= self.distributed_utils.world_size
+        #     mask = _generate_expansion_mask(g_size, expansion_factor).to(S.device)
+        #     K += self.config.w_split * mask
 
         w_interaction = self.config.w_interaction
         K += S if w_interaction < 0 else w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
         K += 1e-3 * torch.eye(S.size(0), device=S.device)  # make the matrix PSD
 
-        n_elts_sampled = (
-            self.config.n_groups
-            if not self.distributed_utils
-            else self.config.n_groups * self.distributed_utils.world_size
-        )
+        n_elts_sampled = self.config.n_groups * self.distributed_mul
         try:
-            selected_indices = _sample_dpp(K.detach().cpu().numpy(), n_elts_sampled)
+            selected_indices = sample_dpp_logdet(
+                K,
+                n_elts_sampled,
+                self.config.group_size,
+                self.cached_group_cartesian,
+            )
         except Exception as e:
             print(f"DPP sampling failed with error: {e}. Falling back to greedy selection.")
             selected_indices = _fallback_greedy(K.detach().cpu().numpy(), n_elts_sampled)
-
-        selected_indices = torch.from_numpy(selected_indices).to(self.device)
+            selected_indices = torch.from_numpy(selected_indices).to(self.device)
 
         if self.distributed_utils:
             selected_indices = self.distributed_utils.dispatch_batch_indices(selected_indices)

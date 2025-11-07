@@ -24,7 +24,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class Perplexity(torch.nn.Module):
     def __init__(self, model_id: str):
         super().__init__()
-        models_args = process_model_args(model_id, CACHE_DIR)
+        models_args = process_model_args(model_id, cache_dir=CACHE_DIR)
 
         self.model = AutoModel.from_pretrained(**models_args)
         self.tokenizer = AutoTokenizer.from_pretrained(**models_args)

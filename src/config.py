@@ -108,12 +108,18 @@ class Config:
             object.__setattr__(self, "w_interaction", 0.0)
             object.__setattr__(self, "w_split", 0.0)
 
+    def __str__(self) -> str:
+        return OmegaConf.to_yaml(OmegaConf.structured(self))
+
 
 @dataclass
 class Cache:
     x: Optional[torch.Tensor] = None
     log_p_x0: Optional[torch.Tensor] = None
     embeddings: Optional[torch.Tensor] = None
+
+
+# TODO: move the structured json logic here
 
 
 if __name__ == "__main__":

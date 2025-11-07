@@ -7,8 +7,11 @@ mdlm_model_path: ${env_path_or:WORK,models/kuleshov-group/mdlm-owt/,/Brain/publi
 mdlm_tokenizer: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
 
 # LLADA
-llada_model_path: /Brain/public/models/GSAI-ML/LLaDA-8B-Base/
-llada_tokenizer: /Brain/public/models/GSAI-ML/LLaDA-8B-Base/
+# llada_model_path: /Brain/public/models/GSAI-ML/LLaDA-8B-Base/
+# llada_tokenizer: /Brain/public/models/GSAI-ML/LLaDA-8B-Base/
+
+llada_model_path: /Brain/public/models/GSAI-ML/LLaDA-8B-Instruct
+llada_tokenizer: /Brain/public/models/GSAI-ML/LLaDA-8B-Instruct/
 
 ppl_model_id: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
 cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,jinaai/jina-embeddings-v2-base-en}
