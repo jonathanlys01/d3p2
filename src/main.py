@@ -106,18 +106,16 @@ def main(config: Config):
 
 def _objective(trial: optuna.Trial, og_config: Config):
     w_interaction = trial.suggest_float("w_interaction", 0.0, 5.0)
-    det_temperature = trial.suggest_float("determinant_temperature", 0.1, 2.0)
 
     dict_config = asdict(og_config)
     dict_config["w_interaction"] = w_interaction
-    dict_config["determinant_temperature"] = det_temperature
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
     _bcast(True)  # sync before starting -> proceed
     _bcast(config)  # broadcast config to all workers
 
-    print(f"Trial {trial.number}: w_interaction={w_interaction}, det_temp={det_temperature}")
+    print(f"Trial {trial.number}: w_inter={w_interaction}")
 
     metrics = main(config)
 
@@ -151,28 +149,9 @@ if __name__ == "__main__":
             load_if_exists=True,
         )
 
-        if len(study.trials) == 0:
-            # quality only
-            study.enqueue_trial(
-                {
-                    "w_interaction": 0,
-                    "determinant_temperature": 1.0,
-                },
-            )
-            # argmax determinant
-            study.enqueue_trial(
-                {
-                    "w_interaction": og_config.w_interaction,
-                    "determinant_temperature": 0.0,
-                },
-            )
-            # original config
-            study.enqueue_trial(
-                {
-                    "w_interaction": og_config.w_interaction,
-                    "determinant_temperature": og_config.determinant_temperature,
-                },
-            )
+        if len(study.trials) == 0:  # enqueue some initial points (sweep)
+            for qual in [-1, 0.0, 0.1, 0.3, 1.0, 3.0]:
+                study.enqueue_trial({"w_interaction": qual})
 
         study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)
         _bcast(False)
