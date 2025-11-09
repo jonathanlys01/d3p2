@@ -106,18 +106,18 @@ def main(config: Config):
 
 def _objective(trial: optuna.Trial, og_config: Config):
     w_interaction = trial.suggest_float("w_interaction", 0.0, 5.0)
-    w_split = trial.suggest_float("w_split", 0.0, 5.0)
+    det_temperature = trial.suggest_float("determinant_temperature", 0.1, 2.0)
 
     dict_config = asdict(og_config)
     dict_config["w_interaction"] = w_interaction
-    dict_config["w_split"] = w_split
+    dict_config["determinant_temperature"] = det_temperature
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
     _bcast(True)  # sync before starting -> proceed
     _bcast(config)  # broadcast config to all workers
 
-    print(f"Trial {trial.number}: w_interaction={w_interaction}, w_split={w_split}")
+    print(f"Trial {trial.number}: w_interaction={w_interaction}, det_temp={det_temperature}")
 
     metrics = main(config)
 
@@ -152,7 +152,12 @@ if __name__ == "__main__":
         )
 
         if len(study.trials) == 0:
-            study.enqueue_trial({"w_interaction": og_config.w_interaction, "w_split": og_config.w_split})
+            study.enqueue_trial(
+                {
+                    "w_interaction": og_config.w_interaction,
+                    "determinant_temperature": og_config.determinant_temperature,
+                },
+            )
 
         study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)
         _bcast(False)

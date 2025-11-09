@@ -63,6 +63,7 @@ class Config:
     dpp: bool = True
     w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
     w_split: float = 0.0  # weight for split groups in DPP
+    determinant_temperature: float = 1.0
 
     subsample_start: int = 300
     subsample_end: int = 400

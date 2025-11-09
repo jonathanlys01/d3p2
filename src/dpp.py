@@ -26,12 +26,13 @@ def sample_dpp_logdet(
     k: int,
     group_size: int,
     cached_group_cartesian: torch.Tensor | None = None,
+    temperature: float = 1.0,
 ) -> torch.Tensor:
     if cached_group_cartesian is None:
         cached_group_cartesian = group_cartesian(group_size, k)
     L_sub = L[cached_group_cartesian[:, :, None], cached_group_cartesian[:, None, :]]
     sign, logdet = torch.linalg.slogdet(L_sub)
-    det = sign * torch.exp(logdet)
+    det = sign * torch.exp(logdet / temperature)
     det[sign <= 0] = 0.0
     sampled_index = torch.multinomial(det, num_samples=1).squeeze(-1)
     return cached_group_cartesian[sampled_index]
@@ -144,6 +145,7 @@ class SubsetSelector:
                 n_elts_sampled,
                 self.config.group_size,
                 self.cached_group_cartesian,
+                self.config.determinant_temperature,
             )
         except Exception as e:
             print(f"DPP sampling failed with error: {e}. Falling back to greedy selection.")
