@@ -32,6 +32,11 @@ def sample_dpp_logdet(
         cached_group_cartesian = group_cartesian(group_size, k)
     L_sub = L[cached_group_cartesian[:, :, None], cached_group_cartesian[:, None, :]]
     sign, logdet = torch.linalg.slogdet(L_sub)
+
+    if temperature <= 1e-3:  # argmax fallback
+        sampled_index = torch.argmax(logdet)
+        return cached_group_cartesian[sampled_index]
+
     det = sign * torch.exp(logdet / temperature)
     det[sign <= 0] = 0.0
     sampled_index = torch.multinomial(det, num_samples=1).squeeze(-1)

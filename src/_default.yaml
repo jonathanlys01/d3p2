@@ -25,6 +25,7 @@ n_runs: 8
 compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
+determinant_temperature: 1.0
 
 n_groups: 4
 group_size: 4
@@ -32,6 +33,6 @@ group_size: 4
 split_groups: true
 dpp: true
 w_interaction: 1.0
-w_split: 1.0
-subsample_start: 500
-subsample_end: 600
+w_split: 0.0
+subsample_start: 0
+subsample_end: 1024

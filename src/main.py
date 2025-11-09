@@ -152,6 +152,21 @@ if __name__ == "__main__":
         )
 
         if len(study.trials) == 0:
+            # quality only
+            study.enqueue_trial(
+                {
+                    "w_interaction": 0,
+                    "determinant_temperature": 1.0,
+                },
+            )
+            # argmax determinant
+            study.enqueue_trial(
+                {
+                    "w_interaction": og_config.w_interaction,
+                    "determinant_temperature": 0.0,
+                },
+            )
+            # original config
             study.enqueue_trial(
                 {
                     "w_interaction": og_config.w_interaction,
