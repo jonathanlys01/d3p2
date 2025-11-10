@@ -124,9 +124,9 @@ class Config:
 
 @dataclass
 class Cache:
-    x: Optional[torch.Tensor] = None
-    log_p_x0: Optional[torch.Tensor] = None
-    embeddings: Optional[torch.Tensor] = None
+    x: Optional["torch.Tensor"] = None
+    log_p_x0: Optional["torch.Tensor"] = None
+    embeddings: Optional["torch.Tensor"] = None
 
 
 # TODO: move the structured json logic here
