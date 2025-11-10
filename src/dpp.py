@@ -33,12 +33,15 @@ def sample_dpp_logdet(
     L_sub = L[cached_group_cartesian[:, :, None], cached_group_cartesian[:, None, :]]
     sign, logdet = torch.linalg.slogdet(L_sub)
 
-    if temperature <= 1e-3:  # argmax fallback
+    if temperature == 0:  # argmax fallback
         sampled_index = torch.argmax(logdet)
         return cached_group_cartesian[sampled_index]
 
-    det = sign * torch.exp(logdet / temperature)
-    det[sign <= 0] = 0.0
+    scaled_logits = logdet / temperature
+    max_logit = torch.max(scaled_logits)
+    scaled_logits = scaled_logits - max_logit  # for numerical stability
+    scaled_logits[sign <= 0] = -torch.inf  # invalidate non-positive definite
+    det = torch.exp(scaled_logits)
     sampled_index = torch.multinomial(det, num_samples=1).squeeze(-1)
     return cached_group_cartesian[sampled_index]
 
@@ -118,7 +121,7 @@ class SubsetSelector:
         scores = 1 - scores
 
         # sum_scores = scores.sum()
-        scores = torch.softmax(scores, dim=0)  # * sum_scores
+        # scores = torch.softmax(scores, dim=0)  # * sum_scores
 
         flat = cache.embeddings.float().reshape(B, -1)  # [B, L*E]
         flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)

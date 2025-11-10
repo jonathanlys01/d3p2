@@ -4,16 +4,17 @@
 #SBATCH --constraint=a100
 
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=d5p3
+#SBATCH --job-name=d6p4_argmax
 #SBATCH --output=slurm-logs/%j-%x.out
 #SBATCH --error=slurm-logs/%j-%x.err
-#SBATCH --time=00:20:00
-#SBATCH --qos=qos_gpu_a100-dev
+#SBATCH --time=20:00:00
+#SBATCH --qos=qos_gpu_a100-t3
+#SBATCH --signal=B:SIGTERM@120
 
 
 mkdir -p slurm-logs
