@@ -56,17 +56,20 @@ class Config:
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
 
+    # Source data
+    data_path: str = "path_to.bin"
+
     # subset selection
     n_groups: int = 2
     group_size: int = 2
     split_groups: bool = True
     dpp: bool = True
     w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
-    w_split: float = 0.0  # weight for split groups in DPP
-    determinant_temperature: float = 1.0
+    w_split: float = 0.0  # weight for split groups in DPP (deprecated, ignore)
+    determinant_temperature: float = 0.0  # temperature for DPP determinant sampling, 0 for argmax
 
-    subsample_start: int = 300
-    subsample_end: int = 400
+    subsample_start: int = 0
+    subsample_end: int = SEQUENCE_LENGTH
 
     # eval
     ppl_model_id: str = "gpt2"
