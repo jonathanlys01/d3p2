@@ -184,15 +184,17 @@ def main():
         "Why do cats purr when they are content?",
     ]
     samples = []
+    prompts = []
 
     for prompt in min_truth_qa:
         samples.extend(sampler.sample(prompt=prompt, cfg_scale=3.0))
+        prompts.extend([prompt] * cfg.batch_size)
 
     with open("llada_min_truth_qa_samples.txt", "w") as f:
         for i, sample in enumerate(samples):
             decoded_text = sampler.tokenizer.decode(sample.tolist(), skip_special_tokens=False)
-            decoded_text = decoded_text.split("</s>")[0]  # take content before EOS token
-            f.write(f"Prompt: {min_truth_qa[i]}\n")
+            decoded_text = decoded_text.split("<|endoftext|>")[0]  # take content before EOS token
+            f.write(f"Prompt: {prompts[i]}\n")
             f.write(f"Sample: {decoded_text}\n\n")
             f.write("=" * 80 + "\n\n")
 

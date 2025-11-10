@@ -165,7 +165,6 @@ class Evaluator:
 
         metrics = data.get("metrics", None)
         if not self.force and metrics is not None:
-            print(f"Metrics already exist in {file_path}, skipping evaluation.")
             return
 
         texts = data["text_samples"]
