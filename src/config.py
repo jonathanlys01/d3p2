@@ -1,10 +1,13 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-import torch
 from omegaconf import OmegaConf
+
+
+if TYPE_CHECKING:
+    import torch
 
 
 SEQUENCE_LENGTH = 1_024
