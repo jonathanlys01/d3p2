@@ -61,6 +61,7 @@ fixable = ["ALL"]
 "src/llada_ref/*" = ["ALL"]
 "src/mdlm_ref/*" = ["ALL"]
 "src/mauve/*" = ["ALL"]
+"src/jina_ref/*" = ["ALL"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2

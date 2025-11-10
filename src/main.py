@@ -150,7 +150,8 @@ if __name__ == "__main__":
         )
 
         if len(study.trials) == 0:  # enqueue some initial points (sweep)
-            for qual in [-1, 0.0, 0.1, 0.3, 1.0, 3.0]:
+            study.set_user_attr("og_config", asdict(og_config))
+            for qual in [0.0, 0.1, 0.3, 1.0, 3.0]:
                 study.enqueue_trial({"w_interaction": qual})
 
         study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)

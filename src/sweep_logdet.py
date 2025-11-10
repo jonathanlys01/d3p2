@@ -155,6 +155,8 @@ if __name__ == "__main__":
         )
 
         if len(study.trials) == 0:  # enqueue some initial points (sweep)
+            study.set_user_attr("og_config", asdict(og_config))
+
             for qual in [0.0, 0.5, 1.0, 3.0]:
                 for temp in [1e-5, 3e-3, 1.0]:
                     study.enqueue_trial({"w_interaction": qual, "determinant_temperature": temp})

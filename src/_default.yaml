@@ -17,7 +17,7 @@ mdlm_tokenizer: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
 # llada_tokenizer: /Brain/public/models/GSAI-ML/LLaDA-8B-Instruct/
 
 ppl_model_id: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
-cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,jinaai/jina-embeddings-v2-base-en}
+cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,/Brain/public/models/jinaai/jina-embeddings-v2-base-en/}
 
 data_path: ${env_path_or:WORK,projects/nanoGPT-but-looped/src/data/fineweb-edu/val.bin,/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val.bin}
 

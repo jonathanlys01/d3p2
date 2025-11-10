@@ -12,6 +12,7 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from config import CACHE_DIR
+from jina_ref.modeling_bert import JinaBertModel
 from utils import process_model_args
 
 
@@ -91,8 +92,8 @@ class Perplexity(torch.nn.Module):
 class AverageCosineSimilarity(torch.nn.Module):
     def __init__(self, model_id: str):
         super().__init__()
-        model_args = process_model_args(model_id, cache_dir=CACHE_DIR, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(**model_args)
+        model_args = process_model_args(model_id, cache_dir=CACHE_DIR)
+        self.model = JinaBertModel.from_pretrained(**model_args)
 
     def _forward(self, texts: list[str]) -> float:
         self.model.to(device)
