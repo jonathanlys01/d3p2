@@ -8,9 +8,6 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-import numpy as np
-import torch
-
 from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
 from utils import compile_model, print, seed_all
@@ -26,22 +23,6 @@ def save(text, config, uid):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
         json.dump(samples, f, indent=4)
-
-
-def _get_data(tokenizer, mask_index: int, batch_size: int, masking_ratio: float) -> torch.Tensor:
-    """Get initial data with specified masking ratio."""
-    path_to_bin = "/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val.bin"
-    data = np.memmap(path_to_bin, dtype=np.uint16, mode="r")
-    seq_length = 1024 - 2  # account for bos/eos tokens
-    start_idx = np.random.randint(0, len(data) - seq_length - 1, size=batch_size)
-    batch_data = np.stack([data[i : i + seq_length] for i in start_idx], axis=0)
-    bos_tensor = np.full((batch_size, 1), tokenizer.bos_token_id, dtype=np.int64)
-    eos_tensor = np.full((batch_size, 1), tokenizer.eos_token_id, dtype=np.int64)
-    batch_data = np.concatenate([bos_tensor, batch_data, eos_tensor], axis=1)
-    batch_data = torch.from_numpy(batch_data).to(torch.int64)
-    mask = torch.rand(batch_size, seq_length + 2) < masking_ratio
-    batch_data[mask] = mask_index
-    return batch_data
 
 
 def main():
@@ -62,8 +43,7 @@ def main():
 
     for i in range(config.n_runs):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
-        init_x = None  #  _get_data(model.tokenizer, model.mask_index, batch_size=config.batch_size, masking_ratio=0.9)
-        samples = model.sample(num_steps=config.num_steps, init_x=init_x)
+        samples = model.sample()
         texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
         save(texts, config, unique_id)
 

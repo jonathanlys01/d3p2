@@ -58,6 +58,7 @@ class Config:
 
     # Source data
     data_path: str = "path_to.bin"
+    initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
 
     # subset selection
     n_groups: int = 2
@@ -88,8 +89,8 @@ class Config:
         sys_args = OmegaConf.from_cli()
 
         # Priority:
-        # 1. Command-line config file (if any)
-        # 2. Command-line args
+        # 1. Command-line args
+        # 2. Command-line provided config file (if any)
         # 3. Default args
 
         if any(flag in sys_args for flag in CONFIG_FLAGS):
@@ -102,6 +103,8 @@ class Config:
 
         args = OmegaConf.merge(self_args, add_args)
         self.__dict__.update(args)
+
+        assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
 
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 

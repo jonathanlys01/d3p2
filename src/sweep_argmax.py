@@ -59,7 +59,7 @@ def generate_samples(config: Config):
     print(f"Experiment ID: {unique_id}, n_runs: {config.n_runs}")
 
     for _ in range(config.n_runs):
-        samples = model.sample(num_steps=config.num_steps)
+        samples = model.sample()
         texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
         _save(texts, config, unique_id)
 

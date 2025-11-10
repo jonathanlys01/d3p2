@@ -11,10 +11,11 @@ from tqdm import tqdm
 from config import Cache, Config
 from dpp import SubsetSelector
 from mdlm_ref.modeling_mdlm import MDLM, MDLMConfig
-from utils import get_tokenizer, process_model_args, sample_categorical
+from utils import get_initial_data, get_tokenizer, process_model_args, sample_categorical
 
 
 NEG_INFINITY = -1_000_000.0
+EPS = 1e-5
 torch.set_float32_matmul_precision("high")
 
 
@@ -128,19 +129,22 @@ class MDLMSampler(nn.Module):
     @torch.no_grad()
     def sample(
         self,
-        num_steps: Optional[int] = None,
-        eps: float = 1e-5,
         init_x: Optional[torch.Tensor] = None,
     ):
-        num_steps = num_steps or self.config.num_steps
+        num_steps = self.config.num_steps
 
         if init_x is None:
-            init_x = self._sample_prior(self.config.batch_size, self.model_length)
+            if self.config.initial_mask_ratio == 1.0:
+                print("Sampling from all-mask prior...")
+                init_x = self._sample_prior(self.config.batch_size, self.model_length)
+            else:
+                init_x = get_initial_data(self.tokenizer, self.mask_index, self.config)
+                print((init_x == self.mask_index).sum().item(), "tokens masked in the initial data")
 
         x = init_x.to(self.device)
 
-        timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
-        dt = (1 - eps) / num_steps
+        timesteps = torch.linspace(1, EPS, num_steps + 1, device=self.device)
+        dt = (1 - EPS) / num_steps
 
         disable = False
         if self.distributed_utils:

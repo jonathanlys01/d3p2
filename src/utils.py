@@ -2,6 +2,7 @@ import os
 from builtins import print as bprint
 
 import idr_torch
+import numpy as np
 import torch
 import transformers
 
@@ -223,3 +224,28 @@ class DistributedUtils:
         if not self.is_distributed():
             return
         torch.distributed.destroy_process_group()
+
+
+# Dataloading utilities
+
+
+def get_initial_data(tokenizer, mask_index: int, config: Config) -> torch.Tensor:
+    """Get initial data for sampling based on the initial_mask_ratio in config."""
+
+    path_to_bin = config.data_path
+    data = np.memmap(path_to_bin, dtype=np.uint16, mode="r")
+    seq_length = config.sequence_length - 2  # account for bos/eos tokens
+    start_idx = np.random.randint(0, len(data) - seq_length - 1, size=config.batch_size)
+    batch_data = np.stack([data[i : i + seq_length] for i in start_idx], axis=0)
+    bos_tensor = np.full((config.batch_size, 1), tokenizer.bos_token_id, dtype=np.int64)
+    eos_tensor = np.full((config.batch_size, 1), tokenizer.eos_token_id, dtype=np.int64)
+    batch_data = np.concatenate([bos_tensor, batch_data, eos_tensor], axis=1)
+    batch_data = torch.from_numpy(batch_data).to(torch.int64)
+    L = seq_length + 2
+    num_tokens_to_mask = int(config.initial_mask_ratio * L)
+    rand = torch.rand(config.batch_size, L)
+    _, indices = torch.topk(rand, k=num_tokens_to_mask, dim=1)  # B x num_tokens_to_mask
+    rows = torch.arange(config.batch_size).unsqueeze(1).expand(-1, num_tokens_to_mask)
+    batch_data[rows, indices] = mask_index
+
+    return batch_data

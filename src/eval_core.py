@@ -91,7 +91,8 @@ class Perplexity(torch.nn.Module):
 class AverageCosineSimilarity(torch.nn.Module):
     def __init__(self, model_id: str):
         super().__init__()
-        self.model = AutoModel.from_pretrained(model_id, cache_dir=CACHE_DIR, trust_remote_code=True)
+        model_args = process_model_args(model_id, cache_dir=CACHE_DIR, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(**model_args)
 
     def _forward(self, texts: list[str]) -> float:
         self.model.to(device)
