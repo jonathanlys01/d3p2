@@ -156,7 +156,7 @@ if __name__ == "__main__":
 
         if len(study.trials) == 0:  # enqueue some initial points (sweep)
             for qual in [0.0, 0.5, 1.0, 3.0]:
-                for temp in [0, 1e-5, 3e-3, 1.0]:  # 0 is only as a reference
+                for temp in [1e-5, 3e-3, 1.0]:
                     study.enqueue_trial({"w_interaction": qual, "determinant_temperature": temp})
 
         study.optimize(lambda trial: _objective(trial, og_config), n_trials=None)  # infinite (will be SIGTERM'ed)
