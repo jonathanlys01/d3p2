@@ -10,8 +10,8 @@
 #SBATCH --hint=nomultithread
 
 #SBATCH --job-name=d6p4_argmax
-#SBATCH --output=slurm-logs/%j-%x.out
-#SBATCH --error=slurm-logs/%j-%x.err
+#SBATCH --output=slurm-logs/%x-%j.out
+#SBATCH --error=slurm-logs/%x-%j.err
 #SBATCH --time=20:00:00
 #SBATCH --qos=qos_gpu_a100-t3
 #SBATCH --signal=B:SIGTERM@120

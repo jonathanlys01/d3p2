@@ -145,7 +145,7 @@ if __name__ == "__main__":
         study = optuna.create_study(
             directions=["minimize", "minimize"],
             study_name="d3p2_optuna_study",
-            storage="sqlite:///optuna_d3p2.db",
+            storage="sqlite:///optuna_d3p2_main.db",
             load_if_exists=True,
         )
 

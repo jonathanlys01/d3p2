@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=d5p3
+#SBATCH --job-name=derisk_volta
 #SBATCH --output=slurm-logs/%j-%x.out
 #SBATCH --error=slurm-logs/%j-%x.err
 #SBATCH --time=00:20:00

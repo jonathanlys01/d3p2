@@ -9,9 +9,9 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=d5p3
-#SBATCH --output=slurm-logs/%j-%x.out
-#SBATCH --error=slurm-logs/%j-%x.err
+#SBATCH --job-name=derisk_ampere
+#SBATCH --output=slurm-logs/%x-%j.out
+#SBATCH --error=slurm-logs/%x-%j.err
 #SBATCH --time=00:20:00
 #SBATCH --qos=qos_gpu_a100-dev
 
