@@ -154,7 +154,7 @@ if __name__ == "__main__":
             for qual in [0.0, 0.1, 0.3, 1.0, 3.0]:
                 study.enqueue_trial({"w_interaction": qual})
 
-        study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)
+        study.optimize(lambda trial: _objective(trial, og_config), n_trials=200)
         _bcast(False)
 
         dist.destroy_process_group()

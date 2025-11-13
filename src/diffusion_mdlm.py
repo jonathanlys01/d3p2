@@ -135,11 +135,9 @@ class MDLMSampler(nn.Module):
 
         if init_x is None:
             if self.config.initial_mask_ratio == 1.0:
-                print("Sampling from all-mask prior...")
                 init_x = self._sample_prior(self.config.batch_size, self.model_length)
             else:
                 init_x = get_initial_data(self.tokenizer, self.mask_index, self.config)
-                print((init_x == self.mask_index).sum().item(), "tokens masked in the initial data")
 
         x = init_x.to(self.device)
 
