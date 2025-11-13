@@ -13,6 +13,8 @@ import idr_torch
 import optuna
 import torch
 import torch.distributed as dist
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 
 from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
@@ -147,10 +149,12 @@ if __name__ == "__main__":
     is_master = idr_torch.is_master
 
     if is_master:
+        storage = JournalStorage(JournalFileBackend(f"optuna_{SWEEP_NAME}.log"))
+
         study = optuna.create_study(
             directions=["minimize", "minimize"],
             study_name=SWEEP_NAME,
-            storage=f"sqlite:///optuna_{SWEEP_NAME}.db",
+            storage=storage,
             load_if_exists=True,
         )
 

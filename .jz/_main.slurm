@@ -29,7 +29,7 @@ set -x
 
 cd $WORK/projects/d3p2/src
 
-srun python main.py --config=_default.yaml
+srun python sweep_main.py --config=_default.yaml
 
 
 echo "Job ended at $(date)"

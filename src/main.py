@@ -105,7 +105,7 @@ def main(config: Config):
 
 
 def _objective(trial: optuna.Trial, og_config: Config):
-    w_interaction = trial.suggest_float("w_interaction", 0.0, 5.0)
+    w_interaction = trial.suggest_float("w_interaction", 0.0, 8.0)
 
     dict_config = asdict(og_config)
     dict_config["w_interaction"] = w_interaction

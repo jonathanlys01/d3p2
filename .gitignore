@@ -12,3 +12,6 @@ wheels/
 
 # Optuna db
 *.db
+
+# Log files
+*.log 

@@ -22,9 +22,6 @@ from eval_core import Evaluator
 from utils import compile_model, print, seed_all
 
 
-SWEEP_NAME = "d3p2_argmax_optuna_study"
-
-
 def _bcast(obj):
     """Broadcast a single Python object from rank 0; return it on all ranks."""
     if not dist.is_available() or not dist.is_initialized():
@@ -114,7 +111,6 @@ def _objective(trial: optuna.Trial, og_config: Config):
 
     dict_config = asdict(og_config)
     dict_config["w_interaction"] = w_interaction
-    dict_config["determinant_temperature"] = 0.0
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
@@ -148,22 +144,21 @@ if __name__ == "__main__":
     is_master = idr_torch.is_master
 
     if is_master:
-        storage = JournalStorage(JournalFileBackend(f"optuna_{SWEEP_NAME}.log"))
+        storage = JournalStorage(JournalFileBackend("optuna_d3p2_main.log"))
 
         study = optuna.create_study(
             directions=["minimize", "minimize"],
-            study_name=SWEEP_NAME,
+            study_name="d3p2_optuna_study",
             storage=storage,
             load_if_exists=True,
         )
 
         if len(study.trials) == 0:  # enqueue some initial points (sweep)
             study.set_user_attr("og_config", asdict(og_config))
-
-            for qual in [0.0, 0.3, 1.0, 3.0]:
+            for qual in [0.0, 0.1, 0.3, 1.0, 3.0]:
                 study.enqueue_trial({"w_interaction": qual})
 
-        study.optimize(lambda trial: _objective(trial, og_config), n_trials=None)  # infinite (will be SIGTERM'ed)
+        study.optimize(lambda trial: _objective(trial, og_config), n_trials=200)
         _bcast(False)
 
         dist.destroy_process_group()
