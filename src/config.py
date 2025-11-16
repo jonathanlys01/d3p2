@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Optional
 
 from omegaconf import OmegaConf
 
+from subsample import __avail__
+
 
 if TYPE_CHECKING:
     import torch
@@ -64,6 +66,9 @@ class Config:
     initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
 
     # subset selection
+    method: str = "base"  # subset selection method
+    transversal: bool = False  # use transversal sampling
+
     n_groups: int = 2
     group_size: int = 2
     split_groups: bool = True
@@ -117,6 +122,8 @@ class Config:
         if self.dpp is False:
             object.__setattr__(self, "w_interaction", 0.0)
             object.__setattr__(self, "w_split", 0.0)
+
+        assert self.method in __avail__, f"Method {self.method} not in available methods: {__avail__}"
 
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))
