@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -76,7 +76,9 @@ class Config:
     w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
     w_split: float = 0.0  # weight for split groups in DPP (deprecated, ignore)
     determinant_temperature: float = 0.0  # temperature for DPP determinant sampling, 0 for argmax
+    subsample_kwargs: dict = field(default_factory=dict)
 
+    # windowing
     subsample_start: int = 0
     subsample_end: int = SEQUENCE_LENGTH
 
@@ -118,10 +120,6 @@ class Config:
 
         if self.n_runs == 1:
             object.__setattr__(self, "interactive", True)
-
-        if self.dpp is False:
-            object.__setattr__(self, "w_interaction", 0.0)
-            object.__setattr__(self, "w_split", 0.0)
 
         assert self.method in __avail__, f"Method {self.method} not in available methods: {__avail__}"
 
