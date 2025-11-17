@@ -153,6 +153,12 @@ def multi_map_greedy_full_explore(
 # DPP/Random subset selection
 
 
+def _compute_rbf(flat: torch.Tensor, gamma: float) -> torch.Tensor:
+    pairwise_dists = torch.cdist(flat, flat, p=2) ** 2
+    S = torch.exp(-gamma * pairwise_dists)
+    return S
+
+
 class SubsetSelector:
     def __init__(self, config: Config):
         self.config = config
@@ -207,7 +213,9 @@ class SubsetSelector:
             if flat is None and scores is None:
                 return self.distributed_utils.dispatch_batch_indices(None)
 
-        S = torch.matmul(flat, flat.t())  # [B, B] cosine similarity
+        # S = torch.matmul(flat, flat.t())  # [B, B] cosine similarity
+        # rbf kernel
+        S = _compute_rbf(flat, self.config.rbf_gamma)
         K = torch.zeros_like(S)  # placeholder
 
         # if self.config.split_groups:
@@ -224,17 +232,17 @@ class SubsetSelector:
 
         n_elts_sampled = self.config.n_groups * self.distributed_mul
         try:
-            # selected_indices = sample_dpp_logdet(
-            #     K,
-            #     n_elts_sampled,
-            #     self.config.group_size,
-            #     self.cached_group_cartesian,
-            #     self.config.determinant_temperature,
-            # )
-            selected_indices = multi_map_greedy_full_explore(
+            selected_indices = sample_dpp_logdet(
                 K,
                 n_elts_sampled,
+                self.config.group_size,
+                self.cached_group_cartesian,
+                self.config.determinant_temperature,
             )
+            # selected_indices = multi_map_greedy_full_explore(
+            #     K,
+            #     n_elts_sampled,
+            # )
         except Exception as e:
             print(f"DPP sampling failed with error: {e}. Falling back to greedy selection.")
             selected_indices = _fallback_greedy(K.detach().cpu().numpy(), n_elts_sampled)

@@ -7,4 +7,4 @@ ROOT=$JOME/d3p2/src
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu main.py config=_default.yaml $1
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu sweep_rbf.py config=_default.yaml

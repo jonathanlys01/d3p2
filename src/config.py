@@ -1,12 +1,12 @@
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from omegaconf import OmegaConf
 
-from subsample import __avail__
 
+# TODO: fix import from subsample module here
 
 if TYPE_CHECKING:
     import torch
@@ -76,7 +76,8 @@ class Config:
     w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
     w_split: float = 0.0  # weight for split groups in DPP (deprecated, ignore)
     determinant_temperature: float = 0.0  # temperature for DPP determinant sampling, 0 for argmax
-    subsample_kwargs: dict = field(default_factory=dict)
+    rbf_gamma: float = 0.5  # RBF kernel gamma parameter
+    # subsample_kwargs: dict = field(default_factory=dict) # TODO: invistigate why causes issues with OmegaConf DictConf
 
     # windowing
     subsample_start: int = 0
@@ -120,8 +121,6 @@ class Config:
 
         if self.n_runs == 1:
             object.__setattr__(self, "interactive", True)
-
-        assert self.method in __avail__, f"Method {self.method} not in available methods: {__avail__}"
 
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))

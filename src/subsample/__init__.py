@@ -1,8 +1,16 @@
-from pathlib import Path
+from .base import BaseSubsetSelector
+from .greedy_map import GreedyMAP
 
 
-__avail__ = [
-    p.stem
-    for p in Path(__file__).resolve().parent.iterdir()
-    if p.is_file() and p.suffix == ".py" and p.stem != "__init__"
-]
+AVAIL = {
+    "base": BaseSubsetSelector,
+    "greedy_map": GreedyMAP,
+}
+
+
+def get_subsample_selector(name: str, config):
+    name = name.lower()
+    selector = AVAIL.get(name)
+    if selector is None:
+        raise ValueError(f"Unknown subset selector: {name}")
+    return selector(config)
