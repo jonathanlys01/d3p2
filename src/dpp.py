@@ -181,13 +181,6 @@ class SubsetSelector:
         # Random subsampling
         B = cache.log_p_x0.size(0)
 
-        if self.config.split_groups:
-            gr_size = self.config.group_size
-            n_groups = self.config.n_groups
-            indices = np.random.randint(0, gr_size, size=n_groups) + np.arange(n_groups) * gr_size
-
-            return torch.from_numpy(indices).to(self.device)
-
         return torch.tensor(random.sample(range(B), self.config.n_groups), device=self.device, dtype=torch.int64)
 
     def _apply_dpp(self, cache: Cache) -> torch.Tensor | None:

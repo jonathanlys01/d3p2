@@ -22,6 +22,8 @@ from eval_core import Evaluator
 from utils import compile_model, print, seed_all
 
 
+# TODO: unify SWEEP_NAME, maybe pass as arg
+# change parameters to sweep
 SWEEP_NAME = "d3p2_rbf_optuna_study"
 
 

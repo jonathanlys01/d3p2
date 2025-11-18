@@ -1,22 +1,39 @@
 import torch
-from base import BaseSubsetSelector, compute_kernel
 
-from config import Config
+from config import Cache
+from subsample.common import BaseSubsetSelector
+
+
+epsilon = 1e-10  # numerical stability constant
 
 
 class GreedyMAP(BaseSubsetSelector):
-    def _transversal(self, cache: Config):
-        kernel = compute_kernel(cache, self.config)
-        return multi_map_greedy_full_explore(kernel, self.config.n_groups)
+    def _transversal(self, cache: Cache):
+        if (L := self.compute_kernel(cache, self.config)) is None:
+            return None
 
-    def _non_transversal(self, cache: Config):
-        raise NotImplementedError
+        item_size = L.size(0)  # N
+        item_to_group_id = torch.arange(
+            self.config.n_groups,
+            device=L.device,
+        ).repeat_interleave(item_size // self.config.n_groups)
+
+        return _multi_map_greedy_full_explore(L, self.config.n_groups, item_to_group_id)
+
+    def _non_transversal(self, cache: Cache):
+        if (L := self.compute_kernel(cache, self.config)) is None:
+            return None
+
+        item_size = L.size(0)  # N
+        item_to_group_id = torch.arange(item_size, device=L.device)
+
+        return _multi_map_greedy_full_explore(L, self.config.n_groups, item_to_group_id)
 
 
-def multi_map_greedy_full_explore(
+def _multi_map_greedy_full_explore(
     kernel_tensor: torch.Tensor,
     num_groups: int,
-    epsilon: float = 1e-10,
+    item_to_group_id: torch.Tensor,
 ) -> torch.Tensor:
     """
     Runs `item_size` (N) parallel greedy DPP selections, each of length `num_groups` (K).
@@ -25,13 +42,8 @@ def multi_map_greedy_full_explore(
     """
     device, dtype = kernel_tensor.device, kernel_tensor.dtype
     item_size = kernel_tensor.size(0)  # N
-    batch_size = item_size  # B = N (THIS IS THE CHANGE)
+    batch_size = item_size  # B = N
     max_length = num_groups  # K
-
-    item_to_group_id = torch.arange(
-        num_groups,
-        device=device,
-    ).repeat_interleave(item_size // num_groups)
 
     # State tensors
     cis = torch.zeros((batch_size, max_length, item_size), dtype=dtype, device=device)

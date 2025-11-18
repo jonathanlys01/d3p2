@@ -110,6 +110,8 @@ def sample_categorical(categorical_probs: torch.Tensor, expand: int = None) -> t
 
 
 class DistributedUtils:
+    """Utility class for distributed inference and data gathering."""
+
     @classmethod
     def is_distributed(self) -> bool:
         return idr_torch.world_size > 1
@@ -131,7 +133,6 @@ class DistributedUtils:
             (self.world_size * self.cfg.batch_size, self.cfg.embedding_dim * self.cfg.sequence_length),
             device="cuda",
         )
-        # self.embeddings = torch.zeros((self.world_size * self.cfg.batch_size, self.cfg.embedding_dim), device="cuda")
         self.qualities = torch.zeros((self.world_size * self.cfg.batch_size,), device="cuda")
 
     def all_gather(
@@ -150,6 +151,21 @@ class DistributedUtils:
             return None, None
 
         return self.embeddings, self.qualities
+
+    def all_gather_scores(
+        self,
+        local_scores: torch.Tensor,
+    ) -> torch.Tensor | None:
+        assert self.is_distributed(), "all_gather_scores can only be called in distributed mode"
+        assert self.qualities.is_cuda, "Placeholder must be on CUDA device"
+        assert local_scores.is_cuda, "Local scores must be on CUDA device"
+
+        torch.distributed.all_gather_into_tensor(self.qualities, local_scores)
+
+        if self.rank != 0:
+            return None
+
+        return self.qualities
 
     def dispatch_sequences(self, seq_ids: torch.Tensor | None, last: bool = False) -> torch.Tensor:
         assert self.is_distributed(), "dispatch_sequences can only be called in distributed mode"

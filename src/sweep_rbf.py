@@ -102,6 +102,7 @@ def eval_samples(unique_id: str, config: Config):
 
 
 def main(config: Config):
+    torch.cuda.empty_cache()
     unique_id, master = generate_samples(config)
     if not master:
         return None
