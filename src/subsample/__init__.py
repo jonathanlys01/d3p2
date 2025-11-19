@@ -1,34 +1,36 @@
+from __future__ import annotations  # Solves type hint evaluation timing
+
 import importlib
 from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from base import BaseSelector
+    from beam import DiverseBeamSearch, GreedyBeamSearch
+    from dpp_selector import DPP
+    from exhaustive import Exhaustive
+    from greedy_map import GreedyMAP
+    from random_selector import RandomSelection
+
     from config import Config
 
-    from .dpp import DPP
-    from .greedy_map import GreedyMAP
-    from .mmr import MMR
-    from .monte_carlo import DiverseBeamSearch, MCSearch
-    from .random import RandomSelection
-
 AVAIL = {
-    "greedy_map": (".greedy_map", "GreedyMAP"),
-    "monte_carlo": (".monte_carlo", "MCSearch"),
-    "diverse_beam_search": (".monte_carlo", "DiverseBeamSearch"),
-    "dpp": (".dpp", "DPP"),
-    "mmr": (".mmr", "MMR"),
-    "random": (".random", "RandomSelection"),
+    "dpp": ("dpp_selector", "DPP"),
+    "exhaustive": ("exhaustive", "Exhaustive"),
+    "greedy_map": ("greedy_map", "GreedyMAP"),
+    "greedy_beam": ("beam", "GreedyBeamSearch"),
+    "diverse_beam": ("beam", "DiverseBeamSearch"),
+    "random": ("random_selector", "RandomSelection"),
 }
 
 
 def get_subsample_selector(
-    name: str,
-    config: "Config",
-) -> "GreedyMAP" | "MCSearch" | "DiverseBeamSearch" | "DPP" | "MMR" | "RandomSelection":
+    config: Config,
+) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | RandomSelection":
     """
     Factory function to dynamically load and instantiate a subset selector.
     """
-    name = name.lower()
+    name = config.method.lower()
     import_info = AVAIL.get(name)
 
     if import_info is None:
@@ -37,7 +39,10 @@ def get_subsample_selector(
     module_path, class_name = import_info
 
     try:
-        module = importlib.import_module(module_path, package=__name__)
+        # Note: package=__name__ is only needed for relative imports (starting with .)
+        # Since your AVAIL dict uses absolute paths ("subsample.dpp"), you can remove it
+        # or ensure your AVAIL paths are relative (e.g., ".dpp").
+        module = importlib.import_module(module_path)
         selector_class = getattr(module, class_name)
 
     except ImportError as e:

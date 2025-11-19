@@ -1,12 +1,10 @@
-from abc import ABC
-
 import torch
 
-from _config import Cache, Config  # TODO: fix this
+from config import Cache, Config
 from utils import DistributedUtils
 
 
-class BaseSubsetSelector(ABC):
+class BaseSelector:
     def __init__(self, config: Config):
         self.config = config
         self.device = "cuda"
@@ -14,6 +12,7 @@ class BaseSubsetSelector(ABC):
         self.distributed_utils = DistributedUtils(config) if DistributedUtils.is_distributed() else None
         self.distributed_mul = self.distributed_utils.world_size if self.distributed_utils else 1
 
+    @torch.no_grad()
     def subsample(self, cache: Cache):
         ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
 
@@ -24,6 +23,7 @@ class BaseSubsetSelector(ABC):
 
         return ret
 
+    @torch.no_grad()
     def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
         B = cache.embeddings.size(0)
 
@@ -55,8 +55,15 @@ class BaseSubsetSelector(ABC):
             mask = _generate_expansion_mask(g_size, expansion_factor).to(K.device)
             K += self.config._w_split * mask
 
+        if (power := self.config._kernel_power) != 1:
+            eigenvalues, eigenvectors = torch.linalg.eigh(K)
+            eigenvalues_modded = torch.clamp(eigenvalues**power, min=1e-3)
+            K_modded = eigenvectors @ torch.diag(eigenvalues_modded) @ eigenvectors.T
+            K = (K_modded + K_modded.T) / 2  # ensure symmetry
+
         return K
 
+    @torch.no_grad()
     def compute_scores(self, cache: Cache) -> torch.Tensor:
         """Compute scores based on entropy of predicted distribution."""
         z = cache.log_p_x0.float()
@@ -70,19 +77,6 @@ class BaseSubsetSelector(ABC):
             scores = self.distributed_utils.all_gather_scores(scores)
 
         return scores
-
-    def sample_from_logits(self, logits: torch.Tensor, temperature: float) -> torch.Tensor:
-        if temperature == 0:  # argmax for temperature 0
-            indices = torch.argmax(logits, dim=-1)
-        else:
-            scaled_logits = logits / temperature
-            # max trick for numerical stability
-            max_logit = torch.max(scaled_logits, dim=-1, keepdim=True).values
-            scaled_logits = scaled_logits - max_logit
-            probs = torch.exp(scaled_logits)
-            probs = probs / probs.sum(dim=-1, keepdim=True)
-            indices = torch.multinomial(probs, num_samples=1).squeeze(-1)
-        return indices
 
     def _transversal(self, cache: Cache) -> torch.Tensor:
         raise NotImplementedError

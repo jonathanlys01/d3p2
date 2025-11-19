@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Optional
 from omegaconf import OmegaConf
 
 
-# TODO: fix import from subsample module here
-
 if TYPE_CHECKING:
     import torch
+
+AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "random"]
 
 
 SEQUENCE_LENGTH = 1_024
@@ -25,33 +25,22 @@ def env_path_or(env_name: str, suffix: str, fallback: str) -> str:
     return str(Path(val) / suffix) if val else fallback
 
 
-OmegaConf.register_new_resolver("env_path_or", env_path_or, use_cache=True)
+OmegaConf.register_new_resolver("env_path_or", env_path_or, replace=True)
 
 
 @dataclass(frozen=True)
 class Config:
-    """
-    Configuration for D3P2 experiments.
-    Will be overridden by command-line arguments at initialization.
-    """
+    disable_sys_args: bool = False
 
     @property
     def sequence_length(self) -> int:
         return SEQUENCE_LENGTH
 
-    @property
-    def embedding_dim(self) -> int:
-        return HIDDEN_SIZE
-
-    disable_sys_args: bool = False
+    embedding_dim: int = HIDDEN_SIZE  # Change when using different model
 
     seed: int = 0
     n_runs: int = 16
-    compile_model: bool = False
-
-    # sampling
-    num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
-    cat_temperature: float = 1.0
+    compile_model: bool = True
 
     # MDLM
     mdlm_model_path: str = "kuleshov-group/mdlm-owt"
@@ -61,27 +50,35 @@ class Config:
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
 
+    # sampling
+    num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
+    cat_temperature: float = 1.0
+
     # Source data
     data_path: str = "path_to.bin"
     initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
 
-    # subset selection
+    # Subset selection ###################################################################################
     method: str = "base"  # subset selection method
     transversal: bool = False  # use transversal sampling
 
-    n_groups: int = 2
     group_size: int = 2
-    split_groups: bool = True
-    dpp: bool = True
-    w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
-    w_split: float = 0.0  # weight for split groups in DPP (deprecated, ignore)
-    determinant_temperature: float = 0.0  # temperature for DPP determinant sampling, 0 for argmax
-    rbf_gamma: float = 0.5  # RBF kernel gamma parameter
-    # subsample_kwargs: dict = field(default_factory=dict) # TODO: invistigate why causes issues with OmegaConf DictConf
+    n_groups: int = 2
+
+    # Subsample parameters (specific to each method)
+
+    _kernel_type: str = "rbf"  # type of kernel to use in DPP
+    _kernel_power: int = 2  # power for eigenvalue modulation
+    _w_interaction: float = 0.0  # weight for diversity term in DPP, -1 for no quality term
+    _w_split: float = 0.0  # weight for split groups in DPP
+    _rbf_gamma: float = 1  # RBF kernel gamma parameter (when using RBF kernel)
+    _temperature: float = 0.0  # temperature for any sampling
+    _diversity_alpha: float = 0.0  # diversity coefficient for diverse beam search
+    ######################################################################################################
 
     # windowing
-    subsample_start: int = 0
-    subsample_end: int = SEQUENCE_LENGTH
+    subsample_start: int = -1
+    subsample_end: int = 2**31 - 1
 
     # eval
     ppl_model_id: str = "gpt2"
@@ -122,6 +119,8 @@ class Config:
         if self.n_runs == 1:
             object.__setattr__(self, "interactive", True)
 
+        assert self.method in AVAIL, f"Method {self.method} not recognized. Available methods: {list(AVAIL)}"
+
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))
 
@@ -131,9 +130,6 @@ class Cache:
     x: Optional["torch.Tensor"] = None
     log_p_x0: Optional["torch.Tensor"] = None
     embeddings: Optional["torch.Tensor"] = None
-
-
-# TODO: move the structured json logic here
 
 
 if __name__ == "__main__":

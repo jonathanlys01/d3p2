@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Optional
 
 from omegaconf import OmegaConf
 
-from subsample import AVAIL
 
+# TODO: fix import from subsample module here
 
 if TYPE_CHECKING:
     import torch
@@ -30,17 +30,28 @@ OmegaConf.register_new_resolver("env_path_or", env_path_or, use_cache=True)
 
 @dataclass(frozen=True)
 class Config:
-    disable_sys_args: bool = False
+    """
+    Configuration for D3P2 experiments.
+    Will be overridden by command-line arguments at initialization.
+    """
 
     @property
     def sequence_length(self) -> int:
         return SEQUENCE_LENGTH
 
-    embedding_dim: int = HIDDEN_SIZE  # Change when using different model
+    @property
+    def embedding_dim(self) -> int:
+        return HIDDEN_SIZE
+
+    disable_sys_args: bool = False
 
     seed: int = 0
     n_runs: int = 16
-    compile_model: bool = True
+    compile_model: bool = False
+
+    # sampling
+    num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
+    cat_temperature: float = 1.0
 
     # MDLM
     mdlm_model_path: str = "kuleshov-group/mdlm-owt"
@@ -50,34 +61,27 @@ class Config:
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
 
-    # sampling
-    num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
-    cat_temperature: float = 1.0
-
     # Source data
     data_path: str = "path_to.bin"
     initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
 
-    # Subset selection ###################################################################################
+    # subset selection
     method: str = "base"  # subset selection method
     transversal: bool = False  # use transversal sampling
 
-    group_size: int = 2
     n_groups: int = 2
-
-    # Subsample parameters (specific to each method)
-
-    _kernel_type: str = "rbf"  # type of kernel to use in DPP
-    _w_interaction: float = 0.0  # weight for diversity term in DPP, -1 for no quality term
-    _w_split: float = 0.0  # weight for split groups in DPP
-    _rbf_gamma: float = 1  # RBF kernel gamma parameter (when using RBF kernel)
-    _temperature: float = 0.0  # temperature for any sampling
-    _diversity_alpha: float = 0.0  # diversity coefficient for diverse beam search
-    ######################################################################################################
+    group_size: int = 2
+    split_groups: bool = True
+    dpp: bool = True
+    w_interaction: float = 0.1  # weight for diversity term in DPP, -1 for no quality term
+    w_split: float = 0.0  # weight for split groups in DPP (deprecated, ignore)
+    determinant_temperature: float = 0.0  # temperature for DPP determinant sampling, 0 for argmax
+    rbf_gamma: float = 0.5  # RBF kernel gamma parameter
+    # subsample_kwargs: dict = field(default_factory=dict) # TODO: invistigate why causes issues with OmegaConf DictConf
 
     # windowing
-    subsample_start: int = -1
-    subsample_end: int = 2**31 - 1
+    subsample_start: int = 0
+    subsample_end: int = SEQUENCE_LENGTH
 
     # eval
     ppl_model_id: str = "gpt2"
@@ -118,8 +122,6 @@ class Config:
         if self.n_runs == 1:
             object.__setattr__(self, "interactive", True)
 
-        assert self.method in AVAIL, f"Method {self.method} not recognized. Available methods: {list(AVAIL.keys())}"
-
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))
 
@@ -129,6 +131,9 @@ class Cache:
     x: Optional["torch.Tensor"] = None
     log_p_x0: Optional["torch.Tensor"] = None
     embeddings: Optional["torch.Tensor"] = None
+
+
+# TODO: move the structured json logic here
 
 
 if __name__ == "__main__":

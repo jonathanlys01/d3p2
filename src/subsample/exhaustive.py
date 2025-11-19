@@ -1,10 +1,10 @@
 import torch
 
 from config import Cache, Config
-from subsample.common import BaseSubsetSelector
+from subsample.base import BaseSelector
 
 
-class Exhaustive(BaseSubsetSelector):
+class Exhaustive(BaseSelector):
     """Exhaustive Subset Selector, a special DPP variant"""
 
     def __init__(self, config: Config):
@@ -14,12 +14,12 @@ class Exhaustive(BaseSubsetSelector):
         if self.config.transversal:
             self.cached_group_cartesian = _group_cartesian(
                 group_size=self.config.group_size,
-                n_groups=self.config.n_groups,
+                n_groups=self.config.n_groups * self.distributed_mul,
             ).to(self.device)
 
     def _transversal(self, cache: Cache):
         """Transversal Exhaustive Search: argmax/sampling over all transversal combinations."""
-        if (L := self.compute_kernel(cache, self.config)) is None:
+        if (L := self.compute_kernel(cache)) is None:
             return None
 
         L_sub = L[self.cached_group_cartesian[:, :, None], self.cached_group_cartesian[:, None, :]]

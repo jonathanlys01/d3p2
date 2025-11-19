@@ -1,33 +1,33 @@
 import torch
 
 from config import Cache
-from subsample.common import BaseSubsetSelector
+from subsample.base import BaseSelector
 
 
 epsilon = 1e-10  # numerical stability constant
 
 
-class GreedyMAP(BaseSubsetSelector):
+class GreedyMAP(BaseSelector):
     def _transversal(self, cache: Cache):
-        if (L := self.compute_kernel(cache, self.config)) is None:
+        if (L := self.compute_kernel(cache)) is None:
             return None
 
         item_size = L.size(0)  # N
         item_to_group_id = torch.arange(
-            self.config.n_groups,
+            self.config.n_groups * self.distributed_mul,
             device=L.device,
-        ).repeat_interleave(item_size // self.config.n_groups)
+        ).repeat_interleave(item_size // (self.config.n_groups * self.distributed_mul))
 
-        return _multi_map_greedy_full_explore(L, self.config.n_groups, item_to_group_id)
+        return _multi_map_greedy_full_explore(L, self.config.n_groups * self.distributed_mul, item_to_group_id)
 
     def _non_transversal(self, cache: Cache):
-        if (L := self.compute_kernel(cache, self.config)) is None:
+        if (L := self.compute_kernel(cache)) is None:
             return None
 
         item_size = L.size(0)  # N
         item_to_group_id = torch.arange(item_size, device=L.device)
 
-        return _multi_map_greedy_full_explore(L, self.config.n_groups, item_to_group_id)
+        return _multi_map_greedy_full_explore(L, self.config.n_groups * self.distributed_mul, item_to_group_id)
 
 
 def _multi_map_greedy_full_explore(

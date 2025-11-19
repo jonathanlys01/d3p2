@@ -3,10 +3,10 @@ import torch
 from dppy.finite_dpps import FiniteDPP
 
 from config import Cache
-from subsample.common import BaseSubsetSelector
+from subsample.base import BaseSelector
 
 
-class DPP(BaseSubsetSelector):
+class DPP(BaseSelector):
     """Determinantal Point Process Subset Selector"""
 
     def _transversal(self, cache: Cache):
@@ -14,11 +14,11 @@ class DPP(BaseSubsetSelector):
 
     def _non_transversal(self, cache: Cache):
         """Unconstrained DPP Sampling."""
-        if (L := self.compute_kernel(cache, self.config)) is None:
+        if (L := self.compute_kernel(cache)) is None:
             return None
 
         L = L.cpu().numpy()
-        k = self.config.n_groups
+        k = self.config.n_groups * self.distributed_mul
 
         try:
             selected_indices = _sample_dpp(L, k)

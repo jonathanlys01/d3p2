@@ -2,10 +2,10 @@ import numpy as np
 import torch
 
 from config import Cache
-from subsample.common import BaseSubsetSelector
+from subsample.base import BaseSelector
 
 
-class RandomSelection(BaseSubsetSelector):
+class RandomSelection(BaseSelector):
     """Random Subset Selector"""
 
     def _transversal(self, cache: Cache):  # noqa: ARG002
@@ -20,5 +20,6 @@ class RandomSelection(BaseSubsetSelector):
         if self.distributed_utils and self.distributed_utils.rank != 0:
             return None
         B = self.config.n_groups * self.config.group_size * self.distributed_mul
-        indices = np.random.choice(B, self.config.n_groups * self.distributed_mul, replace=False)
+        n_groups = self.config.n_groups * self.distributed_mul
+        indices = np.random.choice(B, n_groups, replace=False)
         return torch.from_numpy(indices).to(self.device)

@@ -1,12 +1,17 @@
 import os
+import warnings
 from builtins import print as bprint
 
 import idr_torch
 import numpy as np
 import torch
 import transformers
+from idr_torch import IdrTorchWarning
 
 from config import Config
+
+
+warnings.filterwarnings("ignore", category=IdrTorchWarning)  # ignore idr_torch warnings
 
 
 def print(*args, **kwargs):
@@ -166,6 +171,21 @@ class DistributedUtils:
             return None
 
         return self.qualities
+
+    def all_gather_embeddings(
+        self,
+        local_embeddings: torch.Tensor,
+    ) -> torch.Tensor | None:
+        assert self.is_distributed(), "all_gather_embeddings can only be called in distributed mode"
+        assert self.embeddings.is_cuda, "Placeholder must be on CUDA device"
+        assert local_embeddings.is_cuda, "Local embeddings must be on CUDA device"
+
+        torch.distributed.all_gather_into_tensor(self.embeddings, local_embeddings)
+
+        if self.rank != 0:
+            return None
+
+        return self.embeddings  # [B, L*E]
 
     def dispatch_sequences(self, seq_ids: torch.Tensor | None, last: bool = False) -> torch.Tensor:
         assert self.is_distributed(), "dispatch_sequences can only be called in distributed mode"
