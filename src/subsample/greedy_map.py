@@ -96,3 +96,40 @@ def _multi_map_greedy_full_explore(
     # Return the best sequence
     best_batch_idx = torch.argmax(log_determinants).item()
     return selected_items[best_batch_idx, :]
+
+
+def fast_greedy_map(
+    kernel_tensor: torch.Tensor,
+    num_groups: int,
+    item_to_group_id: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Original version of greedy MAP without full exploration.
+    Modified from https://github.com/laming-chen/fast-map-dpp/blob/master/dpp.py
+    """
+
+    item_size = kernel_tensor.size(0)  # N
+    device, dtype = kernel_tensor.device, kernel_tensor.dtype
+    cis = torch.zeros((num_groups, item_size), dtype=dtype, device=device)
+    di2s = kernel_tensor.diag().clone()  # (N,)
+    selected_items = torch.empty((num_groups,), dtype=torch.long, device=device)
+
+    selected_item = torch.argmax(di2s)
+    selected_items[0] = selected_item
+    selected_group = item_to_group_id[selected_item]
+    di2s[item_to_group_id == selected_group] = -torch.inf
+
+    for k in range(1, num_groups):
+        ci_optimal = cis[:k, selected_item]
+        di_optimal = torch.sqrt(di2s[selected_item])
+        elements = kernel_tensor[selected_item, :]
+        eis = (elements - torch.matmul(ci_optimal, cis[:k, :])) / di_optimal
+        cis[k, :] = eis
+        di2s -= eis**2
+
+        selected_item = torch.argmax(di2s)
+        selected_group = item_to_group_id[selected_item]
+        di2s[item_to_group_id == selected_group] = -torch.inf
+
+        selected_items[k] = selected_item
+    return selected_items
