@@ -25,7 +25,7 @@ KWARGS = {
 
 IMPLEMENTED_METHODS = [
     ("dpp", False),
-    ("exhaustive", True),
+    # ("exhaustive", True),
     ("greedy_map", False),
     ("greedy_map", True),
     ("greedy_beam", False),
@@ -95,6 +95,18 @@ def main():
         **KWARGS,
     )
     base_selector = get_subsample_selector(config=base_config)
+    all_selectors = {}
+    for method, transversal in IMPLEMENTED_METHODS:
+        config = Config(
+            method=method,
+            transversal=transversal,
+            group_size=GROUP_SIZE,
+            n_groups=N_GROUPS,
+            **KWARGS,
+        )
+        selector = get_subsample_selector(config)
+        selector.forward = torch.compile(selector.forward)
+        all_selectors[(method, transversal)] = selector
 
     # 3. Run Trials
     for _ in tqdm(range(N_TRIALS), desc="Trials"):
@@ -111,15 +123,7 @@ def main():
         for method, transversal in IMPLEMENTED_METHODS:
             name = f"{method} (Transv: {transversal})"
 
-            config = Config(
-                method=method,
-                transversal=transversal,
-                group_size=GROUP_SIZE,
-                n_groups=N_GROUPS,
-                **KWARGS,
-            )
-
-            selector = get_subsample_selector(config)
+            selector = all_selectors[(method, transversal)]
 
             # --- Timing Start ---
             start_time = perf_counter()

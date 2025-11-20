@@ -13,7 +13,7 @@ from utils import DistributedUtils
 
 def group_cartesian(group_size: int, n_groups: int) -> torch.Tensor:
     grids = torch.meshgrid(*[torch.arange(group_size) + i * group_size for i in range(n_groups)], indexing="ij")
-    stacked = torch.stack(grids, axis=-1)
+    stacked = torch.stack(grids, dim=-1)
     reshaped = stacked.reshape(-1, n_groups)
     return reshaped
 
@@ -168,14 +168,14 @@ class SubsetSelector:
         self.distributed_mul = self.distributed_utils.world_size if self.distributed_utils else 1
 
         self.cached_group_cartesian = None
-        if self.config.dpp:
+        if True:  # always cache
             self.cached_group_cartesian = group_cartesian(
                 self.config.group_size,
                 self.config.n_groups * self.distributed_mul,
             ).to(self.device)
 
     def subsample(self, cache: Cache) -> torch.Tensor:
-        if self.config.dpp:
+        if True:
             return self._apply_dpp(cache)
 
         # Random subsampling
@@ -208,7 +208,7 @@ class SubsetSelector:
 
         # S = torch.matmul(flat, flat.t())  # [B, B] cosine similarity
         # rbf kernel
-        S = _compute_rbf(flat, self.config.rbf_gamma)
+        S = _compute_rbf(flat, self.config._rbf_gamma)
         K = torch.zeros_like(S)  # placeholder
 
         # if self.config.split_groups:
@@ -219,7 +219,7 @@ class SubsetSelector:
         #     mask = _generate_expansion_mask(g_size, expansion_factor).to(S.device)
         #     K += self.config.w_split * mask
 
-        w_interaction = self.config.w_interaction
+        w_interaction = self.config._w_interaction
         K += S if w_interaction < 0 else w_interaction * S + torch.diag(scores.to(dtype=S.dtype))
         K += 1e-3 * torch.eye(S.size(0), device=S.device)  # make the matrix PSD
 
@@ -230,7 +230,7 @@ class SubsetSelector:
                 n_elts_sampled,
                 self.config.group_size,
                 self.cached_group_cartesian,
-                self.config.determinant_temperature,
+                self.config._temperature,
             )
             # selected_indices = multi_map_greedy_full_explore(
             #     K,
@@ -245,6 +245,3 @@ class SubsetSelector:
             selected_indices = self.distributed_utils.dispatch_batch_indices(selected_indices)
 
         return selected_indices
-
-
-# TODO: find bias minimizer with eigenvalues

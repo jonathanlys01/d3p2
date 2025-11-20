@@ -116,9 +116,9 @@ def _objective(trial: optuna.Trial, og_config: Config):
     rbf_gamma = trial.suggest_float("rbf_gamma", 1e-2, 1e2, log=True)
 
     dict_config = asdict(og_config)
-    dict_config["w_interaction"] = w_interaction
-    dict_config["determinant_temperature"] = det_temperature
-    dict_config["rbf_gamma"] = rbf_gamma
+    dict_config["_w_interaction"] = w_interaction
+    dict_config["_temperature"] = det_temperature
+    dict_config["_rbf_gamma"] = rbf_gamma
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 

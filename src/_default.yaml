@@ -27,14 +27,20 @@ n_runs: 8
 compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
-determinant_temperature: 0.0
 
 n_groups: 4
 group_size: 4
 
-split_groups: true
-dpp: true
-w_interaction: 1.0
-w_split: 0.0
+_kernel_type: rbf
+_kernel_power: 2
+_w_interaction: 0.0
+_w_split: 0.0
+_rbf_gamma: 1.0
+_temperature: 0.0
+_diversity_alpha: 0.0
+
 subsample_start: 0
 subsample_end: 1024
+
+method: dpp
+transversal: True
