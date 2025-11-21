@@ -12,7 +12,6 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from config import CACHE_DIR
-from jina_ref.modeling_bert import JinaBertModel
 from utils import process_model_args
 
 
@@ -23,12 +22,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Perplexity(torch.nn.Module):
-    def __init__(self, model_id: str):
+    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
         super().__init__()
-        models_args = process_model_args(model_id, cache_dir=CACHE_DIR)
-
-        self.model = AutoModel.from_pretrained(**models_args)
-        self.tokenizer = AutoTokenizer.from_pretrained(**models_args)
+        self.model = model
+        self.tokenizer = tokenizer
 
         self.model.eval()
         if self.tokenizer.pad_token is None:
@@ -90,10 +87,10 @@ class Perplexity(torch.nn.Module):
 
 
 class AverageCosineSimilarity(torch.nn.Module):
-    def __init__(self, model_id: str):
+    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
         super().__init__()
-        model_args = process_model_args(model_id, cache_dir=CACHE_DIR)
-        self.model = JinaBertModel.from_pretrained(**model_args)
+        self.model = model
+        self.tokenizer = tokenizer
 
     def _forward(self, texts: list[str]) -> float:
         self.model.to(device)
@@ -129,6 +126,35 @@ class AverageCosineSimilarity(torch.nn.Module):
         return mean_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim
 
 
+class MAUVE(torch.nn.Module):
+    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
+        super().__init__()
+        self.model = model
+        self.tokenizer = tokenizer
+
+    def forward(self, texts: list[list[str]]) -> float:
+        """
+        Compute MAUVE score for a list of texts. TODO: implemement
+        """
+
+        raise NotImplementedError("MAUVE computation is not implemented yet.")
+
+
+class WassersteinDistance(torch.nn.Module):
+    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
+        super().__init__()
+
+        self.model = model
+        self.tokenizer = tokenizer
+
+    def forward(self, texts: list[list[str]]) -> float:
+        """
+        Compute Wasserstein Distance for a list of texts. TODO: implemement
+        """
+
+        raise NotImplementedError("Wasserstein Distance computation is not implemented yet.")
+
+
 class Evaluator:
     def __init__(
         self,
@@ -137,8 +163,17 @@ class Evaluator:
         ppl_model_id: str = "gpt2",
         cos_model_id: str = "jinaai/jina-embeddings-v2-base-en",
     ):
-        self.perplexity_model = Perplexity(ppl_model_id)
-        self.cosine_model = AverageCosineSimilarity(cos_model_id)
+        ppl_models_args = process_model_args(ppl_model_id, cache_dir=CACHE_DIR)
+        ppl_model = AutoModel.from_pretrained(**ppl_models_args)
+        ppl_tokenizer = AutoTokenizer.from_pretrained(**ppl_models_args)
+        self.perplexity_model = Perplexity(ppl_model, ppl_tokenizer)
+        self.mauve_model = MAUVE(ppl_model, ppl_tokenizer)  # reuse PPL model for MAUVE (gpt2)
+
+        cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
+        cos_model = AutoModel.from_pretrained(**cos_models_args)
+        cos_tokenizer = AutoTokenizer.from_pretrained(**cos_models_args)
+        self.cosine_model = AverageCosineSimilarity(cos_model, cos_tokenizer)
+        self.wasserstein_model = WassersteinDistance(cos_model, cos_tokenizer)  # reuse COS model for WD
 
         self.batch_size = batch_size
         self.force = force
@@ -160,6 +195,19 @@ class Evaluator:
             "min_cosine_similarity": min_cos_sim,
             "max_cosine_similarity": max_cos_sim,
         }
+
+    def compute_mauve(self, references: list[str], generations: list[str]) -> float:
+        # Placeholder for MAUVE computation
+        raise NotImplementedError("MAUVE computation is not implemented yet.")
+
+    def compute_wasserstein_distance(
+        self,
+        generations: list[str],
+        good_references: list[str],
+        bad_references: list[str],
+    ) -> float:
+        # Placeholder for Wasserstein Distance computation
+        raise NotImplementedError("Wasserstein Distance computation is not implemented yet.")
 
     def eval_from_file(self, file_path: str) -> dict[str, float] | None:
         with open(file_path, "r") as f:

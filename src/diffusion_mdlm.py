@@ -9,8 +9,8 @@ from torch import nn
 from tqdm import tqdm
 
 from config import Cache, Config
-from dpp import SubsetSelector
 from mdlm_ref.modeling_mdlm import MDLM, MDLMConfig
+from subsample import get_subsample_selector
 from utils import get_initial_data, get_tokenizer, process_model_args, sample_categorical
 
 
@@ -27,7 +27,7 @@ class MDLMSampler(nn.Module):
 
         model_args = process_model_args(config.mdlm_model_path, cache_dir=config.cache_dir)
         self.model = MDLM.from_pretrained(**model_args)
-        self.selector = SubsetSelector(config)
+        self.selector = get_subsample_selector(config)
         self.config = config
         self.tokenizer = get_tokenizer(config, "mdlm")
 

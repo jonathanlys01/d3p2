@@ -1,4 +1,4 @@
-from __future__ import annotations  # Solves type hint evaluation timing
+from __future__ import annotations
 
 import importlib
 from typing import TYPE_CHECKING
@@ -15,12 +15,12 @@ if TYPE_CHECKING:
     from config import Config
 
 AVAIL = {
-    "dpp": ("dpp_selector", "DPP"),
-    "exhaustive": ("exhaustive", "Exhaustive"),
-    "greedy_map": ("greedy_map", "GreedyMAP"),
-    "greedy_beam": ("beam", "GreedyBeamSearch"),
-    "diverse_beam": ("beam", "DiverseBeamSearch"),
-    "random": ("random_selector", "RandomSelection"),
+    "dpp": ("subsample.dpp_selector", "DPP"),
+    "exhaustive": ("subsample.exhaustive", "Exhaustive"),
+    "greedy_map": ("subsample.greedy_map", "GreedyMAP"),
+    "greedy_beam": ("subsample.beam", "GreedyBeamSearch"),
+    "diverse_beam": ("subsample.beam", "DiverseBeamSearch"),
+    "random": ("subsample.random_selector", "RandomSelection"),
 }
 
 
@@ -39,9 +39,6 @@ def get_subsample_selector(
     module_path, class_name = import_info
 
     try:
-        # Note: package=__name__ is only needed for relative imports (starting with .)
-        # Since your AVAIL dict uses absolute paths ("subsample.dpp"), you can remove it
-        # or ensure your AVAIL paths are relative (e.g., ".dpp").
         module = importlib.import_module(module_path)
         selector_class = getattr(module, class_name)
 

@@ -13,7 +13,8 @@ AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "rand
 
 
 SEQUENCE_LENGTH = 1_024
-HIDDEN_SIZE = 768
+HIDDEN_SIZE_MDLM = 768
+HIDDEN_SIZE_LLADA = 4_096
 RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
 
@@ -32,11 +33,9 @@ OmegaConf.register_new_resolver("env_path_or", env_path_or, replace=True)
 class Config:
     disable_sys_args: bool = False
 
-    @property
-    def sequence_length(self) -> int:
-        return SEQUENCE_LENGTH
-
-    embedding_dim: int = HIDDEN_SIZE  # Change when using different model
+    sequence_length: int = SEQUENCE_LENGTH
+    embedding_size: int = 0  # to be set in __post_init__
+    model: str = "mdlm"  # "mdlm" or "llada"
 
     seed: int = 0
     n_runs: int = 16
@@ -49,6 +48,7 @@ class Config:
     # LLaDA
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
+    cfg_scale: float = 3.0
 
     # sampling
     num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
@@ -59,7 +59,7 @@ class Config:
     initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
 
     # Subset selection ###################################################################################
-    method: str = "base"  # subset selection method
+    method: str = "random"  # subset selection method
     transversal: bool = False  # use transversal sampling
 
     group_size: int = 2
@@ -68,7 +68,7 @@ class Config:
     # Subsample parameters (specific to each method)
 
     _kernel_type: str = "rbf"  # type of kernel to use in DPP
-    _kernel_power: int = 2  # power for eigenvalue modulation
+    _kernel_power: int = 1  # power for eigenvalue modulation
     _w_interaction: float = 0.0  # weight for diversity term in DPP, -1 for no quality term
     _w_split: float = 0.0  # weight for split groups in DPP
     _rbf_gamma: float = 1  # RBF kernel gamma parameter (when using RBF kernel)
@@ -78,14 +78,17 @@ class Config:
 
     # windowing
     subsample_start: int = -1
-    subsample_end: int = 2**31 - 1
+    subsample_end: int = 1024
 
     # eval
     ppl_model_id: str = "gpt2"
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
 
+    truthful_qa_path: str = "truthfulqa/truthful_qa"
+    commonsense_qa_path: str = "commonsense_qa"
+
     # cache
-    cache_dir: str = CACHE_DIR
+    cache_dir: str = "/Brain/private/j21lys/wip/src/.cache"  # CACHE_DIR
 
     batch_size: int = 0  # to be set in __post_init__
 
@@ -113,6 +116,13 @@ class Config:
         self.__dict__.update(args)
 
         assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
+
+        if self.model == "mdlm":
+            object.__setattr__(self, "embedding_size", HIDDEN_SIZE_MDLM)
+        elif self.model == "llada":
+            object.__setattr__(self, "embedding_size", HIDDEN_SIZE_LLADA)
+        else:
+            raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada'")
 
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 
