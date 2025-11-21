@@ -13,11 +13,16 @@ import idr_torch
 import optuna
 import torch
 import torch.distributed as dist
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 
 from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
 from eval_core import Evaluator
 from utils import compile_model, print, seed_all
+
+
+SWEEP_NAME = "d3p2_rbf_optuna_study"
 
 
 def _bcast(obj):
@@ -97,6 +102,7 @@ def eval_samples(unique_id: str, config: Config):
 
 
 def main(config: Config):
+    torch.cuda.empty_cache()
     unique_id, master = generate_samples(config)
     if not master:
         return None
@@ -105,19 +111,21 @@ def main(config: Config):
 
 
 def _objective(trial: optuna.Trial, og_config: Config):
-    start_sample = trial.suggest_int("subsample_start", 0, 900)
-    end_sample = trial.suggest_int("subsample_end", start_sample + 100, 1024)
+    w_interaction = trial.suggest_float("w_interaction", 0.0, 8.0)
+    det_temperature = trial.suggest_float("determinant_temperature", 1e-5, 1.0, log=True)
+    rbf_gamma = trial.suggest_float("rbf_gamma", 1e-2, 1e2, log=True)
 
     dict_config = asdict(og_config)
-    dict_config["subsample_start"] = start_sample
-    dict_config["subsample_end"] = end_sample
+    dict_config["_w_interaction"] = w_interaction
+    dict_config["_temperature"] = det_temperature
+    dict_config["_rbf_gamma"] = rbf_gamma
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
     _bcast(True)  # sync before starting -> proceed
     _bcast(config)  # broadcast config to all workers
 
-    print(f"Trial {trial.number}: subsample_start={start_sample}, subsample_end={end_sample}")
+    print(f"Trial {trial.number}: w_inter={w_interaction}, det_temp={det_temperature}")
 
     metrics = main(config)
 
@@ -144,28 +152,33 @@ if __name__ == "__main__":
     is_master = idr_torch.is_master
 
     if is_master:
+        storage = JournalStorage(JournalFileBackend(f"optuna_{SWEEP_NAME}.log"))
+
         study = optuna.create_study(
             directions=["minimize", "minimize"],
-            study_name="d3p2_optuna_study",
-            storage="sqlite:///window_exp.db",
+            study_name=SWEEP_NAME,
+            storage=storage,
             load_if_exists=True,
         )
 
-        assert len(study.trials) == 0, "Study already has trials!"
+        if len(study.trials) == 0:  # enqueue some initial points (sweep)
+            study.set_user_attr("og_config", asdict(og_config))
 
-        study.enqueue_trial({"subsample_start": 0, "subsample_end": 1024})  # full
+            for qual in [0.0, 4.0, 8.0]:
+                for temp in [1e-5, 3e-3, 1.0]:
+                    for gamma in [1e-2, 1.0, 1e2]:
+                        study.enqueue_trial(
+                            {
+                                "w_interaction": qual,
+                                "determinant_temperature": temp,
+                                "rbf_gamma": gamma,
+                            },
+                        )
 
-        # exhaustive subsample trials
-        for start in range(0, 901, 100):
-            end = start + 100
-            study.enqueue_trial({"subsample_start": start, "subsample_end": end})
-
-        study.optimize(lambda trial: _objective(trial, og_config), n_trials=100)
+        study.optimize(lambda trial: _objective(trial, og_config), n_trials=None)  # infinite (will be SIGTERM'ed)
         _bcast(False)
 
         dist.destroy_process_group()
-
-        print("Window study completed.")
 
     else:
         while True:
