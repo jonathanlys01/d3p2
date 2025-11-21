@@ -6,12 +6,15 @@ import argparse
 import json
 import os
 
+import numpy as np
+import ot
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from config import CACHE_DIR
+from jina_ref.modeling_bert import JinaBertModel
 from utils import process_model_args
 
 
@@ -87,10 +90,9 @@ class Perplexity(torch.nn.Module):
 
 
 class AverageCosineSimilarity(torch.nn.Module):
-    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
+    def __init__(self, model: JinaBertModel):
         super().__init__()
         self.model = model
-        self.tokenizer = tokenizer
 
     def _forward(self, texts: list[str]) -> float:
         self.model.to(device)
@@ -141,18 +143,61 @@ class MAUVE(torch.nn.Module):
 
 
 class WassersteinDistance(torch.nn.Module):
-    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
+    def __init__(self, model: JinaBertModel):
         super().__init__()
 
         self.model = model
-        self.tokenizer = tokenizer
 
-    def forward(self, texts: list[list[str]]) -> float:
-        """
-        Compute Wasserstein Distance for a list of texts. TODO: implemement
-        """
+    def forward(
+        self,
+        good_references: list[str],
+        bad_references: list[str],
+        generations: list[str],
+    ) -> tuple[float, float]:
+        n_good = len(good_references)
+        n_bad = len(bad_references)
+        n_gen = len(generations)
+        all_texts = generations + good_references + bad_references
+        embeddings = self._forward(all_texts).numpy()  # Convert to numpy array
 
-        raise NotImplementedError("Wasserstein Distance computation is not implemented yet.")
+        gen_embeddings = embeddings[0:n_gen]
+        good_embeddings = embeddings[n_gen : n_gen + n_good]
+        bad_embeddings = embeddings[n_gen + n_good :]
+
+        # Compute cost matrices
+        cost_good = ot.dist(gen_embeddings, good_embeddings, metric="euclidean")
+        cost_bad = ot.dist(gen_embeddings, bad_embeddings, metric="euclidean")
+        # TODO: remove this
+
+        import matplotlib.pyplot as plt  # noqa
+
+        plt.imshow(cost_good)
+        plt.title("Cost Matrix to Good References")
+        plt.colorbar()
+        plt.savefig("cost_good.png")
+        plt.clf()
+        plt.imshow(cost_bad)
+        plt.title("Cost Matrix to Bad References")
+        plt.colorbar()
+        plt.savefig("cost_bad.png")
+        # End TODO
+
+        # Uniform distributions
+        p_gen = np.ones((n_gen,)) / n_gen
+        p_good = np.ones((n_good,)) / n_good
+        p_bad = np.ones((n_bad,)) / n_bad
+
+        wasserstein_good = ot.emd2(p_gen, p_good, cost_good)
+        wasserstein_bad = ot.emd2(p_gen, p_bad, cost_bad)
+
+        return wasserstein_good, wasserstein_bad
+
+    def _forward(self, texts: list[str]) -> torch.Tensor:
+        with torch.inference_mode():
+            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)
+            x = embeddings.reshape(len(texts), -1)  # n_samples x D
+            x = F.normalize(x, p=2, dim=-1)
+        return x.cpu()
 
 
 class Evaluator:
@@ -170,10 +215,9 @@ class Evaluator:
         self.mauve_model = MAUVE(ppl_model, ppl_tokenizer)  # reuse PPL model for MAUVE (gpt2)
 
         cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
-        cos_model = AutoModel.from_pretrained(**cos_models_args)
-        cos_tokenizer = AutoTokenizer.from_pretrained(**cos_models_args)
-        self.cosine_model = AverageCosineSimilarity(cos_model, cos_tokenizer)
-        self.wasserstein_model = WassersteinDistance(cos_model, cos_tokenizer)  # reuse COS model for WD
+        cos_model = JinaBertModel.from_pretrained(**cos_models_args)
+        self.cosine_model = AverageCosineSimilarity(cos_model)
+        self.wasserstein_model = WassersteinDistance(cos_model)  # reuse COS model for WD
 
         self.batch_size = batch_size
         self.force = force
@@ -205,9 +249,8 @@ class Evaluator:
         generations: list[str],
         good_references: list[str],
         bad_references: list[str],
-    ) -> float:
-        # Placeholder for Wasserstein Distance computation
-        raise NotImplementedError("Wasserstein Distance computation is not implemented yet.")
+    ) -> tuple[float, float]:
+        return self.wasserstein_model(good_references, bad_references, generations)
 
     def eval_from_file(self, file_path: str) -> dict[str, float] | None:
         with open(file_path, "r") as f:
