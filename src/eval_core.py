@@ -1,6 +1,7 @@
 # perplexity
 # average cosine
-# TODO: mauve
+# mauve
+# wasserstein distance
 
 import argparse
 import json
@@ -13,6 +14,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+import mauve
 from config import CACHE_DIR
 from jina_ref.modeling_bert import JinaBertModel
 from utils import process_model_args
@@ -134,12 +136,19 @@ class MAUVE(torch.nn.Module):
         self.model = model
         self.tokenizer = tokenizer
 
-    def forward(self, texts: list[list[str]]) -> float:
+    def forward(self, p_text: list[str], q_text: list[str]):
         """
-        Compute MAUVE score for a list of texts. TODO: implemement
+        Compute MAUVE score for a list of texts using the mauve package.
         """
 
-        raise NotImplementedError("MAUVE computation is not implemented yet.")
+        out = mauve.compute_mauve(
+            p_text=p_text,
+            q_text=q_text,
+            models=(self.model, self.tokenizer),
+            device_id=0 if torch.cuda.is_available() else -1,
+        )
+
+        return out
 
 
 class WassersteinDistance(torch.nn.Module):
@@ -158,7 +167,7 @@ class WassersteinDistance(torch.nn.Module):
         n_bad = len(bad_references)
         n_gen = len(generations)
         all_texts = generations + good_references + bad_references
-        embeddings = self._forward(all_texts).numpy()  # Convert to numpy array
+        embeddings = self._forward(all_texts).numpy()
 
         gen_embeddings = embeddings[0:n_gen]
         good_embeddings = embeddings[n_gen : n_gen + n_good]
@@ -167,20 +176,6 @@ class WassersteinDistance(torch.nn.Module):
         # Compute cost matrices
         cost_good = ot.dist(gen_embeddings, good_embeddings, metric="euclidean")
         cost_bad = ot.dist(gen_embeddings, bad_embeddings, metric="euclidean")
-        # TODO: remove this
-
-        import matplotlib.pyplot as plt  # noqa
-
-        plt.imshow(cost_good)
-        plt.title("Cost Matrix to Good References")
-        plt.colorbar()
-        plt.savefig("cost_good.png")
-        plt.clf()
-        plt.imshow(cost_bad)
-        plt.title("Cost Matrix to Bad References")
-        plt.colorbar()
-        plt.savefig("cost_bad.png")
-        # End TODO
 
         # Uniform distributions
         p_gen = np.ones((n_gen,)) / n_gen
@@ -241,8 +236,8 @@ class Evaluator:
         }
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
-        # Placeholder for MAUVE computation
-        raise NotImplementedError("MAUVE computation is not implemented yet.")
+        out = self.mauve_model(references, generations)  # TODO: include more metrics (not mauve only)
+        return out.mauve
 
     def compute_wasserstein_distance(
         self,

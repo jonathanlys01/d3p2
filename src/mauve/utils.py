@@ -33,6 +33,7 @@ def get_model(model_name, tokenizer, device_id, cache_dir=None):
 
 
 def get_tokenizer(model_name="gpt2", cache_dir=None):
+    raise NotImplementedError("Deprecated function.")
     if "gpt2" in model_name or "bert" in model_name:
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
     else:

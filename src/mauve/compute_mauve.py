@@ -38,6 +38,7 @@ def compute_mauve(
     seed=25,
     batch_size=1,
     use_float64=False,
+    models=None,  # (model, tokenizer)
 ):
     """
     Compute the MAUVE score between two text generations P and Q.
@@ -98,6 +99,7 @@ def compute_mauve(
         verbose=verbose,
         batch_size=batch_size,
         use_float64=use_float64,
+        models=models,
     )
     q_features = get_features_from_input(
         q_features,
@@ -176,8 +178,13 @@ def get_features_from_input(
     batch_size,
     verbose=False,
     use_float64=False,
+    models=None,
 ):
     global MODEL, TOKENIZER, MODEL_NAME
+    if models is not None:
+        MODEL, TOKENIZER = models
+        MODEL_NAME = featurize_model_name
+
     if features is None:
         if tokenized_texts is None:
             # Tokenize texts.
