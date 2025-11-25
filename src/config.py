@@ -34,7 +34,7 @@ class Config:
     disable_sys_args: bool = False
 
     sequence_length: int = SEQUENCE_LENGTH
-    embedding_size: int = 0  # to be set in __post_init__
+    embedding_dim: int = 0  # to be set in __post_init__
     model: str = "mdlm"  # "mdlm" or "llada"
 
     seed: int = 0
@@ -118,9 +118,9 @@ class Config:
         assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
 
         if self.model == "mdlm":
-            object.__setattr__(self, "embedding_size", HIDDEN_SIZE_MDLM)
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
         elif self.model == "llada":
-            object.__setattr__(self, "embedding_size", HIDDEN_SIZE_LLADA)
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
         else:
             raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada'")
 

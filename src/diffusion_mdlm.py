@@ -44,6 +44,7 @@ class MDLMSampler(nn.Module):
     def _subs_parameterization(self, logits, xt):
         with torch.no_grad():
             logits[:, :, self.mask_index] = NEG_INFINITY
+            logits = logits / self.config.cat_temperature
             logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
             unmasked_indices = xt != self.mask_index
             logits[unmasked_indices] = NEG_INFINITY
@@ -103,7 +104,7 @@ class MDLMSampler(nn.Module):
             q_xs = p_x0 * (move_chance_t - move_chance_s)[slice_idx]  # k x L x V
             q_xs[:, :, self.mask_index] = move_chance_s[slice_idx, :, 0]
 
-            q_xs /= self.config.cat_temperature
+            # q_xs = q_xs / self.config.cat_temperature
 
             _x = sample_categorical(
                 q_xs,

@@ -25,7 +25,7 @@ KWARGS = {
 
 IMPLEMENTED_METHODS = [
     ("dpp", False),
-    # ("exhaustive", True),
+    ("exhaustive", True),
     ("greedy_map", False),
     ("greedy_map", True),
     ("greedy_beam", False),

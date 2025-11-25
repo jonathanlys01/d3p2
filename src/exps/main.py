@@ -13,11 +13,16 @@ import idr_torch
 import optuna
 import torch
 import torch.distributed as dist
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 
 from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
 from eval_core import Evaluator
 from utils import compile_model, print, seed_all
+
+
+SWEEP_NAME = "d3p2_cat_optuna_study"
 
 
 def _bcast(obj):
@@ -105,17 +110,17 @@ def main(config: Config):
 
 
 def _objective(trial: optuna.Trial, og_config: Config):
-    w_interaction = trial.suggest_float("w_interaction", 0.0, 8.0)
+    cat_temperature = trial.suggest_float("cat_temperature", 0.7, 1.1)
 
     dict_config = asdict(og_config)
-    dict_config["w_interaction"] = w_interaction
+    dict_config["cat_temperature"] = cat_temperature
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
     _bcast(True)  # sync before starting -> proceed
     _bcast(config)  # broadcast config to all workers
 
-    print(f"Trial {trial.number}: w_inter={w_interaction}")
+    print(f"Trial {trial.number}: cat_temperature={cat_temperature}")
 
     metrics = main(config)
 
@@ -142,17 +147,18 @@ if __name__ == "__main__":
     is_master = idr_torch.is_master
 
     if is_master:
+        storage = JournalStorage(JournalFileBackend(f"optuna_{SWEEP_NAME}.log"))
         study = optuna.create_study(
             directions=["minimize", "minimize"],
-            study_name="d3p2_optuna_study",
-            storage="sqlite:///optuna_d3p2_main.db",
+            study_name=SWEEP_NAME,
+            storage=storage,
             load_if_exists=True,
         )
 
         if len(study.trials) == 0:  # enqueue some initial points (sweep)
             study.set_user_attr("og_config", asdict(og_config))
-            for qual in [0.0, 0.1, 0.3, 1.0, 3.0]:
-                study.enqueue_trial({"w_interaction": qual})
+            for qual in [0.7, 0.9, 1.1]:
+                study.enqueue_trial({"cat_temperature": qual})
 
         study.optimize(lambda trial: _objective(trial, og_config), n_trials=200)
         _bcast(False)
