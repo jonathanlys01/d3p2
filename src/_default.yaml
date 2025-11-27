@@ -23,7 +23,7 @@ data_path: ${env_path_or:WORK,projects/nanoGPT-but-looped/src/data/fineweb-edu/v
 
 seed: 42
 cache_dir: ./.cache
-n_runs: 2
+n_runs: 8
 compile_model: true
 num_steps: 1024
 cat_temperature: 1.0

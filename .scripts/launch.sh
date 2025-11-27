@@ -10,4 +10,12 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu sweep_rbf.py config=_default.yaml
 
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/main.py config=_default.yaml method=random
+# retry on failure until success
+
+while true; do
+    OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/main.py config=_default.yaml method=random
+    if [ $? -eq 0 ]; then
+        break
+    fi
+    echo "Process failed. Retrying..."
+done
