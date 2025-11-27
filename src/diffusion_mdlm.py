@@ -106,10 +106,7 @@ class MDLMSampler(nn.Module):
 
             # q_xs = q_xs / self.config.cat_temperature
 
-            _x = sample_categorical(
-                q_xs,
-                expand=self.config.group_size if subsample_step else None,
-            )
+            _x = sample_categorical(q_xs, expand=self.config.group_size if subsample_step else None)
 
             copy_flag = copy_flag[slice_idx]  # k x L
 
