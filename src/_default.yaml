@@ -28,7 +28,7 @@ compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
 
-n_groups: 4
+n_groups: 2
 group_size: 4
 
 _kernel_type: rbf

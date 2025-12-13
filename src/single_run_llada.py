@@ -48,6 +48,8 @@ def main():
         "What causes the 'five-second rule' to be invalid?",
         "Why do birds suddenly appear every time you are near?",
         "What is the main ingredient in traditional Japanese miso soup?",
+        "How many hearts does an octopus have?",
+        "What is the capital city of Australia?",
     ][: config.n_runs]
 
     for i in range(config.n_runs):

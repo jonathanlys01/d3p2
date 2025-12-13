@@ -9,11 +9,11 @@ import torch.nn.functional as F
 from torch import nn
 from tqdm import tqdm
 
-from config import Config
+from config import Cache, Config
 from data import truthful_qa
 from llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from subsample import get_subsample_selector
-from utils import get_tokenizer, process_model_args
+from utils import get_tokenizer, process_model_args, sample_categorical
 
 
 def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -57,6 +57,8 @@ class LLADASampler(nn.Module):
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
             logits = out.logits
             embeddings = out.hidden_states
+
+            print("a" * 50, embeddings[-1].shape)
         return logits, embeddings
 
     def _sample_prior(self, *batch_dims) -> torch.Tensor:
@@ -74,70 +76,91 @@ class LLADASampler(nn.Module):
         # Total visible = Prompt + New Tokens
         return num_gen_tokens.repeat(self.config.batch_size) + prompt_length
 
-    def _update(  # noqa: PLR0913
+    def _update(
         self,
         x_t: torch.Tensor,
         t: int,
         remasking="confidence",
-        temperature=0.0,  # Default to 0 for greedy sampling
         cfg_scale: float = 0.0,
         prompt_length=0,
     ) -> torch.Tensor:
-        # 1. Forward Pass
         if cfg_scale > 0.0:
             un_x = x_t.clone()
             un_x[:, :prompt_length] = self.mask_index
             x_ = torch.cat([x_t, un_x], dim=0)
-            logits, _ = self._forward_model(x_)
+            logits, out_all = self._forward_model(x_)
+            embeddings_all = out_all[-1]
+
             logits, un_logits = torch.chunk(logits, 2, dim=0)
+            embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)  # we only need embeddings for the main batch
+
             logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
         else:
-            logits, _ = self._forward_model(x_t)
+            logits, out = self._forward_model(x_t)
+            embeddings = out[-1]
+        cache = Cache(log_p_x0=logits, embeddings=embeddings, x=x_t)
 
-        # 2. Prediction (Greedy / Pure Diffusion)
-        # [cite_start]We use argmax directly, skipping Gumbel noise for "pure diffusion" [cite: 317]
-        x0 = torch.argmax(logits, dim=-1)  # (B, L)
+        subsample_step = self.config.subsample_start <= t <= self.config.subsample_end
+        last_step = t == -1
 
-        # 3. Confidence Calculation
-        if remasking == "confidence":
-            p = F.softmax(logits, dim=-1)
-            # Gather confidence of the PREDICTED tokens
-            conf_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)  # (B, L)
-        elif remasking == "random":
-            conf_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+        slice_idx = (
+            self.selector.subsample(cache)
+            if subsample_step or last_step
+            else torch.arange(x_t.size(0), device=self.device)
+        )
+
+        if slice_idx is None:
+            ret = None
+
         else:
-            raise NotImplementedError(remasking)
+            x_t = x_t[slice_idx]
+            logits = logits[slice_idx]
 
-        # 4. Prompt Preservation
-        # Force prompt confidence to infinity so they are always kept in the top-k selection
-        conf_p[:, :prompt_length] = float("inf")
+            x0 = sample_categorical(logits, expand=self.config.group_size if subsample_step else None)
+            print("b" * 50, x0.shape)
 
-        # 5. Masking Schedule (Linear)
-        # Determine which tokens to keep (unmask) for the next step.
-        # num_transfer_tokens is the TARGET TOTAL count of unmasked tokens.
-        num_transfer_tokens = self._get_num_transfer_tokens(t, prompt_length)  # (B,)
+            # 3. Confidence Calculation
+            if remasking == "confidence":
+                p = F.softmax(logits, dim=-1)
+                # Gather confidence of the PREDICTED tokens
+                conf_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)  # (B, L)
+            elif remasking == "random":
+                conf_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+            else:
+                raise NotImplementedError(remasking)
 
-        # We start with a full mask
-        transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+            # 4. Prompt Preservation
+            # Force prompt confidence to infinity so they are always kept in the top-k selection
+            conf_p[:, :prompt_length] = float("inf")
 
-        for j in range(conf_p.shape[0] if "confidence" in locals() else x0.shape[0]):
-            k = num_transfer_tokens[j].item()
-            # Ensure we keep at least the prompt tokens
-            k = max(k, prompt_length)
+            # 5. Masking Schedule (Linear)
+            # Determine which tokens to keep (unmask) for the next step.
+            # num_transfer_tokens is the TARGET TOTAL count of unmasked tokens.
+            num_transfer_tokens = self._get_num_transfer_tokens(t, prompt_length)  # (B,)
 
-            # Select the top-k most confident tokens from the ENTIRE sequence
-            _, select_index = torch.topk(conf_p[j], k=k)
-            transfer_index[j, select_index] = True
+            # We start with a full mask
+            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
 
-        # 6. Update State
-        # Where transfer_index is True, we keep the prediction x0.
-        # Where transfer_index is False, we apply the mask token.
-        x_next = torch.where(transfer_index, x0, torch.full_like(x0, self.mask_index))
+            for j in range(conf_p.shape[0] if "confidence" in locals() else x0.shape[0]):
+                k = num_transfer_tokens[j].item()
+                # Ensure we keep at least the prompt tokens
+                k = max(k, prompt_length)
 
-        # Explicitly enforce prompt consistency (though infinite confidence should handle this)
-        x_next[:, :prompt_length] = x_t[:, :prompt_length]
+                # Select the top-k most confident tokens from the ENTIRE sequence
+                _, select_index = torch.topk(conf_p[j], k=k)
+                transfer_index[j, select_index] = True
 
-        return x_next
+            # 6. Update State
+            # Where transfer_index is True, we keep the prediction x0.
+            # Where transfer_index is False, we apply the mask token.
+            x_next = torch.where(transfer_index, x0, torch.full_like(x0, self.mask_index))
+
+            # Explicitly enforce prompt consistency (though infinite confidence should handle this)
+            x_next[:, :prompt_length] = x_t[:, :prompt_length]
+
+            ret = x_next
+
+        return ret
 
     def _gen_prompt(self, prompt: str) -> torch.Tensor:
         if "instruct" in self.config.llada_model_path.lower():
@@ -173,13 +196,16 @@ class LLADASampler(nn.Module):
 
         x_t = init_x.to(self.device)
 
-        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps):
+        disable = False
+        if self.distributed_utils:
+            disable = self.distributed_utils.rank != 0
+
+        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps, disable=disable):
             x_t = self._update(
                 x_t,
                 t,
                 prompt_length=prompt_length,
                 cfg_scale=cfg_scale,
-                temperature=0.0,  # Pure diffusion uses greedy sampling
             )
 
         return x_t
