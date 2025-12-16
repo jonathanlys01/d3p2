@@ -5,7 +5,6 @@ Minimalist LLaDA diffusion sampler, adapted from the LLaDA codebase
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from tqdm import tqdm
 
@@ -57,8 +56,6 @@ class LLADASampler(nn.Module):
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
             logits = out.logits
             embeddings = out.hidden_states
-
-            print("a" * 50, embeddings[-1].shape)
         return logits, embeddings
 
     def _sample_prior(self, *batch_dims) -> torch.Tensor:
@@ -80,8 +77,8 @@ class LLADASampler(nn.Module):
         self,
         x_t: torch.Tensor,
         t: int,
+        cfg_scale: float,
         remasking="confidence",
-        cfg_scale: float = 0.0,
         prompt_length=0,
     ) -> torch.Tensor:
         if cfg_scale > 0.0:
@@ -98,6 +95,8 @@ class LLADASampler(nn.Module):
         else:
             logits, out = self._forward_model(x_t)
             embeddings = out[-1]
+
+        logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
         cache = Cache(log_p_x0=logits, embeddings=embeddings, x=x_t)
 
         subsample_step = self.config.subsample_start <= t <= self.config.subsample_end
@@ -113,17 +112,18 @@ class LLADASampler(nn.Module):
             ret = None
 
         else:
-            x_t = x_t[slice_idx]
-            logits = logits[slice_idx]
+            # logp_x0 = logits[slice_idx]
+            logp_x0 = torch.index_select(logits, 0, slice_idx)
+            p_x0 = torch.exp(logp_x0)
 
-            x0 = sample_categorical(logits, expand=self.config.group_size if subsample_step else None)
-            print("b" * 50, x0.shape)
+            x_t = x_t[slice_idx]
+
+            x0 = sample_categorical(p_x0, expand=self.config.group_size if subsample_step else None)
 
             # 3. Confidence Calculation
             if remasking == "confidence":
-                p = F.softmax(logits, dim=-1)
-                # Gather confidence of the PREDICTED tokens
-                conf_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)  # (B, L)
+                expanded_p_x0 = p_x0.repeat_interleave(self.config.group_size, dim=0) if subsample_step else p_x0
+                conf_p = torch.gather(expanded_p_x0, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)  # (B, L)
             elif remasking == "random":
                 conf_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
             else:
@@ -156,7 +156,8 @@ class LLADASampler(nn.Module):
             x_next = torch.where(transfer_index, x0, torch.full_like(x0, self.mask_index))
 
             # Explicitly enforce prompt consistency (though infinite confidence should handle this)
-            x_next[:, :prompt_length] = x_t[:, :prompt_length]
+            x_t_expand = x_t.repeat_interleave(self.config.group_size, dim=0) if subsample_step else x_t
+            x_next[:, :prompt_length] = x_t_expand[:, :prompt_length]
 
             ret = x_next
 
@@ -176,10 +177,10 @@ class LLADASampler(nn.Module):
     @torch.no_grad()
     def sample(
         self,
+        cfg_scale: float,
         num_steps: Optional[int] = None,
         init_x: Optional[torch.Tensor] = None,
         prompt: Optional[str] = None,
-        cfg_scale: float = 0.0,
     ) -> torch.Tensor:
         num_steps = num_steps or self.config.num_steps
         prompt_length = 0

@@ -26,7 +26,7 @@ class BaseSelector(nn.Module):
         elif self.distributed_utils:  # dispatch from master to workers
             ret = self.distributed_utils.dispatch_batch_indices(ret)
 
-        return ret
+        return ret.long()
 
     @torch.no_grad()
     def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
@@ -71,8 +71,7 @@ class BaseSelector(nn.Module):
     @torch.no_grad()
     def compute_scores(self, cache: Cache) -> torch.Tensor:
         """Compute scores based on entropy of predicted distribution."""
-        z = cache.log_p_x0.float()
-        logZ = z - torch.logsumexp(z, dim=-1, keepdim=True)  # log softmax
+        logZ = cache.log_p_x0.float()
         H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
         scores = H.mean(dim=-1)  # [B] average entropy per sequence
         scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)  # [0, 1]
@@ -95,8 +94,7 @@ class BaseSelector(nn.Module):
 
 def compute_scores(cache: Cache) -> torch.Tensor:
     """Compute scores based on entropy of predicted distribution."""
-    z = cache.log_p_x0.float()
-    logZ = z - torch.logsumexp(z, dim=-1, keepdim=True)  # log softmax
+    logZ = cache.log_p_x0.float()
     H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
     scores = H.mean(dim=-1)  # [B] average entropy per sequence
     scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)  # [0, 1]

@@ -27,6 +27,7 @@ n_runs: 8
 compile_model: true
 num_steps: 1024
 cat_temperature: 1.0
+cfg_scale: 3.0
 
 n_groups: 2
 group_size: 4
