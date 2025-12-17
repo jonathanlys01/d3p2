@@ -140,8 +140,6 @@ class DistributedUtils:
         )
         self.qualities = torch.zeros((self.world_size * self.cfg.batch_size,), device="cuda")
 
-        print(f"Embeddings shape: {self.embeddings.shape}, Qualities shape: {self.qualities.shape}")
-
     def all_gather(
         self,
         local_embeddings: torch.Tensor,

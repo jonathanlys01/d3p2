@@ -5,6 +5,7 @@ Minimalist LLaDA diffusion sampler, adapted from the LLaDA codebase
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from tqdm import tqdm
 
@@ -17,14 +18,19 @@ from utils import get_tokenizer, process_model_args, sample_categorical
 
 def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
     """
-    Kept for compatibility, but not used in pure diffusion (greedy) sampling.
+    The Gumbel max is a method for sampling categorical distributions.
+    According to arXiv:2409.02908, for MDM,
+    low-precision Gumbel Max improves perplexity score but reduces generation quality.
+    Thus, we use float64.
     """
     if temperature == 0:
         return logits
     logits = logits.to(torch.float64)
     noise = torch.rand_like(logits, dtype=torch.float64)
-    gumbel_noise = -torch.log(noise)
-    return (logits / temperature).exp() / gumbel_noise
+    gumbel_noise = (-torch.log(noise)) ** temperature
+    return logits.exp() / gumbel_noise
+    # gumbel_noise = -torch.log(noise)
+    # return (logits / temperature).exp() / gumbel_noise
 
 
 class LLADASampler(nn.Module):
@@ -211,8 +217,156 @@ class LLADASampler(nn.Module):
 
         return x_t
 
+    def _get_block_transfer_tokens(self, mask_index, steps):
+        """
+        In the reverse process, the interval [0, 1] is uniformly discretized into steps intervals.
+        Furthermore, because LLaDA employs a linear noise schedule (as defined in Eq. (8)),
+        the expected number of tokens transitioned at each step should be consistent.
 
-def main():
+        This function is designed to precompute the number of tokens that need to be transitioned at each step.
+        """
+        mask_num = mask_index.sum(dim=1, keepdim=True)
+
+        base = mask_num // steps
+        remainder = mask_num % steps
+
+        num_transfer_tokens = torch.zeros(mask_num.size(0), steps, device=mask_index.device, dtype=torch.int64) + base
+
+        for i in range(mask_num.size(0)):
+            num_transfer_tokens[i, : remainder[i]] += 1
+
+        return num_transfer_tokens
+
+    @torch.no_grad()
+    def block_diffuse(  # noqa: C901, PLR0912, PLR0913, PLR0915
+        self,
+        prompt: str,
+        steps: int = 128,
+        gen_length: int = 128,
+        block_length: int = 32,
+        temperature: float = 0.0,
+        cfg_scale: float = 2.0,
+        remasking: str = "low_confidence",
+        logits_eos_inf: bool = False,
+        confidence_eos_eot_inf: bool = False,
+    ):
+        """
+        Args:
+            prompt: Input string.
+            steps: Sampling steps, less than or equal to gen_length.
+            gen_length: Generated answer length.
+            block_length: Block length, less than or equal to gen_length.
+            If less than gen_length, it means using semi_autoregressive remasking.
+            temperature: Categorical distribution sampling temperature.
+            cfg_scale: Unsupervised classifier-free guidance scale.
+            remasking: Remasking strategy. 'low_confidence' or 'random'.
+            logits_eos_inf: Whether to set the logits of EOS token to -inf.
+            confidence_eos_eot_inf: Whether to set the confidence of EOS and EoT token to -inf.
+        """
+        # Tokenize prompt
+        if "instruct" in self.config.llada_model_path.lower():
+            message = [{"role": "user", "content": prompt}]
+            prompt_str = self.tokenizer.apply_chat_template(message, add_generation_prompt=True, tokenize=False)
+        else:
+            prompt_str = prompt
+
+        encoded_outputs = self.tokenizer(
+            [prompt_str],
+            add_special_tokens=False,
+            padding=True,
+            return_tensors="pt",
+        )
+        prompt_tokens = encoded_outputs["input_ids"].to(self.device)
+        attention_mask = encoded_outputs["attention_mask"].to(self.device)
+
+        # Setup generation buffer
+        x = torch.full(
+            (prompt_tokens.shape[0], prompt_tokens.shape[1] + gen_length),
+            self.mask_index,
+            dtype=torch.long,
+        ).to(self.device)
+        x[:, : prompt_tokens.shape[1]] = prompt_tokens.clone()
+
+        if attention_mask is not None:
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones((prompt_tokens.shape[0], gen_length), dtype=attention_mask.dtype, device=self.device),
+                ],
+                dim=-1,
+            )
+
+        prompt_index = x != self.mask_index
+
+        assert gen_length % block_length == 0
+        num_blocks = gen_length // block_length
+
+        assert steps % num_blocks == 0
+        steps = steps // num_blocks
+
+        for num_block in tqdm(range(num_blocks), desc="Blocks"):
+            block_mask_index = (
+                x[
+                    :,
+                    prompt_tokens.shape[1] + num_block * block_length : prompt_tokens.shape[1]
+                    + (num_block + 1) * block_length :,
+                ]
+                == self.mask_index
+            )
+            num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
+            for i in range(steps):
+                mask_index = x == self.mask_index
+                if cfg_scale > 0.0:
+                    un_x = x.clone()
+                    un_x[prompt_index] = self.mask_index
+                    x_ = torch.cat([x, un_x], dim=0)
+                    if attention_mask is not None:
+                        attention_mask_ = torch.cat([attention_mask, attention_mask], dim=0)
+                    else:
+                        attention_mask_ = None
+
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        logits = self.model(x_, attention_mask=attention_mask_).logits
+
+                    logits, un_logits = torch.chunk(logits, 2, dim=0)
+                    logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+                else:
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        logits = self.model(x, attention_mask=attention_mask).logits
+
+                if logits_eos_inf:
+                    logits[:, :, 126081] = -torch.inf
+
+                logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+                x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
+
+                if confidence_eos_eot_inf:
+                    logits_with_noise[:, :, 126081] = logits[:, :, 126348] = -torch.inf
+
+                if remasking == "low_confidence":
+                    p = F.softmax(logits, dim=-1)
+                    x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
+                elif remasking == "random":
+                    x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+                else:
+                    raise NotImplementedError(remasking)
+
+                x0_p[:, prompt_tokens.shape[1] + (num_block + 1) * block_length :] = -torch.inf
+
+                x0 = torch.where(mask_index, x0, x)
+                confidence = torch.where(mask_index, x0_p, -torch.inf)
+
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                for j in range(confidence.shape[0]):
+                    _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                    transfer_index[j, select_index] = True
+                x[transfer_index] = x0[transfer_index]
+
+        return x
+
+
+def main_block():
+    limit = float("inf")
     cfg = Config()
     sampler = LLADASampler(cfg)
     dataset = truthful_qa(cfg)
@@ -220,16 +374,46 @@ def main():
     samples = []
     prompts = []
 
-    for row in dataset.itertuples():
-        prompt = row.question + "\nAnswer:"
+    for i, row in enumerate(dataset.itertuples()):
+        if i >= limit:
+            break
+
+        prompt = row.question
+
+        # sample using the block_diffuse method
+        samples.extend(sampler.block_diffuse(prompt=prompt, cfg_scale=cfg.cfg_scale))
+        prompts.extend([prompt] * cfg.batch_size)
+
+    with open("llada_block_truth_qa_samples.log", "w") as f:
+        for i, sample in enumerate(samples):
+            decoded_text = sampler.tokenizer.decode(sample.tolist(), skip_special_tokens=False)
+            f.write(f"{decoded_text}\n\n")
+            f.write("=" * 80 + "\n\n")
+
+    print("Done")
+
+
+def main():
+    limit = 1
+    cfg = Config()
+    sampler = LLADASampler(cfg)
+    dataset = truthful_qa(cfg)
+
+    samples = []
+    prompts = []
+
+    for i, row in enumerate(dataset.itertuples()):
+        if i >= limit:
+            break
+        prompt = row.question
 
         samples.extend(sampler.sample(prompt=prompt, cfg_scale=cfg.cfg_scale))
         prompts.extend([prompt] * cfg.batch_size)
 
-    with open("llada_min_truth_qa_samples.txt", "w") as f:
+    with open("llada_min_truth_qa_samples.log", "w") as f:
         for i, sample in enumerate(samples):
             decoded_text = sampler.tokenizer.decode(sample.tolist(), skip_special_tokens=False)
-            decoded_text = decoded_text.split("<|endoftext|>")[0]  # take content before EOS token
+            # decoded_text = decoded_text.split("<|endoftext|>")[0]  # take content before EOS token
             f.write(f"Prompt: {prompts[i]}\n")
             f.write(f"Sample: {decoded_text}\n\n")
             f.write("=" * 80 + "\n\n")
@@ -238,4 +422,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    main_block()
