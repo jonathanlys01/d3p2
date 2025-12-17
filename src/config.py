@@ -49,6 +49,12 @@ class Config:
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
     cfg_scale: float = 3.0
+    steps: int = 128
+    gen_length: int = 128
+    block_length: int = 32
+    remasking: str = "low_confidence"  # "low_confidence" or "random"
+    logits_eos_inf: bool = False
+    confidence_eos_eot_inf: bool = False
 
     # sampling
     num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
@@ -130,6 +136,12 @@ class Config:
             object.__setattr__(self, "interactive", True)
 
         assert self.method in AVAIL, f"Method {self.method} not recognized. Available methods: {list(AVAIL)}"
+
+        if self.model == "llada":
+            assert self.remasking in ["low_confidence", "random"], f"Remasking method {self.remasking} not recognized."
+            assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
+            num_blocks = self.gen_length // self.block_length
+            assert self.steps % num_blocks == 0, "steps must be divisible by num_blocks"
 
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))

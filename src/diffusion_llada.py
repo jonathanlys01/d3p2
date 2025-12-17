@@ -241,29 +241,28 @@ class LLADASampler(nn.Module):
     def block_diffuse(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         prompt: str,
-        steps: int = 128,
-        gen_length: int = 128,
-        block_length: int = 32,
         temperature: float = 0.0,
-        cfg_scale: float = 2.0,
-        remasking: str = "low_confidence",
-        logits_eos_inf: bool = False,
-        confidence_eos_eot_inf: bool = False,
     ):
         """
         Args:
             prompt: Input string.
-            steps: Sampling steps, less than or equal to gen_length.
-            gen_length: Generated answer length.
-            block_length: Block length, less than or equal to gen_length.
-            If less than gen_length, it means using semi_autoregressive remasking.
             temperature: Categorical distribution sampling temperature.
-            cfg_scale: Unsupervised classifier-free guidance scale.
-            remasking: Remasking strategy. 'low_confidence' or 'random'.
-            logits_eos_inf: Whether to set the logits of EOS token to -inf.
-            confidence_eos_eot_inf: Whether to set the confidence of EOS and EoT token to -inf.
         """
+
+        # Checks
+        gen_length = self.config.gen_length
+        block_length = self.config.block_length
+        steps = self.config.steps
+        cfg_scale = self.config.cfg_scale
+        remasking = self.config.remasking
+        logits_eos_inf = self.config.logits_eos_inf
+        confidence_eos_eot_inf = self.config.confidence_eos_eot_inf
+
+        num_blocks = gen_length // block_length
+        steps = steps // num_blocks
+
         # Tokenize prompt
+
         if "instruct" in self.config.llada_model_path.lower():
             message = [{"role": "user", "content": prompt}]
             prompt_str = self.tokenizer.apply_chat_template(message, add_generation_prompt=True, tokenize=False)
@@ -277,32 +276,19 @@ class LLADASampler(nn.Module):
             return_tensors="pt",
         )
         prompt_tokens = encoded_outputs["input_ids"].to(self.device)
-        attention_mask = encoded_outputs["attention_mask"].to(self.device)
+
+        batch_size = self.config.batch_size
+        prompt_tokens = prompt_tokens.repeat(batch_size, 1)
 
         # Setup generation buffer
         x = torch.full(
-            (prompt_tokens.shape[0], prompt_tokens.shape[1] + gen_length),
+            (batch_size, prompt_tokens.shape[1] + gen_length),
             self.mask_index,
             dtype=torch.long,
         ).to(self.device)
         x[:, : prompt_tokens.shape[1]] = prompt_tokens.clone()
 
-        if attention_mask is not None:
-            attention_mask = torch.cat(
-                [
-                    attention_mask,
-                    torch.ones((prompt_tokens.shape[0], gen_length), dtype=attention_mask.dtype, device=self.device),
-                ],
-                dim=-1,
-            )
-
         prompt_index = x != self.mask_index
-
-        assert gen_length % block_length == 0
-        num_blocks = gen_length // block_length
-
-        assert steps % num_blocks == 0
-        steps = steps // num_blocks
 
         for num_block in tqdm(range(num_blocks), desc="Blocks"):
             block_mask_index = (
@@ -320,19 +306,15 @@ class LLADASampler(nn.Module):
                     un_x = x.clone()
                     un_x[prompt_index] = self.mask_index
                     x_ = torch.cat([x, un_x], dim=0)
-                    if attention_mask is not None:
-                        attention_mask_ = torch.cat([attention_mask, attention_mask], dim=0)
-                    else:
-                        attention_mask_ = None
 
                     with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        logits = self.model(x_, attention_mask=attention_mask_).logits
+                        logits = self.model(x_).logits
 
                     logits, un_logits = torch.chunk(logits, 2, dim=0)
                     logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
                 else:
                     with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        logits = self.model(x, attention_mask=attention_mask).logits
+                        logits = self.model(x).logits
 
                 if logits_eos_inf:
                     logits[:, :, 126081] = -torch.inf
@@ -348,8 +330,6 @@ class LLADASampler(nn.Module):
                     x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
                 elif remasking == "random":
                     x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-                else:
-                    raise NotImplementedError(remasking)
 
                 x0_p[:, prompt_tokens.shape[1] + (num_block + 1) * block_length :] = -torch.inf
 
@@ -357,7 +337,7 @@ class LLADASampler(nn.Module):
                 confidence = torch.where(mask_index, x0_p, -torch.inf)
 
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                for j in range(confidence.shape[0]):
+                for j in range(batch_size):
                     _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
                     transfer_index[j, select_index] = True
                 x[transfer_index] = x0[transfer_index]
@@ -381,7 +361,7 @@ def main_block():
         prompt = row.question
 
         # sample using the block_diffuse method
-        samples.extend(sampler.block_diffuse(prompt=prompt, cfg_scale=cfg.cfg_scale))
+        samples.extend(sampler.block_diffuse(prompt=prompt))
         prompts.extend([prompt] * cfg.batch_size)
 
     with open("llada_block_truth_qa_samples.log", "w") as f:
