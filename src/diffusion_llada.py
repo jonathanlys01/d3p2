@@ -42,7 +42,7 @@ class LLADASampler(nn.Module):
         model_args = process_model_args(config.llada_model_path, cache_dir=config.cache_dir, dtype="auto")
         self.model = LLaDAModelLM.from_pretrained(**model_args)
         self.selector = get_subsample_selector(config)
-        self.config = config
+        self.config: Config = config
         self.tokenizer = get_tokenizer(config, "llada")
 
         model_config: LLaDAConfig = self.model.config
@@ -237,32 +237,8 @@ class LLADASampler(nn.Module):
 
         return num_transfer_tokens
 
-    @torch.no_grad()
-    def block_diffuse(  # noqa: C901, PLR0912, PLR0913, PLR0915
-        self,
-        prompt: str,
-        temperature: float = 0.0,
-    ):
-        """
-        Args:
-            prompt: Input string.
-            temperature: Categorical distribution sampling temperature.
-        """
-
-        # Checks
-        gen_length = self.config.gen_length
-        block_length = self.config.block_length
-        steps = self.config.steps
-        cfg_scale = self.config.cfg_scale
-        remasking = self.config.remasking
-        logits_eos_inf = self.config.logits_eos_inf
-        confidence_eos_eot_inf = self.config.confidence_eos_eot_inf
-
-        num_blocks = gen_length // block_length
-        steps = steps // num_blocks
-
-        # Tokenize prompt
-
+    def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
+        """Apply chat template if needed, and tokenize the prompt."""
         if "instruct" in self.config.llada_model_path.lower():
             message = [{"role": "user", "content": prompt}]
             prompt_str = self.tokenizer.apply_chat_template(message, add_generation_prompt=True, tokenize=False)
@@ -276,69 +252,111 @@ class LLADASampler(nn.Module):
             return_tensors="pt",
         )
         prompt_tokens = encoded_outputs["input_ids"].to(self.device)
+        return prompt_tokens
 
+    def _get_slice(self, t: int, cache: Cache) -> tuple[bool, torch.Tensor]:
+        subsample_step = self.config.subsample_start <= t <= self.config.subsample_end
+        last_step = t == -1
+
+        slice_idx = (
+            self.selector.subsample(cache)
+            if subsample_step or last_step
+            else torch.arange(cache.x.size(0), device=self.device)
+        )
+
+        return subsample_step, slice_idx
+
+    def _block_sample(self, logits: torch.Tensor, subsample_step: bool) -> torch.Tensor:
+        temperature = self.config.cat_temperature
+        expand = self.config.group_size if subsample_step else 1
+
+        if temperature == 0.0:
+            x0_ = torch.argmax(logits, dim=-1)
+            x0 = torch.repeat_interleave(x0_, repeats=expand, dim=0)
+        else:
+            logits = logits.to(torch.float64) / temperature
+            probs = F.softmax(logits, dim=-1)
+            x0 = sample_categorical(probs, expand=expand)
+        return x0
+
+    def _get_confidence(self, logits: torch.Tensor, x0: torch.Tensor, num_block: int, prompt_len: int) -> torch.Tensor:
+        if self.config.confidence_eos_eot_inf:
+            logits[:, :, 126348] = -torch.inf
+
+        if self.config.remasking == "low_confidence":
+            p = F.softmax(logits, dim=-1)
+            x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
+        elif self.config.remasking == "random":
+            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+
+        x0_p[:, prompt_len + (num_block + 1) * self.config.block_length :] = -torch.inf
+        return x0_p
+
+    @torch.no_grad()
+    def block_diffuse(self, prompt: str):
+        num_blocks = self.config.gen_length // self.config.block_length
+        steps = self.config.steps // num_blocks
         batch_size = self.config.batch_size
+
+        prompt_tokens = self._preprocess_prompt(prompt)
+        prompt_len = prompt_tokens.shape[1]
         prompt_tokens = prompt_tokens.repeat(batch_size, 1)
 
         # Setup generation buffer
         x = torch.full(
-            (batch_size, prompt_tokens.shape[1] + gen_length),
+            (batch_size, prompt_len + self.config.gen_length),
             self.mask_index,
             dtype=torch.long,
         ).to(self.device)
-        x[:, : prompt_tokens.shape[1]] = prompt_tokens.clone()
+        x[:, :prompt_len] = prompt_tokens.clone()
 
         prompt_index = x != self.mask_index
 
-        for num_block in tqdm(range(num_blocks), desc="Blocks"):
-            block_mask_index = (
-                x[
-                    :,
-                    prompt_tokens.shape[1] + num_block * block_length : prompt_tokens.shape[1]
-                    + (num_block + 1) * block_length :,
-                ]
-                == self.mask_index
-            )
+        disable = False
+        if self.distributed_utils:
+            disable = self.distributed_utils.rank != 0
+
+        for num_block in tqdm(range(num_blocks), desc="Blocks", disable=disable):
+            start = prompt_len + num_block * self.config.block_length
+            end = prompt_len + (num_block + 1) * self.config.block_length
+            block_mask_index = x[:, start:end] == self.mask_index
+
             num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
-            for i in range(steps):
+
+            for step in range(steps):
                 mask_index = x == self.mask_index
-                if cfg_scale > 0.0:
+
+                if self.config.cfg_scale > 0.0:
                     un_x = x.clone()
                     un_x[prompt_index] = self.mask_index
                     x_ = torch.cat([x, un_x], dim=0)
 
-                    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        logits = self.model(x_).logits
+                    logits, out_all = self._forward_model(x_)
+                    embeddings_all = out_all[-1]
 
                     logits, un_logits = torch.chunk(logits, 2, dim=0)
-                    logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
-                else:
-                    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        logits = self.model(x).logits
+                    embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)
 
-                if logits_eos_inf:
+                    logits = un_logits + (self.config.cfg_scale + 1) * (logits - un_logits)
+                else:
+                    logits, out = self._forward_model(x)
+                    embeddings = out[-1]
+
+                if self.config.logits_eos_inf:
                     logits[:, :, 126081] = -torch.inf
 
-                logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-                x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
+                cache = Cache(log_p_x0=logits, embeddings=embeddings, x=x)
+                subsample_step, slice_idx = self._get_slice(step, cache)
 
-                if confidence_eos_eot_inf:
-                    logits_with_noise[:, :, 126081] = logits[:, :, 126348] = -torch.inf
-
-                if remasking == "low_confidence":
-                    p = F.softmax(logits, dim=-1)
-                    x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
-                elif remasking == "random":
-                    x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-
-                x0_p[:, prompt_tokens.shape[1] + (num_block + 1) * block_length :] = -torch.inf
+                x0 = self._block_sample(logits, subsample_step)
+                x0_p = self._get_confidence(logits, x0, num_block, prompt_len)
 
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(mask_index, x0_p, -torch.inf)
 
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 for j in range(batch_size):
-                    _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                    _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, step])
                     transfer_index[j, select_index] = True
                 x[transfer_index] = x0[transfer_index]
 
@@ -346,7 +364,7 @@ class LLADASampler(nn.Module):
 
 
 def main_block():
-    limit = float("inf")
+    limit = 10
     cfg = Config()
     sampler = LLADASampler(cfg)
     dataset = truthful_qa(cfg)
