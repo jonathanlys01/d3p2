@@ -134,11 +134,14 @@ class DistributedUtils:
         self.init_placeholders()
 
     def init_placeholders(self):
-        self.embeddings = torch.zeros(
-            (self.world_size * self.cfg.batch_size, self.cfg.embedding_dim * self.cfg.sequence_length),
-            device="cuda",
-        )
-        self.qualities = torch.zeros((self.world_size * self.cfg.batch_size,), device="cuda")
+        if self.cfg.model == "mdlm":
+            seq_len = self.cfg.sequence_length
+        elif self.cfg.model == "llada":
+            seq_len = self.cfg.block_length
+        b_size = self.world_size * self.cfg.batch_size
+
+        self.embeddings = torch.zeros((b_size, self.cfg.embedding_dim * seq_len), device="cuda")
+        self.qualities = torch.zeros((b_size,), device="cuda")
 
     def all_gather(
         self,

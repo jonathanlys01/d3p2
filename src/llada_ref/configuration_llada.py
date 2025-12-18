@@ -1,6 +1,7 @@
 """
 LLaDA configuration
 """
+
 from transformers import AutoConfig, PretrainedConfig
 
 from enum import Enum
@@ -127,7 +128,7 @@ class InitFnType(StrEnum):
 
 
 @dataclass
-class ModelConfig():
+class ModelConfig:
     """
     LLaDA (model) configuration.
     """
@@ -379,9 +380,8 @@ class ModelConfig():
             if self.n_kv_heads == n_kv_heads_should_be:
                 return n_kv_heads_should_be
             else:
-                raise Exception(
-                    "You can't set `multi_query_attention` and `n_kv_heads` at the same time."
-                )
+                raise Exception("You can't set `multi_query_attention` and `n_kv_heads` at the same time.")
+
 
 class ActivationCheckpointingStrategy(StrEnum):
     whole_layer = "whole_layer"
@@ -403,7 +403,7 @@ class ActivationCheckpointingStrategy(StrEnum):
     """
     Checkpoint one in four transformer layers.
     """
-    
+
     two_in_three = "two_in_three"
     """
     Checkpoint two out of every three transformer layers.
@@ -439,11 +439,7 @@ class LLaDAConfig(PretrainedConfig):
         all_kwargs = model_config.__dict__
         all_kwargs.update(kwargs)
         all_kwargs.update({"use_cache": use_cache})
-        all_kwargs.update(
-            {
-                "architectures": all_kwargs.get("architectures", ["LLaDAModelLM"])
-            }
-        )
+        all_kwargs.update({"architectures": all_kwargs.get("architectures", ["LLaDAModelLM"])})
         super().__init__(**all_kwargs)
 
     @property

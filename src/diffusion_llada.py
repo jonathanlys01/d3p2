@@ -1,5 +1,13 @@
-"""
+r"""
 Minimalist LLaDA diffusion sampler, adapted from the LLaDA codebase
+
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=0.5 \
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=0.6 \
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=0.7 \
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=0.8 \
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=0.9 \
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.0 \
+python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.5
 """
 
 from typing import Optional
@@ -345,10 +353,14 @@ class LLADASampler(nn.Module):
                 if self.config.logits_eos_inf:
                     logits[:, :, 126081] = -torch.inf
 
-                cache = Cache(log_p_x0=logits, embeddings=embeddings, x=x)
+                cache = Cache(
+                    log_p_x0=logits[:, start:end],
+                    embeddings=embeddings[:, start:end],
+                    x=x[:, start:end],
+                )
                 subsample_step, slice_idx = self._get_slice(step, cache)
 
-                x0 = self._block_sample(logits, subsample_step)
+                x0 = self._block_sample(torch.index_select(logits, 0, slice_idx), subsample_step)
                 x0_p = self._get_confidence(logits, x0, num_block, prompt_len)
 
                 x0 = torch.where(mask_index, x0, x)
@@ -364,7 +376,7 @@ class LLADASampler(nn.Module):
 
 
 def main_block():
-    limit = 10
+    limit = 20
     cfg = Config()
     sampler = LLADASampler(cfg)
     dataset = truthful_qa(cfg)
@@ -382,7 +394,7 @@ def main_block():
         samples.extend(sampler.block_diffuse(prompt=prompt))
         prompts.extend([prompt] * cfg.batch_size)
 
-    with open("llada_block_truth_qa_samples.log", "w") as f:
+    with open(f"llada_block_{cfg.cfg_scale}.log", "w") as f:
         for i, sample in enumerate(samples):
             decoded_text = sampler.tokenizer.decode(sample.tolist(), skip_special_tokens=False)
             f.write(f"{decoded_text}\n\n")
@@ -407,6 +419,10 @@ def main():
 
         samples.extend(sampler.sample(prompt=prompt, cfg_scale=cfg.cfg_scale))
         prompts.extend([prompt] * cfg.batch_size)
+
+    if sampler.distributed_utils:
+        # cleanup
+        sampler.distributed_utils.cleanup()
 
     with open("llada_min_truth_qa_samples.log", "w") as f:
         for i, sample in enumerate(samples):
