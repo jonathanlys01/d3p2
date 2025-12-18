@@ -103,7 +103,7 @@ class LLADASampler(nn.Module):
             embeddings_all = out_all[-1]
 
             logits, un_logits = torch.chunk(logits, 2, dim=0)
-            embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)  # we only need embeddings for the main batch
+            _, embeddings = torch.chunk(embeddings_all, 2, dim=0)  # ignore conditional embeddings
 
             logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
         else:
@@ -376,7 +376,7 @@ class LLADASampler(nn.Module):
 
 
 def main_block():
-    limit = 20
+    limit = 50
     cfg = Config()
     sampler = LLADASampler(cfg)
     dataset = truthful_qa(cfg)
@@ -393,6 +393,9 @@ def main_block():
         # sample using the block_diffuse method
         samples.extend(sampler.block_diffuse(prompt=prompt))
         prompts.extend([prompt] * cfg.batch_size)
+
+    if sampler.distributed_utils:
+        sampler.distributed_utils.cleanup()
 
     with open(f"llada_block_{cfg.cfg_scale}.log", "w") as f:
         for i, sample in enumerate(samples):

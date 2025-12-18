@@ -61,6 +61,7 @@ class BaseSelector(nn.Module):
             K += self.config._w_split * mask
 
         if (power := self.config._kernel_power) != 1:
+            K = (K + K.T) / 2 + 1e-3 * torch.eye(K.size(0), device=K.device)
             eigenvalues, eigenvectors = torch.linalg.eigh(K)
             eigenvalues_modded = torch.clamp(eigenvalues**power, min=1e-3)
             K_modded = eigenvectors @ torch.diag(eigenvalues_modded) @ eigenvectors.T
@@ -103,9 +104,21 @@ def compute_scores(cache: Cache) -> torch.Tensor:
 
 
 def fallback_greedy(L: torch.Tensor, k: int) -> torch.Tensor:
+    """Fallback greedy selection based on diagonal values."""
     diag = torch.diagonal(L)
     topk_indices = torch.topk(diag, k=k).indices
     return topk_indices
+
+
+def fallback_greedy_block(L: torch.Tensor, group_size: int, n_groups: int) -> torch.Tensor:
+    """Fallback block greedy selection based on diagonal values."""
+    diag = torch.diagonal(L)
+    blocked_diag = diag.view(n_groups, group_size)
+    local_indices = torch.argmax(blocked_diag, dim=1)
+    group_offsets = torch.arange(n_groups, device=diag.device) * group_size
+    global_indices = local_indices + group_offsets
+
+    return global_indices
 
 
 # Kernel utils
