@@ -35,7 +35,7 @@ class MDLMSampler(nn.Module):
         self.mask_index = model_config.vocab_size - 1
         self.model_length = model_config.model_length
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
         self.model.eval()
 
@@ -52,7 +52,7 @@ class MDLMSampler(nn.Module):
         return logits
 
     def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float32):  # type: ignore
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
             logits = out.logits
             embeddings = out.hidden_states
@@ -67,7 +67,7 @@ class MDLMSampler(nn.Module):
         t: torch.Tensor,
         dt: float,
         step: int,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         if t.ndim > 1:
             t = t.squeeze(-1)
 
@@ -95,6 +95,7 @@ class MDLMSampler(nn.Module):
         else:
             copy_flag = (x != self.mask_index).to(x.dtype)
 
+            assert cache.log_p_x0 is not None
             p_x0 = cache.log_p_x0.exp()
             p_x0 = p_x0[slice_idx]  # k x L x V
 
@@ -148,6 +149,8 @@ class MDLMSampler(nn.Module):
         for i in tqdm(range(num_steps), desc="Generating", disable=disable):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
             x = self._ddpm_update(x=x, t=t, dt=dt, step=i)
+
+        assert x is not None
 
         # last step cleanup
         if self.config.group_size > 1:

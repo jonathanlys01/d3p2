@@ -14,7 +14,7 @@ class BaseSelector(nn.Module):
         self.distributed_utils = DistributedUtils(config) if DistributedUtils.is_distributed() else None
         self.distributed_mul = self.distributed_utils.world_size if self.distributed_utils else 1
 
-    def forward(self, cache: Cache) -> torch.Tensor:
+    def forward(self, cache: Cache) -> torch.Tensor | None:
         return self.subsample(cache)
 
     @torch.no_grad()
@@ -31,6 +31,8 @@ class BaseSelector(nn.Module):
 
     @torch.no_grad()
     def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
+        assert cache.embeddings is not None
+
         B = cache.embeddings.size(0)
 
         if self.config._w_interaction < 0:
@@ -47,6 +49,8 @@ class BaseSelector(nn.Module):
                 return None
 
         # now both flat and scores are global
+        assert flat is not None
+        assert scores is not None
 
         if self.config._kernel_type == "cosine":
             S = _compute_cosine(flat)
@@ -71,8 +75,10 @@ class BaseSelector(nn.Module):
         return K
 
     @torch.no_grad()
-    def compute_scores(self, cache: Cache) -> torch.Tensor:
+    def compute_scores(self, cache: Cache) -> torch.Tensor | None:
         """Compute scores based on entropy of predicted distribution."""
+        assert cache.log_p_x0 is not None
+
         logZ = cache.log_p_x0.float()
         H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
         scores = H.mean(dim=-1)  # [B] average entropy per sequence
@@ -84,10 +90,10 @@ class BaseSelector(nn.Module):
 
         return scores
 
-    def _transversal(self, cache: Cache) -> torch.Tensor:
+    def _transversal(self, cache: Cache) -> torch.Tensor | None:
         raise NotImplementedError
 
-    def _non_transversal(self, cache: Cache) -> torch.Tensor:
+    def _non_transversal(self, cache: Cache) -> torch.Tensor | None:
         raise NotImplementedError
 
 
@@ -96,6 +102,8 @@ class BaseSelector(nn.Module):
 
 def compute_scores(cache: Cache) -> torch.Tensor:
     """Compute scores based on entropy of predicted distribution."""
+    assert cache.log_p_x0 is not None
+
     logZ = cache.log_p_x0.float()
     H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
     scores = H.mean(dim=-1)  # [B] average entropy per sequence

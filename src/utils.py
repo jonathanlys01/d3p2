@@ -80,7 +80,7 @@ def compile_model(model, config: Config):
     return model
 
 
-def sample_categorical_deprecated(categorical_probs: torch.Tensor, expand: int = None) -> torch.Tensor:
+def sample_categorical_deprecated(categorical_probs: torch.Tensor, expand: int | None = None) -> torch.Tensor:
     """
     Gumbel-max trick for sampling from categorical distribution.
     categorical_probs: [B, T, V] tensor of categorical probabilities
@@ -98,7 +98,7 @@ def sample_categorical_deprecated(categorical_probs: torch.Tensor, expand: int =
     return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
 
-def sample_categorical(categorical_probs: torch.Tensor, expand: int = None) -> torch.Tensor:
+def sample_categorical(categorical_probs: torch.Tensor, expand: int | None = None) -> torch.Tensor:
     expand = expand or 1
     B, T, V = categorical_probs.shape
 
@@ -119,12 +119,12 @@ class DistributedUtils:
 
     @classmethod
     def is_distributed(self) -> bool:
-        return idr_torch.world_size > 1
+        return idr_torch.world_size > 1  # type: ignore
 
     def __init__(self, cfg: Config):
-        self.rank = idr_torch.rank
-        self.local_rank = idr_torch.local_rank
-        self.world_size = idr_torch.world_size
+        self.rank: int = idr_torch.rank  # type: ignore
+        self.local_rank: int = idr_torch.local_rank  # type: ignore
+        self.world_size: int = idr_torch.world_size  # type: ignore
         self.cfg = cfg
 
         if self.is_distributed():
@@ -138,7 +138,9 @@ class DistributedUtils:
             seq_len = self.cfg.sequence_length
         elif self.cfg.model == "llada":
             seq_len = self.cfg.block_length
-        b_size = self.world_size * self.cfg.batch_size
+        else:
+            raise ValueError(f"Unknown model type: {self.cfg.model}")
+        b_size = self.world_size * self.cfg.batch_size  # type: ignore
 
         self.embeddings = torch.zeros((b_size, self.cfg.embedding_dim * seq_len), device="cuda")
         self.qualities = torch.zeros((b_size,), device="cuda")
@@ -193,7 +195,7 @@ class DistributedUtils:
     def dispatch_sequences(self, seq_ids: torch.Tensor | None, last: bool = False) -> torch.Tensor:
         assert self.is_distributed(), "dispatch_sequences can only be called in distributed mode"
 
-        gather_indices = [None for _ in range(self.world_size)]
+        gather_indices: list[torch.Tensor | None] = [None for _ in range(self.world_size)]
 
         if seq_ids is not None:
             seq_ids = seq_ids.to(dtype=torch.int32, device="cuda")
@@ -220,10 +222,12 @@ class DistributedUtils:
         if ids is not None:
             ids = ids.to(dtype=torch.int16, device="cuda")
 
-        gather_indices = [None for _ in range(self.world_size)]
+        gather_indices: list[torch.Tensor | None] = [None for _ in range(self.world_size)]
 
         torch.distributed.all_gather_object(gather_indices, ids)
         all_indices_ = [idx for idx in gather_indices if idx is not None]
+        if not all_indices_:
+            return None
         all_indices = torch.cat(all_indices_, dim=0)
 
         assert all_indices.size(0) == self.world_size * self.cfg.n_groups, "All batch indices size mismatch"

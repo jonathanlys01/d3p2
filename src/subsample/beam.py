@@ -52,6 +52,8 @@ class GreedyBeamSearch(BaseSelector):
 
 class _DiverseBeamSearch(BaseSelector):
     def _transversal(self, cache: Cache):
+        assert cache.embeddings is not None
+
         flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
         flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)
 
@@ -90,6 +92,8 @@ class _DiverseBeamSearch(BaseSelector):
 
     def _non_transversal(self, cache: Cache):
         """Non-transversal diverse beam search (Global MMR)."""
+        assert cache.embeddings is not None
+
         flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
         flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)
 
@@ -129,6 +133,8 @@ class _DiverseBeamSearch(BaseSelector):
 
 class DiverseBeamSearch(BaseSelector):
     def _transversal(self, cache: Cache):
+        assert cache.embeddings is not None
+
         flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
         flat = F.normalize(flat, dim=-1, eps=1e-12)
 
@@ -161,6 +167,8 @@ class DiverseBeamSearch(BaseSelector):
         )
 
     def _non_transversal(self, cache: Cache):
+        assert cache.embeddings is not None
+
         flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
         flat = F.normalize(flat, dim=-1, eps=1e-12)
 

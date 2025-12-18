@@ -59,14 +59,14 @@ class LLADASampler(nn.Module):
         assert sequence_length <= model_config.max_sequence_length, "Requested sequence length exceeds model's maximum."
         self.sequence_length = sequence_length
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
         self.model.eval()
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
     def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
             logits = out.logits
             embeddings = out.hidden_states
@@ -94,7 +94,7 @@ class LLADASampler(nn.Module):
         cfg_scale: float,
         remasking="confidence",
         prompt_length=0,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         if cfg_scale > 0.0:
             un_x = x_t.clone()
             un_x[:, :prompt_length] = self.mask_index
@@ -156,7 +156,7 @@ class LLADASampler(nn.Module):
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
 
             for j in range(conf_p.shape[0] if "confidence" in locals() else x0.shape[0]):
-                k = num_transfer_tokens[j].item()
+                k = int(num_transfer_tokens[j].item())
                 # Ensure we keep at least the prompt tokens
                 k = max(k, prompt_length)
 
@@ -195,7 +195,7 @@ class LLADASampler(nn.Module):
         num_steps: Optional[int] = None,
         init_x: Optional[torch.Tensor] = None,
         prompt: Optional[str] = None,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         num_steps = num_steps or self.config.num_steps
         prompt_length = 0
 
@@ -262,9 +262,11 @@ class LLADASampler(nn.Module):
         prompt_tokens = encoded_outputs["input_ids"].to(self.device)
         return prompt_tokens
 
-    def _get_slice(self, t: int, cache: Cache) -> tuple[bool, torch.Tensor]:
+    def _get_slice(self, t: int, cache: Cache) -> tuple[bool, torch.Tensor | None]:
         subsample_step = self.config.subsample_start <= t <= self.config.subsample_end
         last_step = t == -1
+
+        assert cache.x is not None
 
         slice_idx = (
             self.selector.subsample(cache)
@@ -296,6 +298,8 @@ class LLADASampler(nn.Module):
             x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
         elif self.config.remasking == "random":
             x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+        else:
+            raise ValueError(f"Invalid remasking method: {self.config.remasking}")
 
         x0_p[:, prompt_len + (num_block + 1) * self.config.block_length :] = -torch.inf
         return x0_p
@@ -360,6 +364,8 @@ class LLADASampler(nn.Module):
                 )
                 subsample_step, slice_idx = self._get_slice(step, cache)
 
+                assert slice_idx is not None
+
                 x0 = self._block_sample(torch.index_select(logits, 0, slice_idx), subsample_step)
                 x0_p = self._get_confidence(logits, x0, num_block, prompt_len)
 
@@ -388,7 +394,7 @@ def main_block():
         if i >= limit:
             break
 
-        prompt = row.question
+        prompt = str(row.question)
 
         # sample using the block_diffuse method
         samples.extend(sampler.block_diffuse(prompt=prompt))

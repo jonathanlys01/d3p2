@@ -159,6 +159,8 @@ def main():
         # --- Reference Generation (GPU, No Sort) ---
         # We perform this ONCE per trial.
         kernel_tensor = base_selector.compute_kernel(cache)
+        assert kernel_tensor is not None
+
         kernel_np = kernel_tensor.detach().cpu().numpy()
 
         # This is the "Ground Truth" distribution for this specific trial

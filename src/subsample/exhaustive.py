@@ -22,6 +22,8 @@ class Exhaustive(BaseSelector):
         if (L := self.compute_kernel(cache)) is None:
             return None
 
+        assert self.cached_group_cartesian is not None
+
         L_sub = L[self.cached_group_cartesian[:, :, None], self.cached_group_cartesian[:, None, :]]
         sign, logdet = torch.linalg.slogdet(L_sub)
         if self.config._temperature == 0:  # argmax for temperature 0
@@ -44,6 +46,6 @@ class Exhaustive(BaseSelector):
 def _group_cartesian(group_size: int, n_groups: int) -> torch.Tensor:
     """Generate Cartesian product of group indices."""
     grids = torch.meshgrid(*[torch.arange(group_size) + i * group_size for i in range(n_groups)], indexing="ij")
-    stacked: torch.Tensor = torch.stack(grids, axis=-1)
+    stacked: torch.Tensor = torch.stack(grids, dim=-1)
     reshaped = stacked.reshape(-1, n_groups)
     return reshaped

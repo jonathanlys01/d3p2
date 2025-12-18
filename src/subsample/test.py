@@ -118,6 +118,8 @@ def main():
 
         # Compute Ground Truth Kernel (Convert to Numpy for LogDet Calc)
         kernel_tensor = base_selector.compute_kernel(cache)
+        assert kernel_tensor is not None
+
         kernel_np = kernel_tensor.detach().cpu().numpy()
 
         for method, transversal in IMPLEMENTED_METHODS:
