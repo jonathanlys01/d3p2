@@ -54,7 +54,7 @@ class Config:
     block_length: int = 32
     remasking: str = "low_confidence"  # "low_confidence" or "random"
     logits_eos_inf: bool = False
-    confidence_eos_eot_inf: bool = False
+    confidence_eos_eot_inf: bool = True
 
     # sampling
     num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
