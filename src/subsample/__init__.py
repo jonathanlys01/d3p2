@@ -5,14 +5,14 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from base import BaseSelector
-    from beam import DiverseBeamSearch, GreedyBeamSearch
-    from dpp_selector import DPP
-    from exhaustive import Exhaustive
-    from greedy_map import GreedyMAP
-    from random_selector import RandomSelection
-
     from config import Config
+
+    from .base import BaseSelector
+    from .beam import DiverseBeamSearch, GreedyBeamSearch
+    from .dpp_selector import DPP
+    from .exhaustive import Exhaustive
+    from .greedy_map import GreedyMAP
+    from .random_selector import RandomSelection
 
 AVAIL = {
     "dpp": ("subsample.dpp_selector", "DPP"),

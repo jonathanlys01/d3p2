@@ -21,12 +21,13 @@ class BaseSelector(nn.Module):
     def subsample(self, cache: Cache):
         ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
 
-        if ret is None:
-            return self.distributed_utils.dispatch_batch_indices(None)
-        elif self.distributed_utils:  # dispatch from master to workers
+        if self.distributed_utils:
             ret = self.distributed_utils.dispatch_batch_indices(ret)
 
-        return ret.long()
+        if ret:
+            ret = ret.long()
+
+        return ret
 
     @torch.no_grad()
     def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
@@ -61,11 +62,11 @@ class BaseSelector(nn.Module):
             K += self.config._w_split * mask
 
         if (power := self.config._kernel_power) != 1:
-            K = (K + K.T) / 2 + 1e-3 * torch.eye(K.size(0), device=K.device)
+            K = (K + K.T) / 2 + 1e-6 * torch.eye(B, device=K.device)
             eigenvalues, eigenvectors = torch.linalg.eigh(K)
             eigenvalues_modded = torch.clamp(eigenvalues**power, min=1e-3)
             K_modded = eigenvectors @ torch.diag(eigenvalues_modded) @ eigenvectors.T
-            K = (K_modded + K_modded.T) / 2  # ensure symmetry
+            K = (K_modded + K_modded.T) / 2
 
         return K
 
