@@ -11,13 +11,12 @@ import numpy as np
 import ot
 import torch
 import torch.nn.functional as F
-from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
 
 import mauve
 from config import CACHE_DIR
 from jina_ref.modeling_bert import JinaBertModel
-from utils import process_model_args
+from utils import process_model_args, tqdm
 
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -283,10 +282,10 @@ def main():
     evaluator = Evaluator(args.batch_size, args.force)
     pbar = tqdm(files, desc="Evaluating files")
 
-    for file_name in pbar:  # type: ignore
+    for file_name in pbar:
         file_path = os.path.join(args.folder_path, file_name)
         evaluator.eval_from_file(file_path)
-        pbar.set_postfix({"Last evaluated": file_name})  # type: ignore
+        pbar.set_postfix({"Last evaluated": file_name})
 
 
 if __name__ == "__main__":

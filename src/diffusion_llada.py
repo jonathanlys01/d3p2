@@ -15,13 +15,12 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 from torch import nn
-from tqdm import tqdm
 
 from config import Cache, Config
 from data import truthful_qa
 from llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from subsample import get_subsample_selector
-from utils import get_tokenizer, process_model_args, sample_categorical
+from utils import get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
 def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -215,7 +214,7 @@ class LLADASampler(nn.Module):
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
 
-        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps, disable=disable):  # type: ignore
+        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps, disable=disable):
             x_t = self._update(
                 x_t,
                 t,
@@ -328,7 +327,7 @@ class LLADASampler(nn.Module):
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
 
-        for num_block in tqdm(range(num_blocks), desc="Blocks", disable=disable):  # type: ignore
+        for num_block in tqdm(range(num_blocks), desc="Blocks", disable=disable):
             start = prompt_len + num_block * self.config.block_length
             end = prompt_len + (num_block + 1) * self.config.block_length
             block_mask_index = x[:, start:end] == self.mask_index
