@@ -2,12 +2,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from tqdm import tqdm
 from transformers import AutoModel
 
 from config import Config
 from mdlm_ref.modeling_mdlm import MDLM
-from utils import get_tokenizer
+from utils import get_tokenizer, tqdm
 
 
 # TODO: sanitize this script
@@ -149,7 +148,7 @@ def main():  # noqa: C901, PLR0915
         }
 
         # Middle loop: batch
-        for i in tqdm(range(N_BATCHES), desc="    Batches"):  # type: ignore
+        for i in tqdm(range(N_BATCHES), desc="    Batches"):
             # --- 4.1. Sample data for this batch ---
             sample_texts = []
             for _ in range(BATCH_SIZE):

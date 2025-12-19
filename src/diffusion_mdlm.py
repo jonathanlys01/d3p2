@@ -6,12 +6,11 @@ from typing import Optional
 
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from config import Cache, Config
 from mdlm_ref.modeling_mdlm import MDLM, MDLMConfig
 from subsample import get_subsample_selector
-from utils import get_initial_data, get_tokenizer, process_model_args, sample_categorical
+from utils import get_initial_data, get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
 NEG_INFINITY = -1_000_000.0
@@ -146,7 +145,7 @@ class MDLMSampler(nn.Module):
         disable = False
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
-        for i in tqdm(range(num_steps), desc="Generating", disable=disable):  # type: ignore
+        for i in tqdm(range(num_steps), desc="Generating", disable=disable):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
             x = self._ddpm_update(x=x, t=t, dt=dt, step=i)
 

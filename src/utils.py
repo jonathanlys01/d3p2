@@ -1,14 +1,24 @@
 import os
 import warnings
 from builtins import print as bprint
+from typing import Iterable, TypeVar
 
 import idr_torch
 import numpy as np
 import torch
 import transformers
 from idr_torch import IdrTorchWarning
+from tqdm import tqdm as tqdm_original
+from tqdm.std import tqdm as tqdm_type
 
 from config import Config
+
+
+T = TypeVar("T")
+
+
+def tqdm(it: Iterable[T], **kwargs) -> tqdm_type[T]:  # type: ignore
+    return tqdm_original(it, **kwargs)  # type: ignore
 
 
 warnings.filterwarnings("ignore", category=IdrTorchWarning)  # ignore idr_torch warnings
