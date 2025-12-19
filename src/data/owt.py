@@ -14,7 +14,8 @@ if __name__ == "__main__":
 
     # number of workers in .map() call
     # good number to use is ~order number of cpu cores // 2
-    num_proc = max(15, os.cpu_count() // 2)
+    cpu_count = os.cpu_count()
+    num_proc = max(15, cpu_count // 2 if cpu_count is not None else 1)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -55,7 +56,7 @@ if __name__ == "__main__":
     )
 
     # fw by default only contains the 'train' split, so create a test split
-    split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+    split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)  # type: ignore
     split_dataset["val"] = split_dataset.pop("test")  # rename the test split to val
     print(split_dataset)
 
@@ -99,7 +100,7 @@ if __name__ == "__main__":
         total_batches = 1024
 
         idx = 0
-        for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):
+        for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):  # type: ignore
             # Batch together samples for faster write
             batch = dset.shard(num_shards=total_batches, index=batch_idx, contiguous=True).with_format("numpy")
             arr_batch = np.concatenate(batch["ids"])

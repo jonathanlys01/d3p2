@@ -215,7 +215,7 @@ class LLADASampler(nn.Module):
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
 
-        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps, disable=disable):
+        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps, disable=disable):  # type: ignore
             x_t = self._update(
                 x_t,
                 t,
@@ -328,7 +328,7 @@ class LLADASampler(nn.Module):
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
 
-        for num_block in tqdm(range(num_blocks), desc="Blocks", disable=disable):
+        for num_block in tqdm(range(num_blocks), desc="Blocks", disable=disable):  # type: ignore
             start = prompt_len + num_block * self.config.block_length
             end = prompt_len + (num_block + 1) * self.config.block_length
             block_mask_index = x[:, start:end] == self.mask_index
@@ -394,7 +394,7 @@ def main_block():
         if i >= limit:
             break
 
-        prompt = str(row.question)
+        prompt = str(row.question)  # type: ignore
 
         # sample using the block_diffuse method
         samples.extend(sampler.block_diffuse(prompt=prompt))
@@ -424,7 +424,7 @@ def main():
     for i, row in enumerate(dataset.itertuples()):
         if i >= limit:
             break
-        prompt = row.question
+        prompt = row.question  # type: ignore
 
         samples.extend(sampler.sample(prompt=prompt, cfg_scale=cfg.cfg_scale))
         prompts.extend([prompt] * cfg.batch_size)

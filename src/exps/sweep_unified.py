@@ -31,7 +31,8 @@ def _bcast(obj):
     """Broadcast a single Python object from rank 0; return it on all ranks."""
     if not dist.is_available() or not dist.is_initialized():
         return obj
-    obj_list = [obj] if idr_torch.is_master else [None]
+    is_master: bool = idr_torch.is_master  # type: ignore
+    obj_list = [obj] if is_master else [None]
     dist.broadcast_object_list(obj_list, src=0)
     return obj_list[0]
 
@@ -107,7 +108,7 @@ def main(config: Config):
     unique_id, master = generate_samples(config)
     if not master:
         return None
-    metrics = eval_samples(unique_id, config)
+    metrics = eval_samples(str(unique_id), config)
     return metrics
 
 
@@ -129,6 +130,7 @@ def _objective(trial: optuna.Trial, og_config: Config):
     print(f"Trial {trial.number}: w_inter={w_interaction}, det_temp={det_temperature}")
 
     metrics = main(config)
+    assert metrics is not None
 
     perplexity = metrics["perplexity"]
     cos_sim = metrics["cosine_similarity"]
@@ -146,14 +148,14 @@ if __name__ == "__main__":
     dist.init_process_group(
         backend="nccl",
         init_method="env://",
-        world_size=idr_torch.world_size,
-        rank=idr_torch.rank,
+        world_size=idr_torch.world_size,  # type: ignore
+        rank=idr_torch.rank,  # type: ignore
     )
 
     device = f"cuda:{idr_torch.local_rank}"
     torch.cuda.set_device(device)
 
-    is_master = idr_torch.is_master
+    is_master: bool = idr_torch.is_master  # type: ignore
 
     if is_master:
         storage = JournalStorage(JournalFileBackend(f"optuna_{SWEEP_NAME}.log"))
@@ -191,6 +193,7 @@ if __name__ == "__main__":
                 break
 
             cfg = _bcast(None)
+            assert cfg is not None
             main(cfg)
 
         dist.destroy_process_group()

@@ -109,7 +109,7 @@ def main():
         all_selectors[(method, transversal)] = selector
 
     # 3. Run Trials
-    for _ in tqdm(range(N_TRIALS), desc="Trials"):
+    for _ in tqdm(range(N_TRIALS), desc="Trials"):  # type: ignore
         # Data Generation
         embeddings = torch.randn(TOTAL_ITEMS, 16, 64, device=DEVICE)
         lpx = torch.randn(TOTAL_ITEMS, 16, 50, device=DEVICE)

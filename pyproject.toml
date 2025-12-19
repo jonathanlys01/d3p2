@@ -79,3 +79,6 @@ skip-magic-trailing-comma = false
 
 # Like Black, automatically detect the appropriate line ending.
 line-ending = "auto"
+
+[tool.pyrefly]
+project-excludes = ["src/jina_ref", "src/llada_ref", "src/mdlm_ref", "src/mauve"] # external sources

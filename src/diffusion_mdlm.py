@@ -146,7 +146,7 @@ class MDLMSampler(nn.Module):
         disable = False
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
-        for i in tqdm(range(num_steps), desc="Generating", disable=disable):
+        for i in tqdm(range(num_steps), desc="Generating", disable=disable):  # type: ignore
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
             x = self._ddpm_update(x=x, t=t, dt=dt, step=i)
 

@@ -140,7 +140,7 @@ class DistributedUtils:
             seq_len = self.cfg.block_length
         else:
             raise ValueError(f"Unknown model type: {self.cfg.model}")
-        b_size = self.world_size * self.cfg.batch_size  # type: ignore
+        b_size = self.world_size * self.cfg.batch_size
 
         self.embeddings = torch.zeros((b_size, self.cfg.embedding_dim * seq_len), device="cuda")
         self.qualities = torch.zeros((b_size,), device="cuda")

@@ -60,7 +60,7 @@ def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
 def get_pooled_output(
     mdlm_outputs: torch.Tensor,
     strategy: str,
-    mask: torch.Tensor = None,
+    mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Apply a pooling strategy to the MDLM token-level outputs.
@@ -136,7 +136,7 @@ def main():  # noqa: C901, PLR0915
     results = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
 
     # List to compute the average reference ACS
-    all_ref_acs_scores = []
+    all_ref_acs_scores: list[float] = []
 
     print("\nStarting experiment sweep...")
     # Outer loop: mask_ratio
@@ -144,10 +144,12 @@ def main():  # noqa: C901, PLR0915
         print(f"--- Testing Mask Ratio: {mask_ratio:.2f} ---")
 
         # Temp dict to store batch scores for *this* mask_ratio
-        batch_scores_per_strategy = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
+        batch_scores_per_strategy: dict[str, dict[str, list[float]]] = {
+            strategy: {"cka": [], "acs": []} for strategy in pooling_strategies
+        }
 
         # Middle loop: batch
-        for i in tqdm(range(N_BATCHES), desc="    Batches"):
+        for i in tqdm(range(N_BATCHES), desc="    Batches"):  # type: ignore
             # --- 4.1. Sample data for this batch ---
             sample_texts = []
             for _ in range(BATCH_SIZE):
@@ -240,7 +242,7 @@ def main():  # noqa: C901, PLR0915
     print("\nGenerating plots...")
 
     # Calculate the final stable reference ACS
-    final_ref_acs_baseline = np.mean(all_ref_acs_scores)
+    final_ref_acs_baseline = float(np.mean(all_ref_acs_scores))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_baseline:.4f}")
 
     fig, ax = plt.subplots(2, 1, figsize=(14, 16), sharex=True)
@@ -273,7 +275,7 @@ def main():  # noqa: C901, PLR0915
     ax[1].set_title(f"Average Cosine Similarity (ACS) vs. Mask Ratio (Avg. over {N_TOTAL_SAMPLES} samples)")
     ax[1].legend()
     ax[1].grid(True)
-    ax[1].set_ylim((max(0, final_ref_acs_baseline - 0.1), 1.05))  # Adjusted ylim slightly
+    ax[1].set_ylim((max(0.0, final_ref_acs_baseline - 0.1), 1.05))  # Adjusted ylim slightly
 
     plt.xticks(mask_ratios)
     plt.tight_layout()

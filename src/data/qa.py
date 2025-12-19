@@ -6,7 +6,7 @@ from config import Config
 
 def truthful_qa(cfg: Config) -> pd.DataFrame:
     dataset = load_dataset(cfg.truthful_qa_path, "generation", cache_dir=cfg.cache_dir)["validation"]
-    dataset = dataset.shuffle(seed=cfg.seed)
+    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
     questions = [item["question"] for item in dataset]
     good = [item["correct_answers"] for item in dataset]
     bad = [item["incorrect_answers"] for item in dataset]
@@ -17,7 +17,7 @@ def truthful_qa(cfg: Config) -> pd.DataFrame:
 
 def commonsense_qa(cfg: Config) -> pd.DataFrame:
     dataset = load_dataset(cfg.commonsense_qa_path, cache_dir=cfg.cache_dir)["validation"]
-    dataset = dataset.shuffle(seed=cfg.seed)
+    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
     questions = [item["question"] for item in dataset]
     good = []
     bad = []
@@ -34,9 +34,10 @@ def commonsense_qa(cfg: Config) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    cfg = Config()
     for name, func in [("TruthfulQA", truthful_qa), ("CommonsenseQA", commonsense_qa)]:
         print(f"Loading {name} dataset...")
-        df = func()
+        df = func(cfg)
         print(df.head())
         print(f"Total samples: {len(df)}")
 

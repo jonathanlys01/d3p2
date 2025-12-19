@@ -12,7 +12,7 @@ import ot
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
 
 import mauve
 from config import CACHE_DIR
@@ -27,7 +27,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Perplexity(torch.nn.Module):
-    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
+    def __init__(self, model: AutoModel, tokenizer: PreTrainedTokenizerBase):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
@@ -42,7 +42,7 @@ class Perplexity(torch.nn.Module):
         self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
         self.lm_head.weight = self.model.wte.weight  # tie weights
 
-    def _forward(self, texts: list[str]) -> torch.Tensor:
+    def _forward(self, texts: list[str]) -> list[float]:
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
 
         self.model.to(device)
@@ -63,19 +63,19 @@ class Perplexity(torch.nn.Module):
         ppl = torch.exp(loss.mean(dim=1))  # perplexity per sample
         return ppl.cpu().tolist()
 
-    def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float]:
+    def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float, float]:
         """
         Compute perplexity for a list of texts, optionally in batches.
         """
 
         # flatten because independent evaluation
-        texts = [text for sublist in texts for text in sublist]
+        flattened_texts = [text for sublist in texts for text in sublist]
 
-        batch_size = batch_size or len(texts)
+        batch_size = batch_size or len(flattened_texts)
 
         ppls = []
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start : start + batch_size]
+        for start in range(0, len(flattened_texts), batch_size):
+            batch = flattened_texts[start : start + batch_size]
             ppls.extend(self._forward(batch))
 
         ppls_tensor = torch.tensor(ppls)
@@ -100,7 +100,7 @@ class AverageCosineSimilarity(torch.nn.Module):
         self.model.to(device)
 
         with torch.inference_mode():
-            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)
+            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
             S = F.cosine_similarity(x.unsqueeze(1), x.unsqueeze(0), dim=-1)
 
@@ -111,7 +111,7 @@ class AverageCosineSimilarity(torch.nn.Module):
 
         return avg_cos_sim.item()
 
-    def forward(self, texts: list[list[str]]) -> float:
+    def forward(self, texts: list[list[str]]) -> tuple[float, float, float, float]:
         """
         Compute average cosine similarity for a list of texts, optionally in batches.
         """
@@ -182,14 +182,14 @@ class WassersteinDistance(torch.nn.Module):
         p_good = np.ones((n_good,)) / n_good
         p_bad = np.ones((n_bad,)) / n_bad
 
-        wasserstein_good = ot.emd2(p_gen, p_good, cost_good)
-        wasserstein_bad = ot.emd2(p_gen, p_bad, cost_bad)
+        wasserstein_good: float = ot.emd2(p_gen, p_good, cost_good)  # type: ignore
+        wasserstein_bad: float = ot.emd2(p_gen, p_bad, cost_bad)  # type: ignore
 
         return wasserstein_good, wasserstein_bad
 
     def _forward(self, texts: list[str]) -> torch.Tensor:
         with torch.inference_mode():
-            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)
+            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
             x = F.normalize(x, p=2, dim=-1)
         return x.cpu()
@@ -283,10 +283,10 @@ def main():
     evaluator = Evaluator(args.batch_size, args.force)
     pbar = tqdm(files, desc="Evaluating files")
 
-    for file_name in pbar:
+    for file_name in pbar:  # type: ignore
         file_path = os.path.join(args.folder_path, file_name)
         evaluator.eval_from_file(file_path)
-        pbar.set_postfix({"Last evaluated": file_name})
+        pbar.set_postfix({"Last evaluated": file_name})  # type: ignore
 
 
 if __name__ == "__main__":
