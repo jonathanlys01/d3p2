@@ -24,7 +24,7 @@ class BaseSelector(nn.Module):
         if self.distributed_utils:
             ret = self.distributed_utils.dispatch_batch_indices(ret)
 
-        if ret:
+        if ret is not None:
             ret = ret.long()
 
         return ret
