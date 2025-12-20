@@ -393,7 +393,7 @@ def main_block():
         if i >= limit:
             break
 
-        prompt = str(row.question)  # type: ignore
+        prompt = row.question  # type: ignore
 
         # sample using the block_diffuse method
         samples.extend(sampler.block_diffuse(prompt=prompt))

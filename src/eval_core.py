@@ -6,9 +6,11 @@
 import argparse
 import json
 import os
+from collections import Counter
 
 import numpy as np
 import ot
+import sacrebleu
 import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
@@ -194,6 +196,55 @@ class WassersteinDistance(torch.nn.Module):
         return x.cpu()
 
 
+class StringMetrics(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def _compute_f1(self, prediction: str, ground_truth: str) -> float:
+        prediction_tokens = prediction.lower().split()
+        ground_truth_tokens = ground_truth.lower().split()
+        common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+        num_same = sum(common.values())
+        if num_same == 0:
+            return 0.0
+        precision = 1.0 * num_same / len(prediction_tokens)
+        recall = 1.0 * num_same / len(ground_truth_tokens)
+        f1 = (2 * precision * recall) / (precision + recall)
+        return f1
+
+    def forward(self, predictions: list[str], references: list[list[str]]) -> dict[str, float]:
+        """
+        Compute F1 and BLEU scores.
+        references is a list of lists of strings (multiple possible answers per question).
+        """
+        f1_scores = []
+        for pred, refs in zip(predictions, references):
+            best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
+            f1_scores.append(best_f1)
+
+        avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+
+        bleu_score = 0.0
+        if sacrebleu is not None:
+            # sacrebleu expects references as a list of lists (one list per reference version)
+            # but our references are grouped by sample. We need to transpose them.
+            max_refs = max(len(refs) for refs in references)
+            formatted_refs = []
+            for i in range(max_refs):
+                ref_list = []
+                for refs in references:
+                    if i < len(refs):
+                        ref_list.append(refs[i])
+                    else:
+                        ref_list.append(refs[0])  # duplicate first if fewer refs
+                formatted_refs.append(ref_list)
+
+            bleu = sacrebleu.corpus_bleu(predictions, formatted_refs)
+            bleu_score = bleu.score
+
+        return {"f1": avg_f1, "bleu": bleu_score}
+
+
 class Evaluator:
     def __init__(
         self,
@@ -212,6 +263,7 @@ class Evaluator:
         cos_model = JinaBertModel.from_pretrained(**cos_models_args)
         self.cosine_model = AverageCosineSimilarity(cos_model)
         self.wasserstein_model = WassersteinDistance(cos_model)  # reuse COS model for WD
+        self.string_metrics = StringMetrics()
 
         self.batch_size = batch_size
         self.force = force
@@ -219,6 +271,7 @@ class Evaluator:
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
         ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
         avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
+        string_metrics = self.string_metrics(texts)
 
         return {
             # PPL
@@ -232,6 +285,9 @@ class Evaluator:
             "std_cosine_similarity": std_cos_sim,
             "min_cosine_similarity": min_cos_sim,
             "max_cosine_similarity": max_cos_sim,
+            # String metrics
+            "f1": string_metrics["f1"],
+            "bleu": string_metrics["bleu"],
         }
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
@@ -245,6 +301,9 @@ class Evaluator:
         bad_references: list[str],
     ) -> tuple[float, float]:
         return self.wasserstein_model(good_references, bad_references, generations)
+
+    def compute_string_metrics(self, predictions: list[str], references: list[list[str]]) -> dict[str, float]:
+        return self.string_metrics(predictions, references)
 
     def eval_from_file(self, file_path: str) -> dict[str, float] | None:
         with open(file_path, "r") as f:
