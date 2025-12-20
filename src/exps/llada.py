@@ -74,30 +74,18 @@ def main():
     # PPL and Average Cosine expect list[list[str]] (batches)
     global_metrics = evaluator.evaluate(all_generations)
 
-    # String metrics
-    # compute_string_metrics expects list[str] (one per sample) and list[list[str]] (references per sample)
-    # We take the first generation from each batch for string metrics if batch_size > 1
-    string_predictions = [batch[0] for batch in all_generations]
-    string_metrics = evaluator.compute_string_metrics(string_predictions, all_good_refs)
+    string_metrics = evaluator.compute_string_metrics(all_generations, all_good_refs)
+    global_metrics.update(string_metrics)  # add bleu and f1
 
-    # QA Alignment metrics
+    # Wasserstein Distance metrics
     avg_wd_good = sum(wd_good_scores) / len(wd_good_scores)
     avg_wd_bad = sum(wd_bad_scores) / len(wd_bad_scores)
+    global_metrics.update({"avg_wd_good": avg_wd_good, "avg_wd_bad": avg_wd_bad})
 
     # 5. Report Results
-    results = {
-        "cfg_scale": cfg.cfg_scale,
-        "perplexity": global_metrics["perplexity"],
-        "cosine_similarity": global_metrics["cosine_similarity"],
-        "avg_wd_good": avg_wd_good,
-        "avg_wd_bad": avg_wd_bad,
-        "f1": string_metrics["f1"],
-        "bleu": string_metrics["bleu"],
-    }
-
     print("\n" + "=" * 40)
     print("Evaluation Results:")
-    for k, v in results.items():
+    for k, v in global_metrics.items():
         print(f"{k:20}: {v:.4f}")
     print("=" * 40)
 
@@ -108,7 +96,7 @@ def main():
         json.dump(
             {
                 "config": asdict(cfg),
-                "results": results,
+                "results": global_metrics,
                 "samples": [
                     {"prompt": dataset.iloc[i].question, "generations": all_generations[i]}
                     for i in range(len(all_generations))

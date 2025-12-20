@@ -271,7 +271,6 @@ class Evaluator:
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
         ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
         avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
-        string_metrics = self.string_metrics(texts)
 
         return {
             # PPL
@@ -285,9 +284,6 @@ class Evaluator:
             "std_cosine_similarity": std_cos_sim,
             "min_cosine_similarity": min_cos_sim,
             "max_cosine_similarity": max_cos_sim,
-            # String metrics
-            "f1": string_metrics["f1"],
-            "bleu": string_metrics["bleu"],
         }
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
