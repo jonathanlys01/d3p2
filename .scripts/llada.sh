@@ -10,7 +10,7 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 
 set -ex
 
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/llada.py --config=_default.yaml model=llada cat_temperature=1 cfg_scale=0.5
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/llada.py --config=_default.yaml model=llada cat_temperature=1 cfg_scale=0.5 _w_interaction=5.0
 
 
 exit

@@ -305,7 +305,7 @@ class Evaluator:
     ) -> tuple[float, float]:
         return self.wasserstein_model(good_references, bad_references, generations)
 
-    def compute_string_metrics(self, predictions: list[str], references: list[list[str]]) -> dict[str, float]:
+    def compute_string_metrics(self, predictions: list[list[str]], references: list[list[str]]) -> dict[str, float]:
         return self.string_metrics(predictions, references)
 
     def eval_from_file(self, file_path: str) -> dict[str, float] | None:

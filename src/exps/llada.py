@@ -4,7 +4,7 @@ from datetime import datetime
 
 import torch
 
-from config import Config
+from config import RESULTS_DIR, Config
 from data.qa import truthful_qa
 from diffusion_llada import LLADASampler
 from eval_core import Evaluator
@@ -86,12 +86,12 @@ def main():
     print("\n" + "=" * 40)
     print("Evaluation Results:")
     for k, v in global_metrics.items():
-        print(f"{k:20}: {v:.4f}")
+        print(f"{k:25}: {v:.4f}")
     print("=" * 40)
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = f"llada_eval_{timestamp}.json"
+    save_path = f"{RESULTS_DIR}/llada_eval_{timestamp}.json"
     with open(save_path, "w") as f:
         json.dump(
             {
@@ -106,6 +106,9 @@ def main():
             indent=4,
         )
     print(f"Results saved to {save_path}")
+
+    if sampler.distributed_utils:
+        sampler.distributed_utils.cleanup()
 
 
 if __name__ == "__main__":
