@@ -1,6 +1,5 @@
 """
-Main 5D3P experiment script.
-(Distributed DPP Sampling for Discrete Diffusion Models)
+Shared experiment logic for distributed runs and Optuna sweeps.
 """
 
 import json
@@ -20,9 +19,6 @@ from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
 from eval_core import Evaluator
 from utils import compile_model, print, seed_all
-
-
-SWEEP_NAME = "d3p2_rbf_optuna_study"
 
 
 def _bcast(obj):
@@ -94,6 +90,7 @@ def eval_samples(unique_id: str, config: Config):
     )
 
     metrics = {}
+    # Evaluation expects the result file to exist
     for file in os.listdir(RESULTS_DIR):
         if file.endswith(f"{unique_id}.json"):
             file_path = os.path.join(RESULTS_DIR, file)
@@ -102,7 +99,7 @@ def eval_samples(unique_id: str, config: Config):
     return metrics
 
 
-def main(config: Config):
+def run_experiment(config: Config):
     torch.cuda.empty_cache()
     unique_id, master = generate_samples(config)
     if not master:
@@ -111,36 +108,10 @@ def main(config: Config):
     return metrics
 
 
-def _objective(trial: optuna.Trial, og_config: Config):
-    w_interaction = trial.suggest_float("w_interaction", 0.0, 8.0)
-    det_temperature = trial.suggest_float("determinant_temperature", 1e-5, 1.0, log=True)
-    rbf_gamma = trial.suggest_float("rbf_gamma", 1e-2, 1e2, log=True)
-
-    dict_config = asdict(og_config)
-    dict_config["_w_interaction"] = w_interaction
-    dict_config["_temperature"] = det_temperature
-    dict_config["_rbf_gamma"] = rbf_gamma
-    dict_config["disable_sys_args"] = True
-    config = Config(**dict_config)
-
-    _bcast(True)  # sync before starting -> proceed
-    _bcast(config)  # broadcast config to all workers
-
-    print(f"Trial {trial.number}: w_inter={w_interaction}, det_temp={det_temperature}")
-
-    metrics = main(config)
-    assert metrics is not None
-
-    perplexity = metrics["perplexity"]
-    cos_sim = metrics["cosine_similarity"]
-    print(f"Trial {trial.number} completed: Perplexity={perplexity}, Cosine Similarity={cos_sim}")
-
-    return perplexity, cos_sim
-
-
-if __name__ == "__main__":
-    og_config = Config()
-
+def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=None):
+    """
+    Unified Optuna sweep loop handling both master and worker ranks.
+    """
     dist.init_process_group(
         backend="nccl",
         init_method="env://",
@@ -154,33 +125,22 @@ if __name__ == "__main__":
     is_master: bool = idr_torch.is_master  # type: ignore
 
     if is_master:
-        storage = JournalStorage(JournalFileBackend(f"optuna_{SWEEP_NAME}.log"))
-
+        storage = JournalStorage(JournalFileBackend(f"optuna_{sweep_name}.log"))
         study = optuna.create_study(
             directions=["minimize", "minimize"],
-            study_name=SWEEP_NAME,
+            study_name=sweep_name,
             storage=storage,
             load_if_exists=True,
         )
 
-        if len(study.trials) == 0:  # enqueue some initial points (sweep)
+        if len(study.trials) == 0:  # enqueue initial points
             study.set_user_attr("og_config", asdict(og_config))
+            if init_trials:
+                for trial_params in init_trials:
+                    study.enqueue_trial(trial_params)
 
-            for qual in [0.0, 4.0, 8.0]:
-                for temp in [1e-5, 3e-3, 1.0]:
-                    for gamma in [1e-2, 1.0, 1e2]:
-                        study.enqueue_trial(
-                            {
-                                "w_interaction": qual,
-                                "determinant_temperature": temp,
-                                "rbf_gamma": gamma,
-                            },
-                        )
-
-        study.optimize(lambda trial: _objective(trial, og_config), n_trials=None)  # infinite (will be SIGTERM'ed)
-        _bcast(False)
-
-        dist.destroy_process_group()
+        study.optimize(lambda trial: objective_fn(trial, og_config), n_trials=n_trials)
+        _bcast(False)  # signal workers to stop
 
     else:
         while True:
@@ -190,6 +150,6 @@ if __name__ == "__main__":
 
             cfg = _bcast(None)
             assert cfg is not None
-            main(cfg)
+            run_experiment(cfg)
 
-        dist.destroy_process_group()
+    dist.destroy_process_group()
