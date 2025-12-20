@@ -212,34 +212,41 @@ class StringMetrics(torch.nn.Module):
         f1 = (2 * precision * recall) / (precision + recall)
         return f1
 
-    def forward(self, predictions: list[str], references: list[list[str]]) -> dict[str, float]:
+    def forward(self, predictions: list[list[str]], references: list[list[str]]) -> dict[str, float]:
         """
         Compute F1 and BLEU scores.
+        predictions is a list of lists of strings (multiple generations per question).
         references is a list of lists of strings (multiple possible answers per question).
         """
+        flattened_predictions = []
+        flattened_references = []
+        for preds, refs in zip(predictions, references):
+            for pred in preds:
+                flattened_predictions.append(pred)
+                flattened_references.append(refs)
+
         f1_scores = []
-        for pred, refs in zip(predictions, references):
+        for pred, refs in zip(flattened_predictions, flattened_references):
             best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
             f1_scores.append(best_f1)
 
         avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
 
         bleu_score = 0.0
-        if sacrebleu is not None:
-            # sacrebleu expects references as a list of lists (one list per reference version)
-            # but our references are grouped by sample. We need to transpose them.
-            max_refs = max(len(refs) for refs in references)
+
+        if len(flattened_references) > 0:
+            max_refs = max(len(refs) for refs in flattened_references)
             formatted_refs = []
             for i in range(max_refs):
                 ref_list = []
-                for refs in references:
+                for refs in flattened_references:
                     if i < len(refs):
                         ref_list.append(refs[i])
                     else:
                         ref_list.append(refs[0])  # duplicate first if fewer refs
                 formatted_refs.append(ref_list)
 
-            bleu = sacrebleu.corpus_bleu(predictions, formatted_refs)
+            bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
             bleu_score = bleu.score
 
         return {"f1": avg_f1, "bleu": bleu_score}
