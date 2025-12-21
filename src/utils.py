@@ -25,6 +25,7 @@ warnings.filterwarnings("ignore", category=IdrTorchWarning)  # ignore idr_torch 
 
 
 def print(*args, **kwargs):
+    """Print only from rank 0."""
     if kwargs.pop("force", False) or idr_torch.rank == 0:
         bprint(*args, **kwargs)
 

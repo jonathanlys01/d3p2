@@ -1,7 +1,8 @@
-# perplexity
-# average cosine
-# mauve
-# wasserstein distance
+"""
+Core evaluation module for calculating text generation metrics.
+Includes implementations for Perplexity, MAUVE, SacreBLEU, and
+Cosine Similarity (Jina BERT).
+"""
 
 import argparse
 import json
@@ -294,7 +295,7 @@ class Evaluator:
         }
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
-        out = self.mauve_model(references, generations)  # TODO: include more metrics (not mauve only)
+        out = self.mauve_model(references, generations)
         return out.mauve
 
     def compute_wasserstein_distance(
@@ -307,6 +308,47 @@ class Evaluator:
 
     def compute_string_metrics(self, predictions: list[list[str]], references: list[list[str]]) -> dict[str, float]:
         return self.string_metrics(predictions, references)
+
+    def evaluate_baseline(self, full_sequences: list[list[str]], metric: str, k: int) -> list[list[str]]:
+        """
+        Evaluate and select the k best sequences across different groups based on a metric.
+        Initially implemented for PPL (lower is better).
+        Returns the subset that maximizes (or minimizes for PPL) this metric.
+        """
+        if metric.lower() != "ppl":
+            raise ValueError(f"Metric {metric} not implemented for evaluate_baseline. Only 'ppl' is supported.")
+
+        # 1. Flatten the sequences to compute metrics in batches
+        flattened_texts = [text for sublist in full_sequences for text in sublist]
+        group_sizes = [len(sublist) for sublist in full_sequences]
+
+        # 2. Compute the metric (Perplexity)
+        batch_size = self.batch_size or len(flattened_texts)
+        ppls = []
+        # We use Perplexity._forward directly to get per-sample scores
+        for start in range(0, len(flattened_texts), batch_size):
+            batch = flattened_texts[start : start + batch_size]
+            ppls.extend(self.perplexity_model._forward(batch))
+
+        # 3. Unflatten the scores to match group structure
+        unflattened_ppls = []
+        cursor = 0
+        for size in group_sizes:
+            unflattened_ppls.append(ppls[cursor : cursor + size])
+            cursor += size
+
+        # 4. Select k best from each group
+        selected_sequences = []
+        for group_texts, group_ppls in zip(full_sequences, unflattened_ppls):
+            # Sort by PPL (ascending, lower is better)
+            indexed_ppls = list(enumerate(group_ppls))
+            indexed_ppls.sort(key=lambda x: x[1])
+
+            # Select top k indices
+            top_k_indices = [idx for idx, _ in indexed_ppls[:k]]
+            selected_sequences.append([group_texts[idx] for idx in top_k_indices])
+
+        return selected_sequences
 
     def eval_from_file(self, file_path: str) -> dict[str, float] | None:
         with open(file_path, "r") as f:

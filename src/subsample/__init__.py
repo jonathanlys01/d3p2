@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from config import Config
 
     from .base import BaseSelector
+    from .baseline import BaselineSelection
     from .beam import DiverseBeamSearch, GreedyBeamSearch
     from .dpp_selector import DPP
     from .exhaustive import Exhaustive
@@ -21,12 +22,13 @@ AVAIL = {
     "greedy_beam": ("subsample.beam", "GreedyBeamSearch"),
     "diverse_beam": ("subsample.beam", "DiverseBeamSearch"),
     "random": ("subsample.random_selector", "RandomSelection"),
+    "baseline": ("subsample.baseline", "BaselineSelection"),
 }
 
 
 def get_subsample_selector(
     config: Config,
-) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | RandomSelection":
+) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | RandomSelection | BaselineSelection":  # noqa: E501
     """
     Factory function to dynamically load and instantiate a subset selector.
     """

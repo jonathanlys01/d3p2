@@ -9,9 +9,6 @@ from mdlm_ref.modeling_mdlm import MDLM
 from utils import get_tokenizer, tqdm
 
 
-# TODO: sanitize this script
-
-
 @torch.no_grad()
 def compute_cka(ref_embeddings: torch.Tensor, mdlm_outputs: torch.Tensor) -> float:
     """
@@ -97,59 +94,47 @@ def main():  # noqa: C901, PLR0915
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # --- NEW: Chunking Configuration ---
-    N_TOTAL_SAMPLES = 2048  # Total samples to process for a stable estimate
-    BATCH_SIZE = 64  # Max samples per chunk (limited by CKA/ACS O(n^2))
+    ref_model_id = config.cos_model_id
+    mdlm_model_id = config.mdlm_model_path
+    path_to_bin = config.data_path
+
+    N_TOTAL_SAMPLES = 2048  # total samples to process for a stable estimate
+    BATCH_SIZE = 64  # max samples per chunk (limited by CKA/ACS O(n^2))
     N_BATCHES = N_TOTAL_SAMPLES // BATCH_SIZE
     print(f"Running experiment with {N_BATCHES} batches of {BATCH_SIZE} samples each (Total: {N_TOTAL_SAMPLES})")
-    # ---
 
-    # --- 1. Load Reference Model ---
-    ref_model_id = "jinaai/jina-embeddings-v2-base-en"
     ref_model = AutoModel.from_pretrained(ref_model_id, cache_dir=config.cache_dir, trust_remote_code=True)
     ref_model.eval()
     ref_model.to(device)
 
-    # --- 2. Load MDLM Model ---
-    mdlm_model_id = "/Brain/public/models/kuleshov-group/mdlm-owt/"
     mdlm_embedder = MDLM.from_pretrained(mdlm_model_id, cache_dir=config.cache_dir, trust_remote_code=True)
     mask_index = mdlm_embedder.config.vocab_size - 1
     mdlm_embedder.to(device)
     mdlm_tokenizer = get_tokenizer(config, "mdlm")
     mdlm_embedder.eval()
 
-    # --- 3. Load Data ---
-    path_to_bin = "/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val.bin"
     data = np.memmap(path_to_bin, dtype=np.uint16, mode="r")
     seq_length = 1024 - 2  # account for bos/eos tokens
 
-    # Seed for reproducibility of data sampling
+    # seed for reproducibility of data sampling
     np.random.seed(42)
     torch.manual_seed(42)
 
-    # --- 4. Run Experiment Sweep ---
     mask_ratios = list(np.linspace(0.0, 0.99, num=50))  # 0.0 to 0.99 inclusive
     pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten"]
 
-    # Final results dictionary
     results = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
-
-    # List to compute the average reference ACS
     all_ref_acs_scores: list[float] = []
 
     print("\nStarting experiment sweep...")
-    # Outer loop: mask_ratio
     for mask_ratio in mask_ratios:
         print(f"--- Testing Mask Ratio: {mask_ratio:.2f} ---")
 
-        # Temp dict to store batch scores for *this* mask_ratio
         batch_scores_per_strategy: dict[str, dict[str, list[float]]] = {
             strategy: {"cka": [], "acs": []} for strategy in pooling_strategies
         }
 
-        # Middle loop: batch
         for i in tqdm(range(N_BATCHES), desc="Batches"):
-            # --- 4.1. Sample data for this batch ---
             sample_texts = []
             for _ in range(BATCH_SIZE):
                 start_idx = np.random.randint(0, len(data) - seq_length - 1)
@@ -157,7 +142,6 @@ def main():  # noqa: C901, PLR0915
                 sample_text = mdlm_tokenizer.decode(sample_ids, skip_special_tokens=True)
                 sample_texts.append(sample_text)
 
-            # --- 4.2. Get Reference Embeddings for this batch ---
             with torch.inference_mode():
                 ref_embeddings = ref_model.encode(
                     sample_texts,
@@ -169,7 +153,6 @@ def main():  # noqa: C901, PLR0915
             if mask_ratio == 0.0:
                 all_ref_acs_scores.append(compute_avg_cosine_similarity(ref_embeddings))
 
-            # --- 4.3. Tokenize MDLM Inputs for this batch ---
             inputs = mdlm_tokenizer(
                 sample_texts,
                 return_tensors="pt",
@@ -182,7 +165,6 @@ def main():  # noqa: C901, PLR0915
             base_input_ids = torch.cat([bos_tensor, inputs["input_ids"], eos_tensor], dim=1)
             base_input_ids = base_input_ids.to(device)
 
-            # --- 4.4. Run MDLM Forward Pass (ONCE per batch) ---
             masked_input_ids = base_input_ids.clone()
             rand_tensor = torch.rand(masked_input_ids.shape, device=device)
             full_token_mask = rand_tensor < mask_ratio
@@ -194,12 +176,10 @@ def main():  # noqa: C901, PLR0915
                     return_dict=True,
                     output_hidden_states=True,
                 )
-                # This is the expensive part - get all hidden states
                 mdlm_outputs = mdlm_all_states.hidden_states[-1]
 
-            # --- 4.5. Inner loop: strategy (cheap) ---
             for strategy in pooling_strategies:
-                # Handle edge cases
+                # edge cases
                 if (strategy == "pool_masked" and mask_ratio == 0.0) or (
                     strategy == "pool_non_masked" and mask_ratio == 1.0
                 ):
@@ -207,19 +187,15 @@ def main():  # noqa: C901, PLR0915
                     batch_scores_per_strategy[strategy]["acs"].append(float("nan"))
                     continue
 
-                # Apply pooling
                 with torch.inference_mode():
                     mdlm_pooled = get_pooled_output(mdlm_outputs, strategy, full_token_mask)
 
-                # Compute metrics
                 cka_score = compute_cka(ref_embeddings, mdlm_pooled)
                 acs_score = compute_avg_cosine_similarity(mdlm_pooled)
 
-                # Store batch scores
                 batch_scores_per_strategy[strategy]["cka"].append(cka_score)
                 batch_scores_per_strategy[strategy]["acs"].append(acs_score)
 
-        # --- 4.6. Average metrics for this mask_ratio (after all batches) ---
         print(f"    Aggregating results for mask ratio {mask_ratio:.2f}...")
         for strategy in pooling_strategies:
             avg_cka = np.mean(batch_scores_per_strategy[strategy]["cka"])
@@ -227,26 +203,19 @@ def main():  # noqa: C901, PLR0915
 
             results[strategy]["cka"].append(avg_cka)
             results[strategy]["acs"].append(avg_acs)
-            # Use fixed-width string formatting for clean alignment
             print(f"    Strategy: {strategy:<17} | Avg CKA: {avg_cka:7.4f}, Avg ACS: {avg_acs:7.4f}")
 
-    # --- 5. Offload Model ---
     ref_model.to("cpu")
     mdlm_embedder.to("cpu")
     if device == "cuda":
         torch.cuda.empty_cache()
     print("Models offloaded to CPU.")
 
-    # --- 6. Plot Results ---
-    print("\nGenerating plots...")
-
-    # Calculate the final stable reference ACS
     final_ref_acs_baseline = float(np.mean(all_ref_acs_scores))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_baseline:.4f}")
 
     fig, ax = plt.subplots(2, 1, figsize=(14, 16), sharex=True)
 
-    # --- Plot 1: CKA Score ---
     for strategy, scores in results.items():
         plot_ratios = [r for r, s in zip(mask_ratios, scores["cka"]) if not np.isnan(s)]
         plot_scores = [s for s in scores["cka"] if not np.isnan(s)]
@@ -257,7 +226,6 @@ def main():  # noqa: C901, PLR0915
     ax[0].grid(True)
     ax[0].set_ylim(bottom=0)
 
-    # --- Plot 2: Average Cosine Similarity ---
     for strategy, scores in results.items():
         plot_ratios = [r for r, s in zip(mask_ratios, scores["acs"]) if not np.isnan(s)]
         plot_scores = [s for s in scores["acs"] if not np.isnan(s)]
@@ -274,7 +242,7 @@ def main():  # noqa: C901, PLR0915
     ax[1].set_title(f"Average Cosine Similarity (ACS) vs. Mask Ratio (Avg. over {N_TOTAL_SAMPLES} samples)")
     ax[1].legend()
     ax[1].grid(True)
-    ax[1].set_ylim((max(0.0, final_ref_acs_baseline - 0.1), 1.05))  # Adjusted ylim slightly
+    ax[1].set_ylim((max(0.0, final_ref_acs_baseline - 0.1), 1.05))
 
     plt.xticks(mask_ratios)
     plt.tight_layout()
