@@ -121,10 +121,10 @@ def main():  # noqa: PLR0915
     data = np.memmap(data_path, dtype=np.uint16, mode="r")
 
     # Experiment parameters
-    N_SAMPLES = 100
-    SEQ_LENGTH = 512
+    N_SAMPLES = 10_000
+    SEQ_LENGTH = 1024
     MC_SAMPLES = 128
-    MC_BATCH_SIZE = 32
+    MC_BATCH_SIZE = 64
 
     mdlm_likelihoods: list[float] = []
     gpt2_perplexities: list[float] = []
