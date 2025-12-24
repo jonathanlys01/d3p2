@@ -5,20 +5,22 @@ Main 5D3P experiment script.
 
 from dataclasses import asdict
 
+from common_exps import _bcast, print, run_experiment, run_sweep
 from config import Config
-from exps.common import _bcast, print, run_experiment, run_sweep
 
 
-SWEEP_NAME = "d3p2_logdet_optuna_study"
+SWEEP_NAME = "d3p2_rbf_optuna_study"
 
 
 def _objective(trial, og_config: Config):
     w_interaction = trial.suggest_float("w_interaction", 0.0, 8.0)
     det_temperature = trial.suggest_float("determinant_temperature", 1e-5, 1.0, log=True)
+    rbf_gamma = trial.suggest_float("rbf_gamma", 1e-2, 1e2, log=True)
 
     dict_config = asdict(og_config)
     dict_config["_w_interaction"] = w_interaction
     dict_config["_temperature"] = det_temperature
+    dict_config["_rbf_gamma"] = rbf_gamma
     dict_config["disable_sys_args"] = True
     config = Config(**dict_config)
 
@@ -32,6 +34,8 @@ def _objective(trial, og_config: Config):
 
     perplexity = metrics["perplexity"]
     cos_sim = metrics["cosine_similarity"]
+    trial.set_user_attr("metrics", metrics)
+
     print(f"Trial {trial.number} completed: Perplexity={perplexity}, Cosine Similarity={cos_sim}")
 
     return perplexity, cos_sim
@@ -40,8 +44,15 @@ def _objective(trial, og_config: Config):
 if __name__ == "__main__":
     og_config = Config()
     init_trials = []
-    for qual in [0.0, 0.5, 1.0, 3.0]:
+    for qual in [0.0, 4.0, 8.0]:
         for temp in [1e-5, 3e-3, 1.0]:
-            init_trials.append({"w_interaction": qual, "determinant_temperature": temp})
+            for gamma in [1e-2, 1.0, 1e2]:
+                init_trials.append(
+                    {
+                        "w_interaction": qual,
+                        "determinant_temperature": temp,
+                        "rbf_gamma": gamma,
+                    },
+                )
 
     run_sweep(SWEEP_NAME, og_config, _objective, n_trials=None, init_trials=init_trials)

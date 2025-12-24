@@ -94,7 +94,7 @@ class Config:
     commonsense_qa_path: str = "commonsense_qa"
 
     # cache
-    cache_dir: str = "/Brain/private/j21lys/wip/src/.cache"  # CACHE_DIR
+    cache_dir: str = CACHE_DIR
 
     batch_size: int = 0  # to be set in __post_init__
 

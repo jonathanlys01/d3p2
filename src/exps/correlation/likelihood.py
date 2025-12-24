@@ -166,7 +166,7 @@ def main():  # noqa: PLR0915
 
     print("\n--- Experiment Results ---")
     print(f"Spearman Correlation: {corr:.4f}")
-    print(f"p-value: {p_val:.4e}")
+    print(f"p-value: {p_val:.6e}")
     print(f"Samples processed: {len(mdlm_likelihoods)}")
 
     # Plotting
