@@ -8,7 +8,7 @@ from config import RESULTS_DIR, Config
 from data.qa import truthful_qa
 from diffusion_llada import LLADASampler
 from eval_core import Evaluator
-from utils import print, seed_all
+from utils import compile_model, print, seed_all
 
 
 def main():
@@ -19,6 +19,7 @@ def main():
     seed_all(cfg.seed)
 
     sampler = LLADASampler(cfg)
+    sampler.model = compile_model(sampler.model, cfg, dynamic=True)
     evaluator = Evaluator(batch_size=cfg.batch_size)
 
     # 2. Load Dataset
@@ -37,7 +38,9 @@ def main():
 
     # 3. Sampling loop
     for i, row in enumerate(dataset.itertuples()):
-        prompt, correct_answers, incorrect_answers = row.question, row.correct_answers, row.incorrect_answers  # type: ignore
+        prompt: str = row.question  # type: ignore
+        correct_answers: list[str] = row.correct_answers  # type: ignore
+        incorrect_answers: list[str] = row.incorrect_answers  # type: ignore
 
         print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...")
 
@@ -78,9 +81,12 @@ def main():
     global_metrics.update(string_metrics)  # add bleu and f1
 
     # Wasserstein Distance metrics
-    avg_wd_good = sum(wd_good_scores) / len(wd_good_scores)
-    avg_wd_bad = sum(wd_bad_scores) / len(wd_bad_scores)
-    global_metrics.update({"avg_wd_good": avg_wd_good, "avg_wd_bad": avg_wd_bad})
+    global_metrics.update(
+        {
+            "avg_wd_good": sum(wd_good_scores) / len(wd_good_scores),
+            "avg_wd_bad": sum(wd_bad_scores) / len(wd_bad_scores),
+        },
+    )
 
     # 5. Report Results
     print("\n" + "=" * 40)

@@ -80,13 +80,13 @@ def get_tokenizer(config: Config, model: str):
     return tokenizer
 
 
-def compile_model(model, config: Config):
+def compile_model(model, config: Config, **kwargs):
     """
     Compile the model using torch.compile
     """
     if config.compile_model:
         print("Compiling the model...")
-        model = torch.compile(model)
+        model = torch.compile(model, **kwargs)
 
     return model
 
