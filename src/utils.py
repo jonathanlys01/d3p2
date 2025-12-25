@@ -159,7 +159,7 @@ class DistributedUtils:
         self.seq_ids_buffer = torch.zeros((b_size,), dtype=torch.int32, device="cuda")
         self.batch_indices_buffer = torch.zeros(
             (self.world_size * self.cfg.n_groups,),
-            dtype=torch.int16,
+            dtype=torch.int32,
             device="cuda",
         )
 
@@ -276,18 +276,18 @@ class DistributedUtils:
         # Prepare local data with padding if needed
         max_local_size: int = int(all_sizes.max().item())
         if ids is None:
-            local_data = torch.full((max_local_size,), -1, dtype=torch.int16, device="cuda")
+            local_data = torch.full((max_local_size,), -1, dtype=torch.int32, device="cuda")
         else:
-            local_data = ids.to(dtype=torch.int16, device="cuda")
+            local_data = ids.to(dtype=torch.int32, device="cuda")
             if local_data.size(0) < max_local_size:
                 # Pad with sentinel value
                 pad_size: int = max_local_size - local_data.size(0)
-                padding = torch.full((pad_size,), -1, dtype=torch.int16, device="cuda")
+                padding = torch.full((pad_size,), -1, dtype=torch.int32, device="cuda")
                 local_data = torch.cat([local_data, padding], dim=0)
 
         # Gather all data
         buffer_size: int = self.world_size * max_local_size
-        gather_buffer = torch.zeros((buffer_size,), dtype=torch.int16, device="cuda")
+        gather_buffer = torch.zeros((buffer_size,), dtype=torch.int32, device="cuda")
         torch.distributed.all_gather_into_tensor(gather_buffer, local_data)
 
         # Filter out padding (-1 sentinel values)
