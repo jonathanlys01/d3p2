@@ -1,0 +1,150 @@
+
+
+################################################################################
+# BATCH SIZE: 16
+################################################################################
+[Rank 2] Starting benchmarks...[Rank 3] Starting benchmarks...
+
+[Rank 2] World size: 4, Batch size: 16[Rank 3] World size: 4, Batch size: 16
+[Rank 1] Starting benchmarks...
+
+[Rank 1] World size: 4, Batch size: 16
+[Rank 0] Starting benchmarks...
+[Rank 0] World size: 4, Batch size: 16
+
+================================================================================
+Scenario: Uniform size (batch_size)
+================================================================================
+
+Uniform size (batch_size):
+  Original:  8.1780 ms (± 3.5608)
+  Optimized: 0.4101 ms (± 0.2087)
+
+  Speedup (Optimized vs Original): 19.94x
+  Performance improvement: 95.0% faster
+
+================================================================================
+Scenario: Small uniform size (batch_size // 2)
+================================================================================
+
+Small uniform size (batch_size // 2):
+  Original:  8.9134 ms (± 2.8061)
+  Optimized: 0.4113 ms (± 0.2153)
+
+  Speedup (Optimized vs Original): 21.67x
+  Performance improvement: 95.4% faster
+
+================================================================================
+Scenario: Variable size (total=64, sizes=[8, 16, 24, 16])
+================================================================================
+
+Variable size (total=64, sizes=[8, 16, 24, 16]):
+  Original:  8.2430 ms (± 2.9397)
+  Optimized: 0.3874 ms (± 0.0080)
+
+  Speedup (Optimized vs Original): 21.28x
+  Performance improvement: 95.3% faster
+
+================================================================================
+Benchmark complete!
+================================================================================
+
+
+################################################################################
+# BATCH SIZE: 32
+################################################################################
+[Rank 0] Starting benchmarks...
+[Rank 0] World size: 4, Batch size: 32
+[Rank 2] Starting benchmarks...[Rank 3] Starting benchmarks...
+[Rank 1] Starting benchmarks...
+[Rank 2] World size: 4, Batch size: 32
+[Rank 3] World size: 4, Batch size: 32
+[Rank 1] World size: 4, Batch size: 32
+
+
+================================================================================
+Scenario: Uniform size (batch_size)
+================================================================================
+
+Uniform size (batch_size):
+  Original:  9.2358 ms (± 8.1721)
+  Optimized: 0.3855 ms (± 0.1437)
+
+  Speedup (Optimized vs Original): 23.96x
+  Performance improvement: 95.8% faster
+
+================================================================================
+Scenario: Small uniform size (batch_size // 2)
+================================================================================
+
+Small uniform size (batch_size // 2):
+  Original:  7.4837 ms (± 3.1513)
+  Optimized: 0.3838 ms (± 0.1713)
+
+  Speedup (Optimized vs Original): 19.50x
+  Performance improvement: 94.9% faster
+
+================================================================================
+Scenario: Variable size (total=128, sizes=[16, 32, 48, 32])
+================================================================================
+
+Variable size (total=128, sizes=[16, 32, 48, 32]):
+  Original:  7.6802 ms (± 3.4710)
+  Optimized: 0.3975 ms (± 0.0904)
+
+  Speedup (Optimized vs Original): 19.32x
+  Performance improvement: 94.8% faster
+
+================================================================================
+Benchmark complete!
+================================================================================
+
+
+################################################################################
+# BATCH SIZE: 64
+################################################################################
+[Rank 0] Starting benchmarks...
+[Rank 0] World size: 4, Batch size: 64
+[Rank 3] Starting benchmarks...[Rank 2] Starting benchmarks...[Rank 1] Starting benchmarks...
+
+
+[Rank 3] World size: 4, Batch size: 64[Rank 2] World size: 4, Batch size: 64[Rank 1] World size: 4, Batch size: 64
+
+================================================================================
+
+
+Scenario: Uniform size (batch_size)
+================================================================================
+
+Uniform size (batch_size):
+  Original:  7.2741 ms (± 3.3978)
+  Optimized: 0.3827 ms (± 0.1295)
+
+  Speedup (Optimized vs Original): 19.01x
+  Performance improvement: 94.7% faster
+
+================================================================================
+Scenario: Small uniform size (batch_size // 2)
+================================================================================
+
+Small uniform size (batch_size // 2):
+  Original:  7.4302 ms (± 3.2207)
+  Optimized: 0.3769 ms (± 0.0800)
+
+  Speedup (Optimized vs Original): 19.71x
+  Performance improvement: 94.9% faster
+
+================================================================================
+Scenario: Variable size (total=256, sizes=[32, 64, 96, 64])
+================================================================================
+
+Variable size (total=256, sizes=[32, 64, 96, 64]):
+  Original:  7.2041 ms (± 3.3798)
+  Optimized: 0.4207 ms (± 0.1964)
+
+  Speedup (Optimized vs Original): 17.12x
+  Performance improvement: 94.2% faster
+
+================================================================================
+Benchmark complete!
+================================================================================

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import transformers
 from idr_torch import IdrTorchWarning
-from tqdm.std import tqdm as tqdm_
+from tqdm import tqdm as tqdm_
 
 from config import Config
 
@@ -156,6 +156,13 @@ class DistributedUtils:
         self.embeddings = torch.zeros((b_size, self.cfg.embedding_dim * seq_len), device="cuda")
         self.qualities = torch.zeros((b_size,), device="cuda")
 
+        self.seq_ids_buffer = torch.zeros((b_size,), dtype=torch.int32, device="cuda")
+        self.batch_indices_buffer = torch.zeros(
+            (self.world_size * self.cfg.n_groups,),
+            dtype=torch.int16,
+            device="cuda",
+        )
+
     def all_gather(
         self,
         local_embeddings: torch.Tensor,
@@ -206,45 +213,95 @@ class DistributedUtils:
     def dispatch_sequences(self, seq_ids: torch.Tensor | None, last: bool = False) -> torch.Tensor:
         assert self.is_distributed(), "dispatch_sequences can only be called in distributed mode"
 
-        gather_indices: list[torch.Tensor | None] = [None for _ in range(self.world_size)]
+        # Determine local size
+        local_size = seq_ids.size(0) if seq_ids is not None else 0
 
-        if seq_ids is not None:
-            seq_ids = seq_ids.to(dtype=torch.int32, device="cuda")
+        # Gather sizes from all ranks
+        sizes = torch.tensor([local_size], dtype=torch.int32, device="cuda")
+        all_sizes = torch.zeros((self.world_size,), dtype=torch.int32, device="cuda")
+        torch.distributed.all_gather_into_tensor(all_sizes, sizes)
 
-        torch.distributed.all_gather_object(gather_indices, seq_ids)
+        # Handle empty case
+        total_size = all_sizes.sum().item()
+        if total_size == 0:
+            return torch.empty((0,), dtype=torch.int32, device="cuda")
 
-        all_indices_ = [idx.to("cuda") for idx in gather_indices if idx is not None]
-        all_indices = torch.cat(all_indices_, dim=0)
+        # Pad to max size and gather
+        max_size: int = int(all_sizes.max().item())
+
+        if local_size == 0 or seq_ids is None:
+            local_data = torch.full((max_size,), -1, dtype=torch.int32, device="cuda")
+        elif local_size < max_size:
+            local_data = seq_ids.to(dtype=torch.int32, device="cuda")
+            pad_size: int = max_size - local_size
+            padding = torch.full((pad_size,), -1, dtype=torch.int32, device="cuda")
+            local_data = torch.cat([local_data, padding], dim=0)
+        else:
+            local_data = seq_ids.to(dtype=torch.int32, device="cuda")
+
+        # Gather all data
+        buffer_size: int = self.world_size * max_size
+        gather_buffer = torch.zeros((buffer_size,), dtype=torch.int32, device="cuda")
+        torch.distributed.all_gather_into_tensor(gather_buffer, local_data)
+
+        # Filter out sentinel values
+        all_indices = gather_buffer[gather_buffer != -1]
 
         if last:
             return all_indices
 
-        assert all_indices.size(0) == self.world_size * self.cfg.batch_size, "All indices size mismatch"
-
+        # Slice for this rank (matching original logic)
         rank_indices = all_indices[self.rank * self.cfg.batch_size : (self.rank + 1) * self.cfg.batch_size]
         return rank_indices
 
     def dispatch_batch_indices(self, ids: torch.Tensor | None) -> torch.Tensor | None:
         """
-        Gather and slice batch indices across distributed processes.
+        Optimized gather and slice batch indices across distributed processes.
+        Uses all_gather_into_tensor for much faster communication.
         """
         assert self.is_distributed(), "dispatch_batch_indices can only be called in distributed mode"
 
-        if ids is not None:
-            ids = ids.to(dtype=torch.int16, device="cuda")
+        # Determine local contribution size
+        local_size = ids.size(0) if ids is not None else 0
 
-        gather_indices: list[torch.Tensor | None] = [None for _ in range(self.world_size)]
+        # Gather sizes from all ranks to know how much data each contributes
+        sizes = torch.tensor([local_size], dtype=torch.int32, device="cuda")
+        all_sizes = torch.zeros((self.world_size,), dtype=torch.int32, device="cuda")
+        torch.distributed.all_gather_into_tensor(all_sizes, sizes)
 
-        torch.distributed.all_gather_object(gather_indices, ids)
-        all_indices_ = [idx for idx in gather_indices if idx is not None]
-        if not all_indices_:
+        total_size = all_sizes.sum().item()
+        if total_size == 0:
             return None
-        all_indices = torch.cat(all_indices_, dim=0)
 
-        assert all_indices.size(0) == self.world_size * self.cfg.n_groups, "All batch indices size mismatch"
+        # Prepare local data with padding if needed
+        max_local_size: int = int(all_sizes.max().item())
+        if ids is None:
+            local_data = torch.full((max_local_size,), -1, dtype=torch.int16, device="cuda")
+        else:
+            local_data = ids.to(dtype=torch.int16, device="cuda")
+            if local_data.size(0) < max_local_size:
+                # Pad with sentinel value
+                pad_size: int = max_local_size - local_data.size(0)
+                padding = torch.full((pad_size,), -1, dtype=torch.int16, device="cuda")
+                local_data = torch.cat([local_data, padding], dim=0)
 
-        local_indices = self._get_local_indices(all_indices)
-        return local_indices.to(dtype=torch.long, device="cuda") if local_indices is not None else None
+        # Gather all data
+        buffer_size: int = self.world_size * max_local_size
+        gather_buffer = torch.zeros((buffer_size,), dtype=torch.int16, device="cuda")
+        torch.distributed.all_gather_into_tensor(gather_buffer, local_data)
+
+        # Filter out padding (-1 sentinel values)
+        all_indices = gather_buffer[gather_buffer != -1]
+
+        # Validate expected size
+        expected_size = self.world_size * self.cfg.n_groups
+        assert all_indices.size(0) == expected_size, (
+            f"All batch indices size mismatch: {all_indices.size(0)} != {expected_size}"
+        )
+
+        # Get local indices for this rank
+        local_indices = self._get_local_indices(all_indices.to(dtype=torch.long))
+        return local_indices
 
     def _get_local_indices(self, global_indices: torch.Tensor) -> torch.Tensor | None:
         # get the indices for this rank
