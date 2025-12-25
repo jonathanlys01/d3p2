@@ -43,10 +43,8 @@ def _save(text, config, uid):
         json.dump(samples, f, indent=4)
 
 
-def generate_samples(config: Config):
-    model = MDLMSampler(config)
-    model.model = compile_model(model.model, config)
-
+def generate_samples_with_model(config: Config, model: MDLMSampler):
+    """Generate samples using a pre-initialized model."""
     offset = 0
     if model.distributed_utils:
         offset = model.distributed_utils.rank
@@ -81,6 +79,13 @@ def generate_samples(config: Config):
     return unique_id, master
 
 
+def generate_samples(config: Config):
+    """Generate samples by creating a new model instance."""
+    model = MDLMSampler(config)
+    model.model = compile_model(model.model, config)
+    return generate_samples_with_model(config, model)
+
+
 def eval_samples(unique_id: str, config: Config):
     evaluator = Evaluator(
         batch_size=16,
@@ -99,9 +104,13 @@ def eval_samples(unique_id: str, config: Config):
     return metrics
 
 
-def run_experiment(config: Config):
+def run_experiment(config: Config, model: MDLMSampler | None = None):
+    """Run experiment with optional pre-initialized model."""
     torch.cuda.empty_cache()
-    unique_id, master = generate_samples(config)
+    if model is None:
+        unique_id, master = generate_samples(config)
+    else:
+        unique_id, master = generate_samples_with_model(config, model)
     if not master:
         return None
     metrics = eval_samples(str(unique_id), config)
@@ -111,6 +120,7 @@ def run_experiment(config: Config):
 def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=None):
     """
     Unified Optuna sweep loop handling both master and worker ranks.
+    Model is initialized once and reused across all trials.
     """
     dist.init_process_group(
         backend="nccl",
@@ -123,6 +133,10 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
     torch.cuda.set_device(device)
 
     is_master: bool = idr_torch.is_master  # type: ignore
+
+    # Initialize model once before the sweep
+    model = MDLMSampler(og_config)
+    model.model = compile_model(model.model, og_config)
 
     if is_master:
         storage = JournalStorage(JournalFileBackend(f"optuna_{sweep_name}.log"))
@@ -139,7 +153,7 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
                 for trial_params in init_trials:
                     study.enqueue_trial(trial_params)
 
-        study.optimize(lambda trial: objective_fn(trial, og_config), n_trials=n_trials)
+        study.optimize(lambda trial: objective_fn(trial, og_config, model), n_trials=n_trials)
         _bcast(False)  # signal workers to stop
 
     else:
@@ -150,6 +164,6 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
 
             cfg = _bcast(None)
             assert cfg is not None
-            run_experiment(cfg)
+            run_experiment(cfg, model)
 
     dist.destroy_process_group()

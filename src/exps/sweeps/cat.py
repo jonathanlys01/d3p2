@@ -12,7 +12,7 @@ from config import Config
 SWEEP_NAME = "d3p2_cat_optuna_study"
 
 
-def _objective(trial, og_config: Config):
+def _objective(trial, og_config: Config, model):
     cat_temperature = trial.suggest_float("cat_temperature", 0.7, 1.1)
 
     dict_config = asdict(og_config)
@@ -25,7 +25,7 @@ def _objective(trial, og_config: Config):
 
     print(f"Trial {trial.number}: cat_temperature={cat_temperature}")
 
-    metrics = run_experiment(config)
+    metrics = run_experiment(config, model)
     assert metrics is not None
 
     perplexity = metrics["perplexity"]
