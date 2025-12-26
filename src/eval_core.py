@@ -213,44 +213,113 @@ class StringMetrics(torch.nn.Module):
         f1 = (2 * precision * recall) / (precision + recall)
         return f1
 
-    def forward(self, predictions: list[list[str]], references: list[list[str]]) -> dict[str, float]:
+    def compute_distinct_n(self, texts: list[str], n: int = 2) -> float:
         """
-        Compute F1 and BLEU scores.
+        Calculate the ratio of unique n-grams to total n-grams across a list of strings.
+        Uses simple whitespace tokenization.
+        """
+        if not texts:
+            return 0.0
+
+        all_ngrams = []
+        for text in texts:
+            tokens = text.lower().split()
+            if len(tokens) < n:
+                continue
+            ngrams = [tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
+            all_ngrams.extend(ngrams)
+
+        if not all_ngrams:
+            return 0.0
+
+        unique_ngrams = len(set(all_ngrams))
+        total_ngrams = len(all_ngrams)
+        return unique_ngrams / total_ngrams
+
+    def compute_self_bleu(self, texts: list[str]) -> float:
+        """
+        Calculate Self-BLEU: for each string, compute its BLEU score using all other strings as references.
+        Returns the average score across all strings.
+        """
+        if len(texts) <= 1:
+            return 0.0
+
+        bleu_scores = []
+        for i, hypothesis in enumerate(texts):
+            # Use all other texts as references
+            references = [texts[j] for j in range(len(texts)) if j != i]
+            if not references:
+                continue
+
+            # Calculate sentence BLEU with all other texts as references
+            bleu = sacrebleu.sentence_bleu(hypothesis, references)
+            bleu_scores.append(bleu.score)
+
+        if not bleu_scores:
+            return 0.0
+
+        return sum(bleu_scores) / len(bleu_scores)
+
+    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901
+        """
+        Compute F1, BLEU, Distinct-2, and Self-BLEU scores.
         predictions is a list of lists of strings (multiple generations per question).
         references is a list of lists of strings (multiple possible answers per question).
+        If references is None or empty, only diversity metrics are computed.
         """
-        flattened_predictions = []
-        flattened_references = []
-        for preds, refs in zip(predictions, references):
-            for pred in preds:
-                flattened_predictions.append(pred)
-                flattened_references.append(refs)
+        result: dict[str, float] = {}
 
-        f1_scores = []
-        for pred, refs in zip(flattened_predictions, flattened_references):
-            best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
-            f1_scores.append(best_f1)
+        # Compute reference-based metrics (F1 and BLEU) if references are provided
+        if references and any(refs for refs in references):
+            flattened_predictions = []
+            flattened_references = []
+            for preds, refs in zip(predictions, references):
+                for pred in preds:
+                    flattened_predictions.append(pred)
+                    flattened_references.append(refs)
 
-        avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+            f1_scores = []
+            for pred, refs in zip(flattened_predictions, flattened_references):
+                best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
+                f1_scores.append(best_f1)
 
-        bleu_score = 0.0
+            avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
 
-        if len(flattened_references) > 0:
-            max_refs = max(len(refs) for refs in flattened_references)
-            formatted_refs = []
-            for i in range(max_refs):
-                ref_list = []
-                for refs in flattened_references:
-                    if i < len(refs):
-                        ref_list.append(refs[i])
-                    else:
-                        ref_list.append(refs[0])  # duplicate first if fewer refs
-                formatted_refs.append(ref_list)
+            bleu_score = 0.0
+            if len(flattened_references) > 0:
+                max_refs = max(len(refs) for refs in flattened_references)
+                formatted_refs = []
+                for i in range(max_refs):
+                    ref_list = []
+                    for refs in flattened_references:
+                        if i < len(refs):
+                            ref_list.append(refs[i])
+                        else:
+                            ref_list.append(refs[0])  # duplicate first if fewer refs
+                    formatted_refs.append(ref_list)
 
-            bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
-            bleu_score = bleu.score
+                bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
+                bleu_score = bleu.score
 
-        return {"f1": avg_f1, "bleu": bleu_score}
+            result["f1"] = avg_f1
+            result["bleu"] = bleu_score
+
+        # Compute Distinct-2 and Self-BLEU per group, then average
+        # These are diversity metrics computed within each generation group
+        distinct_2_scores = []
+        self_bleu_scores = []
+        for group in predictions:
+            if group:  # Handle empty groups gracefully
+                distinct_2_scores.append(self.compute_distinct_n(group, n=2))
+                self_bleu_scores.append(self.compute_self_bleu(group))
+
+        avg_distinct_2 = sum(distinct_2_scores) / len(distinct_2_scores) if distinct_2_scores else 0.0
+        avg_self_bleu = sum(self_bleu_scores) / len(self_bleu_scores) if self_bleu_scores else 0.0
+
+        result["distinct_2"] = avg_distinct_2
+        result["self_bleu"] = avg_self_bleu
+
+        return result
 
 
 class Evaluator:
@@ -280,6 +349,10 @@ class Evaluator:
         ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
         avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
 
+        # Compute diversity metrics (Distinct-2 and Self-BLEU)
+        # Pass None for references since these metrics compare generations within each group
+        string_metrics = self.string_metrics(texts, references=None)
+
         return {
             # PPL
             "perplexity": ppl,
@@ -292,6 +365,9 @@ class Evaluator:
             "std_cosine_similarity": std_cos_sim,
             "min_cosine_similarity": min_cos_sim,
             "max_cosine_similarity": max_cos_sim,
+            # Diversity metrics
+            "distinct_2": string_metrics["distinct_2"],
+            "self_bleu": string_metrics["self_bleu"],
         }
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
@@ -389,7 +465,6 @@ def main():
     for file_name in pbar:
         file_path = os.path.join(args.folder_path, file_name)
         evaluator.eval_from_file(file_path)
-        pbar.set_postfix({"Last evaluated": file_name})
 
 
 if __name__ == "__main__":
