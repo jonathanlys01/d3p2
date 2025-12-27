@@ -1,10 +1,12 @@
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 from transformers import AutoModel
 
-from config import Config
+from config import RESULTS_DIR, Config
 from llada_ref.modeling_llada import LLaDAModelLM
 from utils import get_tokenizer, tqdm
 
@@ -88,7 +90,7 @@ def get_pooled_output(
         raise ValueError(f"Unknown pooling strategy: {strategy}")
 
 
-def main():  # noqa: C901, PLR0915
+def main():  # noqa: C901, PLR0912, PLR0915
     config = Config()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -113,13 +115,13 @@ def main():  # noqa: C901, PLR0915
     llada_embedder.eval()
 
     data = np.memmap(path_to_bin, dtype=np.uint16, mode="r")
-    seq_length = 1024 - 2  # account for bos/eos tokens
+    seq_length = config.block_length  # use block_length from config (no bos/eos tokens)
 
     # seed for reproducibility of data sampling
     np.random.seed(42)
     torch.manual_seed(42)
 
-    mask_ratios = list(np.linspace(0.0, 0.99, num=50))  # 0.0 to 0.99 inclusive
+    mask_ratios = list(np.linspace(0.0, 0.99, num=100))  # 0.0 to 0.99 inclusive
     pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten"]
 
     results = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
@@ -152,17 +154,29 @@ def main():  # noqa: C901, PLR0915
             if mask_ratio == 0.0:
                 all_ref_acs_scores.append(compute_avg_cosine_similarity(ref_embeddings))
 
+            # Apply chat template if using instruct model, matching diffusion_llada.py
+            if "instruct" in llada_model_id.lower():
+                formatted_texts = []
+                for text in sample_texts:
+                    message = [{"role": "user", "content": text}]
+                    formatted_text = llada_tokenizer.apply_chat_template(
+                        message,
+                        add_generation_prompt=True,
+                        tokenize=False,
+                    )
+                    formatted_texts.append(formatted_text)
+            else:
+                formatted_texts = sample_texts
+
             inputs = llada_tokenizer(
-                sample_texts,
+                formatted_texts,
                 return_tensors="pt",
                 padding="max_length",
                 max_length=seq_length,
                 truncation=True,
+                add_special_tokens=False,  # no bos/eos tokens, matching diffusion_llada.py
             )
-            bos_tensor = torch.full((inputs["input_ids"].shape[0], 1), llada_tokenizer.bos_token_id)
-            eos_tensor = torch.full((inputs["input_ids"].shape[0], 1), llada_tokenizer.eos_token_id)
-            base_input_ids = torch.cat([bos_tensor, inputs["input_ids"], eos_tensor], dim=1)
-            base_input_ids = base_input_ids.to(device)
+            base_input_ids = inputs["input_ids"].to(device)
 
             masked_input_ids = base_input_ids.clone()
             rand_tensor = torch.rand(masked_input_ids.shape, device=device)
@@ -213,6 +227,22 @@ def main():  # noqa: C901, PLR0915
     final_ref_acs_baseline = float(np.mean(all_ref_acs_scores))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_baseline:.4f}")
 
+    # Save results to NPZ
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    # Prepare data for saving
+    save_dict = {
+        "mask_ratios": np.array(mask_ratios),
+        "ref_acs_baseline": final_ref_acs_baseline,
+    }
+    for strategy in pooling_strategies:
+        save_dict[f"{strategy}_cka"] = np.array(results[strategy]["cka"])
+        save_dict[f"{strategy}_acs"] = np.array(results[strategy]["acs"])
+
+    npz_path = os.path.join(RESULTS_DIR, "embeddings_llada_results.npz")
+    np.savez(npz_path, **save_dict)
+    print(f"Results saved to {npz_path}")
+
     fig, ax = plt.subplots(2, 1, figsize=(14, 16), sharex=True)
 
     for strategy, scores in results.items():
@@ -241,7 +271,18 @@ def main():  # noqa: C901, PLR0915
     ax[1].set_title(f"Average Cosine Similarity (ACS) vs. Mask Ratio (Avg. over {N_TOTAL_SAMPLES} samples)")
     ax[1].legend()
     ax[1].grid(True)
-    ax[1].set_ylim((max(0.0, final_ref_acs_baseline - 0.1), 1.05))
+
+    # Dynamically set y-axis limits based on actual data
+    all_acs_values: list[float] = []
+    for scores in results.values():
+        for s in scores["acs"]:
+            if not np.isnan(s):
+                all_acs_values.append(s)  # type: ignore
+    if all_acs_values:
+        min_acs = min(all_acs_values)
+        max_acs = max(all_acs_values)
+        y_margin = (max_acs - min_acs) * 0.1 if max_acs > min_acs else 0.1
+        ax[1].set_ylim((max(0.0, min_acs - y_margin), min(1.0, max_acs + y_margin)))
 
     plt.xticks(mask_ratios)
     plt.tight_layout()

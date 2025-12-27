@@ -1,3 +1,5 @@
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -213,6 +215,23 @@ def main():  # noqa: C901, PLR0915
 
     final_ref_acs_baseline = float(np.mean(all_ref_acs_scores))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_baseline:.4f}")
+
+    # Save results to NPZ
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Prepare data for saving
+    save_dict = {
+        "mask_ratios": np.array(mask_ratios),
+        "ref_acs_baseline": final_ref_acs_baseline,
+    }
+    for strategy in pooling_strategies:
+        save_dict[f"{strategy}_cka"] = np.array(results[strategy]["cka"])
+        save_dict[f"{strategy}_acs"] = np.array(results[strategy]["acs"])
+
+    npz_path = os.path.join(results_dir, "embeddings_mdlm_results.npz")
+    np.savez(npz_path, **save_dict)
+    print(f"Results saved to {npz_path}")
 
     fig, ax = plt.subplots(2, 1, figsize=(14, 16), sharex=True)
 
