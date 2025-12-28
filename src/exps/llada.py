@@ -45,9 +45,8 @@ def main():
         print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...")
 
         # Sample
-        # Using block_diffuse as it's the main method in llada.py's sample script
         with torch.no_grad():
-            sample_ids = sampler.block_diffuse(prompt=prompt)
+            sample_ids = sampler.sample(prompt=prompt)
 
         # Decode
         batch_gen = []

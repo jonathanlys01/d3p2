@@ -54,7 +54,7 @@ def main():
 
     for i in range(config.n_runs):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
-        samples = model.sample(prompt=min_truth_qa[i], cfg_scale=config.cfg_scale)
+        samples = model.sample(prompt=min_truth_qa[i])
         texts_ = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
         texts.append(texts_)
         save(texts, config, unique_id)

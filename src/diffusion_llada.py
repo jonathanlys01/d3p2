@@ -10,8 +10,6 @@ python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.0
 python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.5
 """
 
-from typing import Optional
-
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -21,23 +19,6 @@ from data import truthful_qa
 from llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from subsample import get_subsample_selector
 from utils import get_tokenizer, process_model_args, sample_categorical, tqdm
-
-
-def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
-    """
-    The Gumbel max is a method for sampling categorical distributions.
-    According to arXiv:2409.02908, for MDM,
-    low-precision Gumbel Max improves perplexity score but reduces generation quality.
-    Thus, we use float64.
-    """
-    if temperature == 0:
-        return logits
-    logits = logits.to(torch.float64)
-    noise = torch.rand_like(logits, dtype=torch.float64)
-    gumbel_noise = (-torch.log(noise)) ** temperature
-    return logits.exp() / gumbel_noise
-    # gumbel_noise = -torch.log(noise)
-    # return (logits / temperature).exp() / gumbel_noise
 
 
 class LLADASampler(nn.Module):
@@ -70,159 +51,6 @@ class LLADASampler(nn.Module):
             logits = out.logits
             embeddings = out.hidden_states
         return logits, embeddings
-
-    def _sample_prior(self, *batch_dims) -> torch.Tensor:
-        return self.mask_index * torch.ones(*batch_dims, dtype=torch.int64)
-
-    def _get_num_transfer_tokens(self, t: int, prompt_length: int) -> torch.Tensor:
-        T = self.config.num_steps
-        # Calculate tokens based on the part we actually want to generate
-        gen_len = self.sequence_length - prompt_length
-        frac = (T - t) / T
-
-        # How many NEW tokens should be visible?
-        num_gen_tokens = torch.tensor(gen_len * frac, device=self.device, dtype=torch.int64)
-
-        # Total visible = Prompt + New Tokens
-        return num_gen_tokens.repeat(self.config.batch_size) + prompt_length
-
-    def _update(
-        self,
-        x_t: torch.Tensor,
-        t: int,
-        cfg_scale: float,
-        remasking="confidence",
-        prompt_length=0,
-    ) -> torch.Tensor | None:
-        if cfg_scale > 0.0:
-            un_x = x_t.clone()
-            un_x[:, :prompt_length] = self.mask_index
-            x_ = torch.cat([x_t, un_x], dim=0)
-            logits, out_all = self._forward_model(x_)
-            embeddings_all = out_all[-1]
-
-            logits, un_logits = torch.chunk(logits, 2, dim=0)
-            _, embeddings = torch.chunk(embeddings_all, 2, dim=0)  # ignore conditional embeddings
-
-            logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
-        else:
-            logits, out = self._forward_model(x_t)
-            embeddings = out[-1]
-
-        logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
-        cache = Cache(log_p_x0=logits, embeddings=embeddings, x=x_t)
-
-        subsample_step = self.config.subsample_start <= t <= self.config.subsample_end
-        last_step = t == -1
-
-        slice_idx = (
-            self.selector.subsample(cache)
-            if subsample_step or last_step
-            else torch.arange(x_t.size(0), device=self.device)
-        )
-
-        if slice_idx is None:
-            ret = None
-
-        else:
-            # logp_x0 = logits[slice_idx]
-            logp_x0 = torch.index_select(logits, 0, slice_idx)
-            p_x0 = torch.exp(logp_x0)
-
-            x_t = x_t[slice_idx]
-
-            x0 = sample_categorical(p_x0, expand=self.config.group_size if subsample_step else None)
-
-            # 3. Confidence Calculation
-            if remasking == "confidence":
-                expanded_p_x0 = p_x0.repeat_interleave(self.config.group_size, dim=0) if subsample_step else p_x0
-                conf_p = torch.gather(expanded_p_x0, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)  # (B, L)
-            elif remasking == "random":
-                conf_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-            else:
-                raise NotImplementedError(remasking)
-
-            # 4. Prompt Preservation
-            # Force prompt confidence to infinity so they are always kept in the top-k selection
-            conf_p[:, :prompt_length] = float("inf")
-
-            # 5. Masking Schedule (Linear)
-            # Determine which tokens to keep (unmask) for the next step.
-            # num_transfer_tokens is the TARGET TOTAL count of unmasked tokens.
-            num_transfer_tokens = self._get_num_transfer_tokens(t, prompt_length)  # (B,)
-
-            # We start with a full mask
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-
-            for j in range(conf_p.shape[0] if "confidence" in locals() else x0.shape[0]):
-                k = int(num_transfer_tokens[j].item())
-                # Ensure we keep at least the prompt tokens
-                k = max(k, prompt_length)
-
-                # Select the top-k most confident tokens from the ENTIRE sequence
-                _, select_index = torch.topk(conf_p[j], k=k)
-                transfer_index[j, select_index] = True
-
-            # 6. Update State
-            # Where transfer_index is True, we keep the prediction x0.
-            # Where transfer_index is False, we apply the mask token.
-            x_next = torch.where(transfer_index, x0, torch.full_like(x0, self.mask_index))
-
-            # Explicitly enforce prompt consistency (though infinite confidence should handle this)
-            x_t_expand = x_t.repeat_interleave(self.config.group_size, dim=0) if subsample_step else x_t
-            x_next[:, :prompt_length] = x_t_expand[:, :prompt_length]
-
-            ret = x_next
-
-        return ret
-
-    def _gen_prompt(self, prompt: str) -> torch.Tensor:
-        if "instruct" in self.config.llada_model_path.lower():
-            message = {"role": "user", "content": prompt}
-            prompt = self.tokenizer.apply_chat_template([message], add_generation_prompt=True, tokenize=False)
-        prompt_tokens: torch.Tensor = self.tokenizer(prompt, return_tensors="pt")["input_ids"].to(self.device)
-        init_x = self._sample_prior(self.config.batch_size, self.sequence_length)
-        prompt_length = prompt_tokens.shape[1]
-        init_x[:, :prompt_length] = prompt_tokens
-        return init_x
-
-    @torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-    @torch.no_grad()
-    def sample(
-        self,
-        cfg_scale: float,
-        num_steps: Optional[int] = None,
-        init_x: Optional[torch.Tensor] = None,
-        prompt: Optional[str] = None,
-    ) -> torch.Tensor | None:
-        num_steps = num_steps or self.config.num_steps
-        prompt_length = 0
-
-        if prompt is not None:
-            assert init_x is None, "Cannot provide both prompt and init_x."
-            prompt_tokens = self.tokenizer(prompt, return_tensors="pt")["input_ids"].to(self.device)
-            init_x = self._sample_prior(self.config.batch_size, self.sequence_length)
-            prompt_length = prompt_tokens.shape[1]
-            init_x[:, :prompt_length] = prompt_tokens
-
-        if init_x is None:
-            init_x = self._sample_prior(self.config.batch_size, self.sequence_length)
-
-        x_t = init_x.to(self.device)
-
-        disable = False
-        if self.distributed_utils:
-            disable = self.distributed_utils.rank != 0
-
-        for t in tqdm(reversed(range(num_steps)), desc="Sampling", total=num_steps, disable=disable):
-            x_t = self._update(
-                x_t,
-                t,
-                prompt_length=prompt_length,
-                cfg_scale=cfg_scale,
-            )
-
-        return x_t
 
     def _get_block_transfer_tokens(self, mask_index, steps):
         """
@@ -304,7 +132,7 @@ class LLADASampler(nn.Module):
         return x0_p
 
     @torch.no_grad()
-    def block_diffuse(self, prompt: str):
+    def sample(self, prompt: str):
         num_blocks = self.config.gen_length // self.config.block_length
         steps = self.config.steps // num_blocks
         batch_size = self.config.batch_size
@@ -337,7 +165,12 @@ class LLADASampler(nn.Module):
             for step in range(steps):
                 mask_index = x == self.mask_index
 
-                if self.config.cfg_scale > 0.0:
+                # Apply CFG only if step is within the guidance range
+                apply_cfg = (
+                    self.config.cfg_scale > 0.0 and self.config.guidance_start <= step < self.config.guidance_end
+                )
+
+                if apply_cfg:
                     un_x = x.clone()
                     un_x[prompt_index] = self.mask_index
                     x_ = torch.cat([x, un_x], dim=0)
@@ -395,8 +228,7 @@ def main_block():
 
         prompt: str = row.question  # type: ignore
 
-        # sample using the block_diffuse method
-        samples.extend(sampler.block_diffuse(prompt=prompt))
+        samples.extend(sampler.sample(prompt=prompt))
         prompts.extend([prompt] * cfg.batch_size)
 
     if sampler.distributed_utils:
@@ -411,38 +243,5 @@ def main_block():
     print("Done")
 
 
-def main():
-    limit = 1
-    cfg = Config()
-    sampler = LLADASampler(cfg)
-    dataset = truthful_qa(cfg)
-
-    samples = []
-    prompts = []
-
-    for i, row in enumerate(dataset.itertuples()):
-        if i >= limit:
-            break
-        prompt = row.question  # type: ignore
-
-        samples.extend(sampler.sample(prompt=prompt, cfg_scale=cfg.cfg_scale))
-        prompts.extend([prompt] * cfg.batch_size)
-
-    if sampler.distributed_utils:
-        # cleanup
-        sampler.distributed_utils.cleanup()
-
-    with open("llada_min_truth_qa_samples.log", "w") as f:
-        for i, sample in enumerate(samples):
-            decoded_text = sampler.tokenizer.decode(sample.tolist(), skip_special_tokens=False)
-            # decoded_text = decoded_text.split("<|endoftext|>")[0]  # take content before EOS token
-            f.write(f"Prompt: {prompts[i]}\n")
-            f.write(f"Sample: {decoded_text}\n\n")
-            f.write("=" * 80 + "\n\n")
-
-    print("Done")
-
-
 if __name__ == "__main__":
-    # main()
     main_block()
