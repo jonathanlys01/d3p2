@@ -55,6 +55,8 @@ class Config:
     remasking: str = "low_confidence"  # "low_confidence" or "random"
     logits_eos_inf: bool = False
     confidence_eos_eot_inf: bool = True
+    guidance_start: int = 0  # step at which to start applying CFG (0-indexed)
+    guidance_end: int = -1  # step at which to stop applying CFG (-1 means steps)
 
     # sampling
     num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
@@ -142,6 +144,18 @@ class Config:
             assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
             num_blocks = self.gen_length // self.block_length
             assert self.steps % num_blocks == 0, "steps must be divisible by num_blocks"
+
+            # Set guidance_end to steps if not explicitly set
+            if self.guidance_end == -1:
+                object.__setattr__(self, "guidance_end", self.steps)
+
+            # Validate guidance range
+            assert 0 <= self.guidance_start < self.guidance_end, (
+                f"guidance_start ({self.guidance_start}) must be >= 0 and < guidance_end ({self.guidance_end})"
+            )
+            assert self.guidance_end <= self.steps, (
+                f"guidance_end ({self.guidance_end}) must be <= steps ({self.steps})"
+            )
 
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))
