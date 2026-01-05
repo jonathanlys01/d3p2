@@ -12,7 +12,7 @@ from utils import compile_model, print, seed_all
 
 
 def main():
-    limit = 10
+    limit = -1
 
     # 1. Initialize Sampler and Evaluator
     cfg = Config()
