@@ -211,7 +211,7 @@ class LLADASampler(nn.Module):
                 x[transfer_index] = x0[transfer_index]
 
         if self.distributed_utils:
-            x = self.distributed_utils.gather_all_sequences(x)
+            x = self.distributed_utils.all_gather_sequences(x)
 
         return x
 
