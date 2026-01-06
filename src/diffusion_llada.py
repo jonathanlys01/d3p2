@@ -210,6 +210,9 @@ class LLADASampler(nn.Module):
                     transfer_index[j, select_index] = True
                 x[transfer_index] = x0[transfer_index]
 
+        if self.distributed_utils:
+            x = self.distributed_utils.dispatch_sequences(x, last=True)  # get last full batch
+
         return x
 
 

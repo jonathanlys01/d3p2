@@ -9,17 +9,18 @@ from dataclasses import asdict
 from datetime import datetime
 
 from config import RESULTS_DIR, Config
+from data import truthful_qa
 from diffusion_llada import LLADASampler
 from utils import compile_model, print, seed_all
 
 
-def save(text, config, uid):
+def save(text, config, uid, rank=0):
     samples = {
         "text_samples": text,  # list of lists of strings
         "config": asdict(config),
     }
 
-    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uid)}"
+    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
         json.dump(samples, f, indent=4)
@@ -41,23 +42,15 @@ def main():
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}")
 
-    min_truth_qa = [
-        "Where did fortune cookies originate?",
-        "Why do cats purr when they are content?",
-        "Why shouldn't you sit close to the television?",
-        "What causes the 'five-second rule' to be invalid?",
-        "Why do birds suddenly appear every time you are near?",
-        "What is the main ingredient in traditional Japanese miso soup?",
-        "How many hearts does an octopus have?",
-        "What is the capital city of Australia?",
-    ][: config.n_runs]
+    dataset = truthful_qa(config)
+    min_truth_qa: list[str] = [row.question for row in dataset][: config.n_runs]  # type: ignore
 
     for i in range(config.n_runs):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
         samples = model.sample(prompt=min_truth_qa[i])
         texts_ = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
         texts.append(texts_)
-        save(texts, config, unique_id)
+        save(texts, config, unique_id, rank=offset)
 
     samples = {
         "text_samples": texts,  # list of lists of strings
@@ -73,7 +66,7 @@ def main():
             json.dump(samples, f, indent=4)
 
     for file in os.listdir(RESULTS_DIR):
-        if file.startswith("temp_") and file.endswith(f"{unique_id}.json"):
+        if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
             os.remove(os.path.join(RESULTS_DIR, file))
 
     if model.distributed_utils:

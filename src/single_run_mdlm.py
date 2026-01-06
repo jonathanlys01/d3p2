@@ -13,13 +13,13 @@ from diffusion_mdlm import MDLMSampler
 from utils import compile_model, print, seed_all
 
 
-def save(text, config, uid):
+def save(text, config, uid, rank=0):
     samples = {
         "text_samples": text,  # list of lists of strings
         "config": asdict(config),
     }
 
-    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uid)}"
+    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
         json.dump(samples, f, indent=4)
@@ -45,7 +45,7 @@ def main():
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
         samples = model.sample()
         texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
-        save(texts, config, unique_id)
+        save(texts, config, unique_id, rank=offset)
 
     samples = {
         "text_samples": texts,  # list of lists of strings
@@ -61,7 +61,7 @@ def main():
             json.dump(samples, f, indent=4)
 
     for file in os.listdir(RESULTS_DIR):
-        if file.startswith("temp_") and file.endswith(f"{unique_id}.json"):
+        if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
             os.remove(os.path.join(RESULTS_DIR, file))
 
     if model.distributed_utils:

@@ -31,13 +31,13 @@ def _bcast(obj):
     return obj_list[0]
 
 
-def _save(text, config, uid):
+def _save(text, config, uid, rank=0):
     samples = {
         "text_samples": text,  # list of lists of strings
         "config": asdict(config),
     }
 
-    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uid)}"
+    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
         json.dump(samples, f, indent=4)
@@ -58,7 +58,7 @@ def generate_samples_with_model(config: Config, model: MDLMSampler):
     for _ in range(config.n_runs):
         samples = model.sample()
         texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
-        _save(texts, config, unique_id)
+        _save(texts, config, unique_id, rank=offset)
 
     samples = {
         "text_samples": texts,
@@ -73,7 +73,7 @@ def generate_samples_with_model(config: Config, model: MDLMSampler):
             json.dump(samples, f, indent=4)
 
     for file in os.listdir(RESULTS_DIR):
-        if file.startswith("temp_") and file.endswith(f"{unique_id}.json"):
+        if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
             os.remove(os.path.join(RESULTS_DIR, file))
 
     return unique_id, master
