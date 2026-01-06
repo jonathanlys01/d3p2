@@ -318,6 +318,38 @@ class DistributedUtils:
 
         return local_indices
 
+    def gather_all_sequences(self, sequences: torch.Tensor) -> torch.Tensor:
+        """
+        Gather sequences from all ranks into a single tensor.
+
+        Args:
+            sequences: Local sequences tensor of shape [batch_size, seq_len]
+
+        Returns:
+            All sequences concatenated from all ranks [world_size * batch_size, seq_len]
+            Only rank 0 gets the full tensor, other ranks get empty tensor
+        """
+        assert self.is_distributed(), "gather_all_sequences can only be called in distributed mode"
+        assert sequences.dim() == 2, f"Expected 2D tensor, got {sequences.dim()}D"
+
+        batch_size, seq_len = sequences.shape
+
+        # Gather all sequences to rank 0
+        if self.rank == 0:
+            # Rank 0 needs the full buffer and receives from all ranks
+            gather_buffer = torch.zeros(
+                (self.world_size * batch_size, seq_len),
+                dtype=sequences.dtype,
+                device=sequences.device,
+            )
+            gather_list = list(torch.chunk(gather_buffer, self.world_size, dim=0))
+            torch.distributed.gather(sequences, gather_list, dst=0)
+            return gather_buffer
+        else:
+            # Other ranks just send their data
+            torch.distributed.gather(sequences, dst=0)
+            return torch.empty((0, seq_len), dtype=sequences.dtype, device=sequences.device)
+
     def _setup_pg(self):
         if not torch.distributed.is_initialized():
             print("Initializing process group")
