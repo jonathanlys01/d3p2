@@ -6,7 +6,7 @@ Mimics the behavior of diffusion samplers but uses standard left-to-right genera
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from config import Cache, Config
 from subsample import get_subsample_selector
@@ -16,6 +16,10 @@ from utils import get_tokenizer, process_model_args, sample_categorical
 NEG_INFINITY = -1_000_000.0
 torch.set_float32_matmul_precision("high")
 
+# MODEL_ID = "gpt2"
+# MODEL_ID = "/Brain/public/models/meta-llama/Meta-Llama-3-8B/"
+MODEL_ID = "gpt2-large"
+
 
 class AutoregressiveSampler(nn.Module):
     """Autoregressive sampler with beam-style exploration."""
@@ -23,61 +27,61 @@ class AutoregressiveSampler(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
 
-        model_args = process_model_args("gpt2", cache_dir=config.cache_dir)
+        model_args = process_model_args(MODEL_ID, cache_dir=config.cache_dir)
         self.model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(**model_args)
         self.selector = get_subsample_selector(config)
         self.config = config
-        self.tokenizer = get_tokenizer(config, "mdlm")
-
-        # Resize model embeddings to match tokenizer vocab size (includes added PAD token)
-        self.model.resize_token_embeddings(len(self.tokenizer))
+        self.tokenizer = (
+            get_tokenizer(config, "mdlm") if "gpt2" in MODEL_ID else AutoTokenizer.from_pretrained(**model_args)
+        )
 
         self.model_length = config.gen_length
-
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
         self.model.eval()
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
+    def _prepend_bos(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Prepend BOS token if not already present."""
+        if tokens[0, 0] == self.tokenizer.bos_token_id:
+            return tokens
+        bos = torch.full((1, 1), self.tokenizer.bos_token_id, dtype=torch.long, device=self.device)
+        return torch.cat([bos, tokens], dim=1)
+
     @torch.no_grad()
     def sample(self, prompt: str | None = None):
         batch_size = self.config.batch_size
 
-        # Initialize sequence with prompt if provided, otherwise start with BOS
+        # Initialize sequence with prompt or BOS
         if prompt is not None:
-            # Tokenize the prompt
-            encoded_outputs = self.tokenizer(
-                [prompt],
-                add_special_tokens=True,
-                padding=False,
-                return_tensors="pt",
-            )
-            prompt_tokens = encoded_outputs["input_ids"].to(self.device)
-            # Repeat for batch
+            encoded = self.tokenizer([prompt], add_special_tokens=True, padding=False, return_tensors="pt")
+            prompt_tokens = self._prepend_bos(encoded["input_ids"].to(self.device))
             seq = prompt_tokens.repeat(batch_size, 1)
             prompt_len = prompt_tokens.shape[1]
         else:
-            seq = torch.full((batch_size, 1), self.tokenizer.bos_token_id, dtype=torch.int64, device=self.device)
+            seq = torch.full((batch_size, 1), self.tokenizer.bos_token_id, dtype=torch.long, device=self.device)
             prompt_len = 0
 
+        attention_mask = torch.ones_like(seq, dtype=torch.long)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         past_key_values = None
 
-        for i in range(self.model_length):
-            subsample_step = self.config.subsample_start <= i <= self.config.subsample_end
-            input_ids = seq if past_key_values is None else seq[:, -1:]  # type: ignore
+        for step in range(self.model_length):
+            subsample_step = self.config.subsample_start <= step <= self.config.subsample_end
+            input_ids = seq if past_key_values is None else seq[:, -1:]
 
             outputs = self.model(
-                input_ids,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=True,
                 return_dict=True,
                 output_hidden_states=True,
             )
+
             past_key_values = outputs.past_key_values
             embeddings = outputs.hidden_states[-1] if outputs.hidden_states else None
-
             logits = outputs.logits[:, -1]
             probs = F.softmax(logits, dim=-1).unsqueeze(1)
 
@@ -90,32 +94,34 @@ class AutoregressiveSampler(nn.Module):
                 slice_idx = self.selector.subsample(cache)
 
                 if slice_idx is not None:
+                    # Slice state
                     probs = probs[slice_idx]
                     seq = seq[slice_idx]
                     finished = finished[slice_idx]
-
+                    attention_mask = attention_mask[slice_idx]
                     if past_key_values is not None:
-                        past_key_values = tuple(
-                            tuple(kv[slice_idx] for kv in layer_past) for layer_past in past_key_values
-                        )
+                        past_key_values = tuple(tuple(kv[slice_idx] for kv in layer) for layer in past_key_values)
 
                     next_token = sample_categorical(probs, expand=self.config.group_size)
-                    seq = seq.repeat_interleave(self.config.group_size, dim=0)
-                    finished = finished.repeat_interleave(self.config.group_size, dim=0)
 
+                    # Expand state
+                    g = self.config.group_size
+                    seq = seq.repeat_interleave(g, dim=0)
+                    finished = finished.repeat_interleave(g, dim=0)
+                    attention_mask = attention_mask.repeat_interleave(g, dim=0)
                     if past_key_values is not None:
                         past_key_values = tuple(
-                            tuple(kv.repeat_interleave(self.config.group_size, dim=0) for kv in layer_past)
-                            for layer_past in past_key_values
+                            tuple(kv.repeat_interleave(g, dim=0) for kv in layer) for layer in past_key_values
                         )
                 else:
                     next_token = sample_categorical(probs, expand=None)
             else:
                 next_token = sample_categorical(probs, expand=None)
 
-            next_token[finished] = self.tokenizer.pad_token_id
+            next_token[finished] = self.tokenizer.eos_token_id
             finished = finished | (next_token.squeeze(-1) == self.tokenizer.eos_token_id)
             seq = torch.cat([seq, next_token], dim=1)
+            attention_mask = torch.cat([attention_mask, (~finished).long().unsqueeze(-1)], dim=1)
 
             if finished.all():
                 break
@@ -124,7 +130,6 @@ class AutoregressiveSampler(nn.Module):
 
 
 def main():
-    # Create a minimal config for testing
     config = Config(
         disable_sys_args=True,
         model="mdlm",
@@ -149,25 +154,21 @@ def main():
     print(f"\nGenerated {sequences.shape[0]} sequences")
     print(f"Sequence shape: {sequences.shape}")
 
-    # Verify and display each sequence
     print("\n" + "=" * 80)
     for i, seq in enumerate(sequences):
-        # Find first EOS token
         eos_positions = (seq == sampler.tokenizer.eos_token_id).nonzero(as_tuple=True)[0]
 
         if len(eos_positions) > 0:
             first_eos = eos_positions[0].item()
-            # Check that all tokens after EOS are padding
             after_eos = seq[first_eos + 1 :]
             if len(after_eos) > 0:
-                all_padding = (after_eos == sampler.tokenizer.pad_token_id).all()
-                print(f"\nSeq {i}: length={len(seq)}, EOS at pos {first_eos}, padding after EOS: {all_padding}")
+                all_eos = (after_eos == sampler.tokenizer.eos_token_id).all()
+                print(f"\nSeq {i}: length={len(seq)}, EOS at pos {first_eos}, all EOS after: {all_eos}")
             else:
                 print(f"\nSeq {i}: length={len(seq)}, EOS at pos {first_eos} (end of sequence)")
         else:
             print(f"\nSeq {i}: length={len(seq)}, no EOS found (reached max length)")
 
-        # Decode and display the generated text
         decoded_text = sampler.tokenizer.decode(seq, skip_special_tokens=False)
         print(f"Generated text: {decoded_text[:200]}{'...' if len(decoded_text) > 200 else ''}")
         print("-" * 80)
@@ -177,11 +178,10 @@ def main():
 
 def main_prompt():
     examples = [
-        "The capital of France is: ",
-        "The largest planet in the solar system is: ",
+        "The capital of France is",
+        "The largest planet in the solar system is",
     ]
 
-    # Create a minimal config for testing
     config = Config(
         disable_sys_args=True,
         model="mdlm",
@@ -211,7 +211,6 @@ def main_prompt():
         print(f"Prompt length: {prompt_len} tokens")
 
         for i, seq in enumerate(sequences):
-            # Show full sequence for debugging
             full_text = sampler.tokenizer.decode(seq.tolist(), skip_special_tokens=False)
             print(f"\n--- Full sequence {i} (with special tokens) ---")
             print(f"{full_text[:200]}{'...' if len(full_text) > 200 else ''}")
@@ -220,5 +219,5 @@ def main_prompt():
 
 
 if __name__ == "__main__":
-    main()  # Test free generation
-    main_prompt()  # Test prompt-conditioned generation
+    main()
+    main_prompt()
