@@ -41,15 +41,32 @@ class AutoregressiveSampler(nn.Module):
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
     @torch.no_grad()
-    def sample(self):
+    def sample(self, prompt: str | None = None):
         batch_size = self.config.batch_size
-        seq = torch.full((batch_size, 1), self.tokenizer.bos_token_id, dtype=torch.int64, device=self.device)
+
+        # Initialize sequence with prompt if provided, otherwise start with BOS
+        if prompt is not None:
+            # Tokenize the prompt
+            encoded_outputs = self.tokenizer(
+                [prompt],
+                add_special_tokens=True,
+                padding=False,
+                return_tensors="pt",
+            )
+            prompt_tokens = encoded_outputs["input_ids"].to(self.device)
+            # Repeat for batch
+            seq = prompt_tokens.repeat(batch_size, 1)
+            prompt_len = prompt_tokens.shape[1]
+        else:
+            seq = torch.full((batch_size, 1), self.tokenizer.bos_token_id, dtype=torch.int64, device=self.device)
+            prompt_len = 0
+
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         past_key_values = None
 
         for i in range(self.model_length):
             subsample_step = self.config.subsample_start <= i <= self.config.subsample_end
-            input_ids = seq if past_key_values is None else seq[:, -1:]
+            input_ids = seq if past_key_values is None else seq[:, -1:]  # type: ignore
 
             outputs = self.model(
                 input_ids,
@@ -103,12 +120,10 @@ class AutoregressiveSampler(nn.Module):
             if finished.all():
                 break
 
-        return seq
+        return seq, prompt_len
 
 
-if __name__ == "__main__":
-    from config import Config
-
+def main():
     # Create a minimal config for testing
     config = Config(
         disable_sys_args=True,
@@ -129,7 +144,7 @@ if __name__ == "__main__":
     print(f"PAD token: {sampler.tokenizer.pad_token_id}")
 
     print("\nGenerating samples...")
-    sequences = sampler.sample()
+    sequences, prompt_len = sampler.sample()
 
     print(f"\nGenerated {sequences.shape[0]} sequences")
     print(f"Sequence shape: {sequences.shape}")
@@ -158,3 +173,52 @@ if __name__ == "__main__":
         print("-" * 80)
 
     print("\n✓ Test complete!")
+
+
+def main_prompt():
+    examples = [
+        "The capital of France is: ",
+        "The largest planet in the solar system is: ",
+    ]
+
+    # Create a minimal config for testing
+    config = Config(
+        disable_sys_args=True,
+        model="mdlm",
+        batch_size=4,
+        n_groups=2,
+        group_size=2,
+        method="random",
+        transversal=True,
+    )
+
+    print("Initializing AutoregressiveSampler for prompt-conditioned generation...")
+    sampler = AutoregressiveSampler(config)
+
+    print(f"Model max length: {sampler.model_length}")
+    print(f"BOS token: {sampler.tokenizer.bos_token_id}")
+    print(f"EOS token: {sampler.tokenizer.eos_token_id}")
+    print(f"PAD token: {sampler.tokenizer.pad_token_id}")
+
+    for prompt in examples:
+        print("\n" + "=" * 80)
+        print(f"Prompt: {prompt}")
+        print("=" * 80)
+
+        sequences, prompt_len = sampler.sample(prompt=prompt)
+
+        print(f"\nGenerated {sequences.shape[0]} sequences")
+        print(f"Prompt length: {prompt_len} tokens")
+
+        for i, seq in enumerate(sequences):
+            # Show full sequence for debugging
+            full_text = sampler.tokenizer.decode(seq.tolist(), skip_special_tokens=False)
+            print(f"\n--- Full sequence {i} (with special tokens) ---")
+            print(f"{full_text[:200]}{'...' if len(full_text) > 200 else ''}")
+
+    print("\n✓ Prompt test complete!")
+
+
+if __name__ == "__main__":
+    main()  # Test free generation
+    main_prompt()  # Test prompt-conditioned generation
