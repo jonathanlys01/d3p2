@@ -9,7 +9,7 @@ class BaseSelector(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.device = "cuda"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.distributed_utils = DistributedUtils(config) if DistributedUtils.is_distributed() else None
         self.distributed_mul = self.distributed_utils.world_size if self.distributed_utils else 1
