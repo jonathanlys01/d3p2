@@ -1,3 +1,5 @@
+"""Benchmark comparing partition samplers by log-determinant quality and timing."""
+
 from time import perf_counter
 
 import numpy as np
@@ -8,17 +10,17 @@ from subsample import get_subsample_selector
 from utils import tqdm
 
 
-# --- Configuration ---
+# Configuration
 N_TRIALS = 10_000
-N_GROUPS = 8  # Corresponds to 'k'
-GROUP_SIZE = 8  # Corresponds to 'n'
+N_GROUPS = 8
+GROUP_SIZE = 8
 TOTAL_ITEMS = N_GROUPS * GROUP_SIZE
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 KWARGS = {
     "_w_interaction": 10.0,
     "_temperature": 1e-4,
     "_diversity_alpha": 1.0,
-    # "_rbf_gamma": 5e-1,
     "_kernel_type": "cosine",
 }
 
@@ -35,134 +37,87 @@ IMPLEMENTED_METHODS = [
     ("random", True),
 ]
 
-# --- Helper Functions ---
-
 
 def is_valid_partition(indices: list, num_groups: int, group_size: int) -> bool:
-    """Check partition condition: one item from each group."""
+    """Check if indices form a valid transversal partition (one item per group)."""
     if not indices or len(indices) != num_groups:
         return False
-
-    # indices is guaranteed to be a list[int] now
     groups = {i // group_size for i in indices}
     return len(groups) == num_groups
 
 
-def compute_log_det(kernel_matrix: np.ndarray, indices: list) -> float:
-    """Computes the log-determinant of the submatrix."""
-    if indices is None or len(indices) == 0:
+def compute_log_det(kernel_np: np.ndarray, indices: list) -> float:
+    """Compute log-determinant of kernel submatrix for given indices."""
+    if not indices:
         return 0.0
-
-    # Ensure unique
-    unique_indices = sorted(set(indices))
-
-    # Return -inf if duplicates found (implies singularity)
-    if len(unique_indices) != len(indices):
+    unique = sorted(set(indices))
+    if len(unique) != len(indices):
         return -np.inf
-
     try:
-        sub_matrix = kernel_matrix[np.ix_(unique_indices, unique_indices)]
-        sign, logdet = np.linalg.slogdet(sub_matrix)
-        if sign <= 0:
-            return -np.inf  # Not positive definite
-        return logdet
+        sub = kernel_np[np.ix_(unique, unique)]
+        sign, logdet = np.linalg.slogdet(sub)
+        return logdet if sign > 0 else -np.inf
     except np.linalg.LinAlgError:
         return -np.inf
 
 
-# --- Main Execution ---
-
-
 def main():
-    print("Comparing DPP Partition Samplers")
-    print(f"Parameters: k={N_GROUPS} groups, n={GROUP_SIZE} items/group, B={TOTAL_ITEMS} total items")
+    """Run benchmark comparing partition samplers."""
+    print("Partition Sampler Benchmark")
+    print(f"Parameters: k={N_GROUPS} groups, n={GROUP_SIZE} items/group, B={TOTAL_ITEMS} total")
     print(f"Running {N_TRIALS} trials on device: {DEVICE}")
     print("-" * 60)
 
-    # 1. Initialize results storage
-    results = {}
-    for method, transversal in IMPLEMENTED_METHODS:
-        name = f"{method} (Transv: {transversal})"
-        results[name] = {"log_dets": [], "valid": [], "times": []}
+    results = {f"{m} (Transv: {t})": {"log_dets": [], "valid": [], "times": []} for m, t in IMPLEMENTED_METHODS}
 
-    # 2. Base selector for Ground Truth kernel
-    base_config = Config(
-        method="dpp",
-        transversal=False,
-        group_size=GROUP_SIZE,
-        n_groups=N_GROUPS,
-        **KWARGS,
-    )
+    base_config = Config(method="dpp", transversal=False, group_size=GROUP_SIZE, n_groups=N_GROUPS, **KWARGS)
     base_selector = get_subsample_selector(config=base_config)
     all_selectors = {}
     for method, transversal in IMPLEMENTED_METHODS:
-        config = Config(
-            method=method,
-            transversal=transversal,
-            group_size=GROUP_SIZE,
-            n_groups=N_GROUPS,
-            **KWARGS,
-        )
+        config = Config(method=method, transversal=transversal, group_size=GROUP_SIZE, n_groups=N_GROUPS, **KWARGS)
         selector = get_subsample_selector(config)
         selector.forward = torch.compile(selector.forward)
         all_selectors[(method, transversal)] = selector
 
-    # 3. Run Trials
     for _ in tqdm(range(N_TRIALS), desc="Trials"):
-        # Data Generation
         embeddings = torch.randn(TOTAL_ITEMS, 16, 64, device=DEVICE)
         lpx = torch.randn(TOTAL_ITEMS, 16, 50, device=DEVICE)
         seq = torch.arange(TOTAL_ITEMS, device=DEVICE)
         cache = Cache(embeddings=embeddings, log_p_x0=lpx, x=seq)
 
-        # Compute Ground Truth Kernel (Convert to Numpy for LogDet Calc)
-        kernel_tensor = base_selector.compute_kernel(cache)
-        assert kernel_tensor is not None
-
-        kernel_np = kernel_tensor.detach().cpu().numpy()
+        kernel = base_selector.compute_kernel(cache)
+        assert kernel is not None
+        kernel_np = kernel.detach().cpu().numpy()
 
         for method, transversal in IMPLEMENTED_METHODS:
             name = f"{method} (Transv: {transversal})"
-
             selector = all_selectors[(method, transversal)]
 
-            # --- Timing Start ---
-            start_time = perf_counter()
+            start = perf_counter()
+            indices = selector.subsample(cache)
+            if isinstance(indices, torch.Tensor):
+                indices = indices.detach().cpu().tolist()
+            elapsed = perf_counter() - start
 
-            selected_indices = selector.subsample(cache)
-
-            if isinstance(selected_indices, torch.Tensor):
-                selected_indices = selected_indices.detach().cpu().tolist()
-
-            # --- Timing Stop ---
-            elapsed = perf_counter() - start_time
             results[name]["times"].append(elapsed)
+            results[name]["log_dets"].append(compute_log_det(kernel_np, indices))
+            results[name]["valid"].append(is_valid_partition(indices, N_GROUPS, GROUP_SIZE))
 
-            # Metrics
-            log_det = compute_log_det(kernel_np, selected_indices)
-            results[name]["log_dets"].append(log_det)
-
-            is_valid = is_valid_partition(selected_indices, N_GROUPS, GROUP_SIZE)
-            results[name]["valid"].append(is_valid)
-
-    # 4. Reporting
+    # Report
     print("\n" + "=" * 85)
     print("           --- Comparison Results ---")
     print("=" * 85)
-
     print(
         f"{'Method':<35} | {'Avg. Log-Det':>15} | {'Std. Log-Det':>15} | {'Validity (%)':>13} | {'Avg. Time (s)':>15}",
     )
     print("-" * 100)
 
     for name, res in results.items():
-        avg_log_det = np.mean(res["log_dets"])
-        std_log_det = np.std(res["log_dets"])
-
-        valid_percent = np.mean(res["valid"]) * 100
-        avg_time = np.mean(res["times"])
-
-        print(f"{name:<35} | {avg_log_det:>15.4f} | {std_log_det:>15.4f} | {valid_percent:>12.1f}% | {avg_time:>15.6f}")
+        avg = np.mean(res["log_dets"])
+        std = np.std(res["log_dets"])
+        valid = np.mean(res["valid"]) * 100
+        time = np.mean(res["times"])
+        print(f"{name:<35} | {avg:>15.4f} | {std:>15.4f} | {valid:>12.1f}% | {time:>15.6f}")
 
     print("-" * 100)
     print("\n'Avg. Log-Det': Higher is better (excludes invalid/singular results).")

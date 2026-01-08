@@ -1,3 +1,5 @@
+"""Baseline selector that returns sequential indices (no actual selection)."""
+
 import torch
 
 from config import Cache, Config
@@ -5,7 +7,7 @@ from subsample.base import BaseSelector
 
 
 class BaselineSelection(BaseSelector):
-    """Baseline sampling"""
+    """Baseline selector: identity selection returning first n_groups indices."""
 
     def __init__(self, config: Config):
         super().__init__(config)

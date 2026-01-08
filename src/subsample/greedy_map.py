@@ -1,146 +1,153 @@
+"""Greedy MAP-DPP subset selector with full exploration."""
+
 import torch
 
 from config import Cache
 from subsample.base import BaseSelector, fallback_greedy, fallback_greedy_block
 
 
-epsilon = 1e-10  # numerical stability constant
+EPSILON = 1e-10  # Numerical stability constant
 
 
 class GreedyMAP(BaseSelector):
+    """Greedy MAP-DPP selector maximizing log-determinant of the kernel submatrix."""
+
     def _guard_unique(self, ret: torch.Tensor) -> bool:
-        num_unique = torch.unique(ret).size(0)
-        return not num_unique < self.config.n_groups * self.distributed_mul
+        """Check that all selected indices are unique."""
+        return torch.unique(ret).size(0) >= self.config.n_groups * self.distributed_mul
 
-    def _transversal(self, cache: Cache):
+    def _transversal(self, cache: Cache) -> torch.Tensor | None:
+        """Transversal selection: one sample per group, maximizing log-determinant."""
         if (L := self.compute_kernel(cache)) is None:
             return None
 
-        item_size = L.size(0)  # N
-        item_to_group_id = torch.arange(
-            self.config.n_groups * self.distributed_mul,
-            device=L.device,
-        ).repeat_interleave(item_size // (self.config.n_groups * self.distributed_mul))
+        n_groups = self.config.n_groups * self.distributed_mul
+        item_to_group = torch.arange(n_groups, device=L.device).repeat_interleave(L.size(0) // n_groups)
+        ret = _greedy_map_full_explore(L, n_groups, item_to_group)
 
-        ret = _multi_map_greedy_full_explore(L, self.config.n_groups * self.distributed_mul, item_to_group_id)
         if not self._guard_unique(ret):
-            ret = fallback_greedy_block(L, self.config.group_size, self.config.n_groups * self.distributed_mul)
+            ret = fallback_greedy_block(L, self.config.group_size, n_groups)
         return ret
 
-    def _non_transversal(self, cache: Cache):
+    def _non_transversal(self, cache: Cache) -> torch.Tensor | None:
+        """Global selection without group constraints, maximizing log-determinant."""
         if (L := self.compute_kernel(cache)) is None:
             return None
 
-        item_size = L.size(0)  # N
-        item_to_group_id = torch.arange(item_size, device=L.device)
+        n_groups = self.config.n_groups * self.distributed_mul
+        item_to_group = torch.arange(L.size(0), device=L.device)
+        ret = _greedy_map_full_explore(L, n_groups, item_to_group)
 
-        ret = _multi_map_greedy_full_explore(L, self.config.n_groups * self.distributed_mul, item_to_group_id)
         if not self._guard_unique(ret):
-            ret = fallback_greedy(L, self.config.n_groups * self.distributed_mul)
-
+            ret = fallback_greedy(L, n_groups)
         return ret
 
 
-def _multi_map_greedy_full_explore(
-    kernel_tensor: torch.Tensor,
+def _greedy_map_full_explore(
+    kernel: torch.Tensor,
     num_groups: int,
-    item_to_group_id: torch.Tensor,
+    item_to_group: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Runs `item_size` (N) parallel greedy DPP selections, each of length `num_groups` (K).
-    Each trajectory `i` is initialized with item `i` as its starting point.
-    Returns the single best sequence (highest log-determinant).
+    Run N parallel greedy DPP selections, each starting from a different item.
+
+    Uses Cholesky-like orthogonalization to incrementally compute log-determinant.
+    Returns the trajectory with highest log-determinant.
     """
-    device, dtype = kernel_tensor.device, kernel_tensor.dtype
-    item_size = kernel_tensor.size(0)  # N
-    batch_size = item_size  # B = N
-    max_length = num_groups  # K
+    device, dtype = kernel.device, kernel.dtype
+    n_items = kernel.size(0)
 
     # State tensors
-    cis = torch.zeros((batch_size, max_length, item_size), dtype=dtype, device=device)
-    di2s = kernel_tensor.diag().repeat(batch_size, 1)  # (N, N)
-    selected_items = torch.empty((batch_size, max_length), dtype=torch.long, device=device)
-    log_determinants = torch.zeros(batch_size, dtype=dtype, device=device)
+    cis = torch.zeros((n_items, num_groups, n_items), dtype=dtype, device=device)
+    di2s = kernel.diag().repeat(n_items, 1)  # Residual squared norms
+    selected = torch.empty((n_items, num_groups), dtype=torch.long, device=device)
+    log_dets = torch.zeros(n_items, dtype=dtype, device=device)
 
-    # k=0: Initialize each of the N trajectories to start with its own item
-    selected_item_k = torch.arange(batch_size, device=device)  # (N,)
-    selected_items[:, 0] = selected_item_k
+    # Step 0: each trajectory starts with its corresponding item
+    start_items = torch.arange(n_items, device=device)
+    selected[:, 0] = start_items
+    di_sq = kernel.diag().clamp(min=EPSILON)
+    log_dets += torch.log(di_sq)
 
-    # Get the initial diagonal values for all N starting items
-    di_optimal_sq_k = kernel_tensor.diag().clone()  # (N,)
-    di_optimal_sq_k.clamp_min_(epsilon)
-    log_determinants += torch.log(di_optimal_sq_k)
-
-    # Mask the starting group for each trajectory
-    selected_groups = item_to_group_id[selected_item_k]  # This is just item_to_group_id
-    group_mask = item_to_group_id.unsqueeze(0) == selected_groups.unsqueeze(1)
+    # Mask starting groups
+    start_groups = item_to_group[start_items]
+    group_mask = item_to_group.unsqueeze(0) == start_groups.unsqueeze(1)
     di2s[group_mask] = -torch.inf
 
-    # Run batched DPP for k=1 to K-1
-    for k in range(max_length - 1):
-        # Orthogonalize based on item k
-        ci_optimal = cis[torch.arange(batch_size), :k, selected_item_k]
-        di_optimal_k = torch.sqrt(di_optimal_sq_k)
-        elements = kernel_tensor[selected_item_k, :]
-        cis_slice = cis[:, :k, :]
+    # Steps 1 to K-1: greedy selection maximizing residual
+    for k in range(num_groups - 1):
+        ci_optimal = cis[torch.arange(n_items), :k, selected[:, k]]
+        di_optimal = torch.sqrt(di_sq)
+        elements = kernel[selected[:, k], :]
 
-        # Core DPP update
-        dot_prod = torch.einsum("bi,bij->bj", ci_optimal, cis_slice)
-        eis = (elements - dot_prod) / di_optimal_k.unsqueeze(1)
+        # Orthogonalization step
+        dot_prod = torch.einsum("bi,bij->bj", ci_optimal, cis[:, :k, :])
+        eis = (elements - dot_prod) / di_optimal.unsqueeze(1)
         cis[:, k, :] = eis
         di2s -= eis**2
 
-        # Find and store next item (k+1)
-        selected_item_k = torch.argmax(di2s, dim=1)
-        selected_items[:, k + 1] = selected_item_k
+        # Select next item
+        next_items = torch.argmax(di2s, dim=1)
+        selected[:, k + 1] = next_items
 
         # Update log-determinant
-        di_optimal_sq_k = torch.gather(di2s, 1, selected_item_k.unsqueeze(1)).squeeze(1)
-        di_optimal_sq_k.clamp_min_(epsilon)
-        log_determinants += torch.log(di_optimal_sq_k)
+        di_sq = torch.gather(di2s, 1, next_items.unsqueeze(1)).squeeze(1).clamp(min=EPSILON)
+        log_dets += torch.log(di_sq)
 
-        # Mask the group of the newly selected item
-        selected_groups = item_to_group_id[selected_item_k]
-        group_mask = item_to_group_id.unsqueeze(0) == selected_groups.unsqueeze(1)
+        # Mask selected groups
+        next_groups = item_to_group[next_items]
+        group_mask = item_to_group.unsqueeze(0) == next_groups.unsqueeze(1)
         di2s[group_mask] = -torch.inf
 
-    # Return the best sequence
-    best_batch_idx = torch.argmax(log_determinants).item()
-    return selected_items[best_batch_idx, :]
+    return selected[torch.argmax(log_dets), :]
 
 
 def fast_greedy_map(
-    kernel_tensor: torch.Tensor,
+    kernel: torch.Tensor,
     num_groups: int,
-    item_to_group_id: torch.Tensor,
+    item_to_group: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Original version of greedy MAP without full exploration.
-    Modified from https://github.com/laming-chen/fast-map-dpp/blob/master/dpp.py
+    Reference implementation: single-trajectory greedy MAP-DPP selection.
+
+    This is the original O(N*K) version without full exploration. It selects greedily
+    from a single starting point. The _greedy_map_full_explore function above runs N
+    parallel trajectories and picks the best one, which yields better results at the
+    cost of O(N^2*K) complexity.
+
+    Adapted from: https://github.com/laming-chen/fast-map-dpp/blob/master/dpp.py
     """
+    device, dtype = kernel.device, kernel.dtype
+    n_items = kernel.size(0)
+    cis = torch.zeros((num_groups, n_items), dtype=dtype, device=device)
+    di2s = kernel.diag().clone()
+    selected = torch.empty((num_groups,), dtype=torch.long, device=device)
 
-    item_size = kernel_tensor.size(0)  # N
-    device, dtype = kernel_tensor.device, kernel_tensor.dtype
-    cis = torch.zeros((num_groups, item_size), dtype=dtype, device=device)
-    di2s = kernel_tensor.diag().clone()  # (N,)
-    selected_items = torch.empty((num_groups,), dtype=torch.long, device=device)
-
+    # First selection
     selected_item = torch.argmax(di2s)
-    selected_items[0] = selected_item
-    selected_group = item_to_group_id[selected_item]
-    di2s[item_to_group_id == selected_group] = -torch.inf
+    selected[0] = selected_item
+    di2s[item_to_group == item_to_group[selected_item]] = -torch.inf
 
+    # Remaining selections
     for k in range(1, num_groups):
         ci_optimal = cis[:k, selected_item]
         di_optimal = torch.sqrt(di2s[selected_item])
-        elements = kernel_tensor[selected_item, :]
+        elements = kernel[selected_item, :]
         eis = (elements - torch.matmul(ci_optimal, cis[:k, :])) / di_optimal
         cis[k, :] = eis
         di2s -= eis**2
 
         selected_item = torch.argmax(di2s)
-        selected_group = item_to_group_id[selected_item]
-        di2s[item_to_group_id == selected_group] = -torch.inf
+        di2s[item_to_group == item_to_group[selected_item]] = -torch.inf
+        selected[k] = selected_item
 
-        selected_items[k] = selected_item
-    return selected_items
+    return selected
+
+
+if __name__ == "__main__":
+    import timeit
+
+    dummy_kernel = torch.randn(8, 8)
+    dummy_item_to_group = torch.arange(8)
+    print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group), number=1000))
+    print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))

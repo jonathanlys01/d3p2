@@ -1,3 +1,5 @@
+"""Base selector class and utility functions for subset selection."""
+
 import torch
 from torch import nn
 
@@ -6,6 +8,8 @@ from utils import DistributedUtils
 
 
 class BaseSelector(nn.Module):
+    """Abstract base class for all subset selectors."""
+
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
@@ -19,6 +23,7 @@ class BaseSelector(nn.Module):
 
     @torch.no_grad()
     def subsample(self, cache: Cache):
+        """Select subset indices from cache, dispatching to transversal or non-transversal mode."""
         ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
 
         if self.distributed_utils:
@@ -31,6 +36,7 @@ class BaseSelector(nn.Module):
 
     @torch.no_grad()
     def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
+        """Compute the DPP kernel matrix from embeddings and scores."""
         assert cache.embeddings is not None
 
         B = cache.embeddings.size(0)
@@ -91,9 +97,11 @@ class BaseSelector(nn.Module):
         return scores
 
     def _transversal(self, cache: Cache) -> torch.Tensor | None:
+        """Transversal selection: must select one item per group."""
         raise NotImplementedError
 
     def _non_transversal(self, cache: Cache) -> torch.Tensor | None:
+        """Non-transversal selection: global selection without group constraints."""
         raise NotImplementedError
 
 

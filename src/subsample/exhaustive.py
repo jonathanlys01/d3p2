@@ -1,3 +1,5 @@
+"""Exhaustive subset selector that evaluates all transversal combinations."""
+
 import torch
 
 from config import Cache, Config
@@ -5,7 +7,7 @@ from subsample.base import BaseSelector
 
 
 class Exhaustive(BaseSelector):
-    """Exhaustive Subset Selector, a special DPP variant"""
+    """Exhaustive selector that evaluates all transversal combinations to find optimal."""
 
     def __init__(self, config: Config):
         super().__init__(config)

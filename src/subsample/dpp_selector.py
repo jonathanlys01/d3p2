@@ -1,3 +1,5 @@
+"""Determinantal Point Process (DPP) subset selector using exact k-DPP sampling."""
+
 import numpy as np
 import torch
 from dppy.finite_dpps import FiniteDPP
@@ -7,7 +9,7 @@ from subsample.base import BaseSelector
 
 
 class DPP(BaseSelector):
-    """Determinantal Point Process Subset Selector"""
+    """DPP selector using exact k-DPP sampling from dppy library."""
 
     def _transversal(self, cache: Cache):
         raise NotImplementedError("DPP sampling does not support exact transversal mode.")
