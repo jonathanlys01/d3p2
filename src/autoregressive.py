@@ -145,7 +145,6 @@ def main():
         group_size=2,
         method="greedy_map",
         transversal=True,
-        embedding_dim=4096,
         gen_length=50,
     )
 
@@ -202,7 +201,6 @@ def main_prompt():
         group_size=2,
         method="greedy_map",
         transversal=True,
-        embedding_dim=4096,
         gen_length=50,  # Shorter length for prompt test
     )
 

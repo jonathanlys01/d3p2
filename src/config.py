@@ -101,7 +101,19 @@ class Config:
 
     batch_size: int = 0  # to be set in __post_init__
 
-    def __post_init__(self):
+    def __post_init__(self):  # noqa: C901, PLR0912
+        # Always set model-specific embedding_dim and batch_size first
+        if self.model == "mdlm":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
+        elif self.model == "llada":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
+        elif self.model == "ar":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_AR)
+        else:
+            raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'ar'")
+
+        object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
+
         if self.disable_sys_args:
             return
 
@@ -126,6 +138,7 @@ class Config:
 
         assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
 
+        # Re-set embedding_dim and batch_size in case model/n_groups/group_size changed via CLI
         if self.model == "mdlm":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
         elif self.model == "llada":
