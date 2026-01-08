@@ -11,7 +11,7 @@ from transformers.cache_utils import DynamicCache
 
 from config import Cache, Config
 from subsample import get_subsample_selector
-from utils import get_tokenizer, process_model_args, sample_categorical
+from utils import get_tokenizer, print, process_model_args, sample_categorical, tqdm
 
 
 NEG_INFINITY = -1_000_000.0
@@ -68,7 +68,11 @@ class AutoregressiveSampler(nn.Module):
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         past_key_values = None
 
-        for step in range(self.model_length):
+        disable = False
+        if self.distributed_utils:
+            disable = self.distributed_utils.rank != 0
+
+        for step in tqdm(range(self.model_length), desc="Generating", disable=disable):
             subsample_step = self.config.subsample_start <= step <= self.config.subsample_end
             input_ids = seq if past_key_values is None else seq[:, -1:]
 
@@ -100,10 +104,10 @@ class AutoregressiveSampler(nn.Module):
                     seq = seq[slice_idx]
                     finished = finished[slice_idx]
                     attention_mask = attention_mask[slice_idx]
-                    next_token = sample_categorical(probs, expand=self.config.group_size)
 
-                    # Expand state
+                    # Expand
                     g = self.config.group_size
+                    next_token = sample_categorical(probs, expand=g)
                     seq = seq.repeat_interleave(g, dim=0)
                     finished = finished.repeat_interleave(g, dim=0)
                     attention_mask = attention_mask.repeat_interleave(g, dim=0)
@@ -125,13 +129,17 @@ class AutoregressiveSampler(nn.Module):
             if finished.all():
                 break
 
+        # Gather all sequences in distributed mode (handles variable lengths)
+        if self.distributed_utils:
+            seq, lengths = self.distributed_utils.all_gather_sequences_varlen(seq, self.tokenizer.pad_token_id)
+
         return seq, prompt_len
 
 
 def main():
     config = Config(
         disable_sys_args=True,
-        model="mdlm",
+        model="ar",
         batch_size=4,
         n_groups=2,
         group_size=2,
@@ -184,7 +192,7 @@ def main_prompt():
 
     config = Config(
         disable_sys_args=True,
-        model="mdlm",
+        model="ar",
         batch_size=4,
         n_groups=2,
         group_size=2,

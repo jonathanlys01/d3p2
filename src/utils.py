@@ -149,6 +149,8 @@ class DistributedUtils:
             seq_len = self.cfg.sequence_length
         elif self.cfg.model == "llada":
             seq_len = self.cfg.block_length
+        elif self.cfg.model == "ar":
+            seq_len = 1  # Autoregressive only uses last token embedding for selection
         else:
             raise ValueError(f"Unknown model type: {self.cfg.model}")
         b_size = self.world_size * self.cfg.batch_size
@@ -345,6 +347,62 @@ class DistributedUtils:
         torch.distributed.all_gather_into_tensor(gather_buffer, sequences)
 
         return gather_buffer
+
+    def all_gather_sequences_varlen(
+        self,
+        sequences: torch.Tensor,
+        pad_token_id: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Gather variable-length sequences from all ranks by padding to max length.
+
+        Args:
+            sequences: Local sequences tensor of shape [batch_size, seq_len] (variable seq_len per rank)
+            pad_token_id: Token ID to use for padding
+
+        Returns:
+            Tuple of:
+                - All sequences padded to max length [world_size * batch_size, max_seq_len]
+                - Original lengths for each sequence [world_size * batch_size]
+        """
+        assert self.is_distributed(), "all_gather_sequences_varlen can only be called in distributed mode"
+        assert sequences.dim() == 2, f"Expected 2D tensor, got {sequences.dim()}D"
+
+        batch_size, local_seq_len = sequences.shape
+
+        # Gather sequence lengths from all ranks
+        local_len = torch.tensor([local_seq_len], dtype=torch.int32, device=sequences.device)
+        all_lens = torch.zeros((self.world_size,), dtype=torch.int32, device=sequences.device)
+        torch.distributed.all_gather_into_tensor(all_lens, local_len)
+
+        max_seq_len = int(all_lens.max().item())
+
+        # Pad local sequences to max length
+        if local_seq_len < max_seq_len:
+            padding = torch.full(
+                (batch_size, max_seq_len - local_seq_len),
+                pad_token_id,
+                dtype=sequences.dtype,
+                device=sequences.device,
+            )
+            padded_sequences = torch.cat([sequences, padding], dim=1)
+        else:
+            padded_sequences = sequences
+
+        # Gather all padded sequences
+        gather_buffer = torch.zeros(
+            (self.world_size * batch_size, max_seq_len),
+            dtype=sequences.dtype,
+            device=sequences.device,
+        )
+        torch.distributed.all_gather_into_tensor(gather_buffer, padded_sequences)
+
+        # Create lengths tensor for each sequence
+        lengths = torch.zeros((self.world_size * batch_size,), dtype=torch.int32, device=sequences.device)
+        for i in range(self.world_size):
+            lengths[i * batch_size : (i + 1) * batch_size] = all_lens[i]
+
+        return gather_buffer, lengths
 
     def _setup_pg(self):
         if not torch.distributed.is_initialized():

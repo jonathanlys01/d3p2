@@ -15,6 +15,7 @@ AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "rand
 SEQUENCE_LENGTH = 1_024
 HIDDEN_SIZE_MDLM = 768
 HIDDEN_SIZE_LLADA = 4_096
+HIDDEN_SIZE_AR = 4_096
 RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
 
@@ -35,7 +36,7 @@ class Config:
 
     sequence_length: int = SEQUENCE_LENGTH
     embedding_dim: int = 0  # to be set in __post_init__
-    model: str = "mdlm"  # "mdlm" or "llada"
+    model: str = "mdlm"  # "mdlm", "llada", or "ar"
 
     seed: int = 0
     n_runs: int = 16
@@ -129,8 +130,10 @@ class Config:
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
         elif self.model == "llada":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
+        elif self.model == "ar":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_AR)
         else:
-            raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada'")
+            raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'ar'")
 
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 
