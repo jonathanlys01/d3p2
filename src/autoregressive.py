@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.cache_utils import DynamicCache
 
 from config import Cache, Config
 from subsample import get_subsample_selector
@@ -99,9 +100,6 @@ class AutoregressiveSampler(nn.Module):
                     seq = seq[slice_idx]
                     finished = finished[slice_idx]
                     attention_mask = attention_mask[slice_idx]
-                    if past_key_values is not None:
-                        past_key_values = tuple(tuple(kv[slice_idx] for kv in layer) for layer in past_key_values)
-
                     next_token = sample_categorical(probs, expand=self.config.group_size)
 
                     # Expand state
@@ -110,8 +108,9 @@ class AutoregressiveSampler(nn.Module):
                     finished = finished.repeat_interleave(g, dim=0)
                     attention_mask = attention_mask.repeat_interleave(g, dim=0)
                     if past_key_values is not None:
-                        past_key_values = tuple(
-                            tuple(kv.repeat_interleave(g, dim=0) for kv in layer) for layer in past_key_values
+                        past_key_values = DynamicCache(
+                            tuple(kv[slice_idx].repeat_interleave(g, dim=0) for kv in layer)
+                            for layer in past_key_values
                         )
                 else:
                     next_token = sample_categorical(probs, expand=None)
@@ -136,8 +135,9 @@ def main():
         batch_size=4,
         n_groups=2,
         group_size=2,
-        method="random",
+        method="greedy_map",
         transversal=True,
+        gen_length=50,
     )
 
     print("Initializing AutoregressiveSampler...")
@@ -188,8 +188,9 @@ def main_prompt():
         batch_size=4,
         n_groups=2,
         group_size=2,
-        method="random",
+        method="greedy_map",
         transversal=True,
+        gen_length=50,  # Shorter length for prompt test
     )
 
     print("Initializing AutoregressiveSampler for prompt-conditioned generation...")
