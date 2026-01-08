@@ -145,6 +145,7 @@ def main():
         group_size=2,
         method="greedy_map",
         transversal=True,
+        embedding_dim=4096,
         gen_length=50,
     )
 
@@ -181,6 +182,9 @@ def main():
         print(f"Generated text: {decoded_text[:200]}{'...' if len(decoded_text) > 200 else ''}")
         print("-" * 80)
 
+    if sampler.distributed_utils:
+        sampler.distributed_utils.cleanup()
+
     print("\n✓ Test complete!")
 
 
@@ -198,6 +202,7 @@ def main_prompt():
         group_size=2,
         method="greedy_map",
         transversal=True,
+        embedding_dim=4096,
         gen_length=50,  # Shorter length for prompt test
     )
 
@@ -223,6 +228,9 @@ def main_prompt():
             full_text = sampler.tokenizer.decode(seq.tolist(), skip_special_tokens=False)
             print(f"\n--- Full sequence {i} (with special tokens) ---")
             print(f"{full_text[:200]}{'...' if len(full_text) > 200 else ''}")
+
+    if sampler.distributed_utils:
+        sampler.distributed_utils.cleanup()
 
     print("\n✓ Prompt test complete!")
 
