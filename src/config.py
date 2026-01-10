@@ -50,7 +50,7 @@ class Config:
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
     cfg_scale: float = 3.0
-    steps: int = 128
+    llada_steps: int = 128
     gen_length: int = 128
     block_length: int = 32
     remasking: str = "low_confidence"  # "low_confidence" or "random"
@@ -60,7 +60,7 @@ class Config:
     guidance_end: int = -1  # step at which to stop applying CFG (-1 means steps)
 
     # sampling
-    num_steps: int = SEQUENCE_LENGTH  # number of sampling steps
+    mdlm_steps: int = SEQUENCE_LENGTH  # number of MDLM sampling steps
     cat_temperature: float = 1.0
 
     # Source data
@@ -93,6 +93,7 @@ class Config:
     ppl_model_id: str = "gpt2"
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
 
+    qa_dataset: str = "truthful_qa"  # "truthful_qa" or "commonsense_qa"
     truthful_qa_path: str = "truthfulqa/truthful_qa"
     commonsense_qa_path: str = "commonsense_qa"
 
@@ -159,18 +160,18 @@ class Config:
             assert self.remasking in ["low_confidence", "random"], f"Remasking method {self.remasking} not recognized."
             assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
             num_blocks = self.gen_length // self.block_length
-            assert self.steps % num_blocks == 0, "steps must be divisible by num_blocks"
+            assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
 
             # Set guidance_end to steps if not explicitly set
             if self.guidance_end == -1:
-                object.__setattr__(self, "guidance_end", self.steps)
+                object.__setattr__(self, "guidance_end", self.llada_steps)
 
             # Validate guidance range
             assert 0 <= self.guidance_start < self.guidance_end, (
                 f"guidance_start ({self.guidance_start}) must be >= 0 and < guidance_end ({self.guidance_end})"
             )
-            assert self.guidance_end <= self.steps, (
-                f"guidance_end ({self.guidance_end}) must be <= steps ({self.steps})"
+            assert self.guidance_end <= self.llada_steps, (
+                f"guidance_end ({self.guidance_end}) must be <= llada_steps ({self.llada_steps})"
             )
 
     def __str__(self) -> str:

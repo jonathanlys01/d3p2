@@ -5,7 +5,7 @@ from datetime import datetime
 import torch
 
 from config import RESULTS_DIR, Config
-from data.qa import truthful_qa
+from data.qa import get_qa_dataset
 from diffusion_llada import LLADASampler
 from eval_core import Evaluator
 from utils import compile_model, print, seed_all
@@ -23,11 +23,11 @@ def main():
     evaluator = Evaluator(batch_size=cfg.batch_size)
 
     # 2. Load Dataset
-    dataset = truthful_qa(cfg)
+    dataset = get_qa_dataset(cfg)
     if limit > 0:
         dataset = dataset.head(limit)
 
-    print(f"Evaluating {len(dataset)} samples from TruthfulQA...")
+    print(f"Evaluating {len(dataset)} samples from {cfg.qa_dataset}...")
 
     all_generations = []
     all_good_refs = []

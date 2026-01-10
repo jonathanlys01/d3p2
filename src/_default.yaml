@@ -25,9 +25,15 @@ seed: 42
 cache_dir: ./.cache
 n_runs: 8
 compile_model: true
-num_steps: 1024
+mdlm_steps: 1024
 cat_temperature: 1.0
+
+# Llada parameters
 cfg_scale: 0.5
+llada_steps: 256
+gen_length: 128
+block_length: 128
+
 
 n_groups: 2
 group_size: 2

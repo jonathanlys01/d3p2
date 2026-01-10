@@ -15,7 +15,7 @@ def main():
     config = Config(
         n_groups=64,  # Generate 64 sequences in total
         group_size=1,  # Independent sampling (no expansion)
-        num_steps=128,  # Number of diffusion steps
+        mdlm_steps=128,  # Number of diffusion steps
         n_runs=1,
         method="baseline",  # "baseline" selector keeps all n_groups sequences
         model="mdlm",

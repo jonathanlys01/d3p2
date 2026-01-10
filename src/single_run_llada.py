@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from config import RESULTS_DIR, Config
-from data import truthful_qa
+from data import get_qa_dataset
 from diffusion_llada import LLADASampler
 from utils import compile_model, print, seed_all
 
@@ -42,12 +42,12 @@ def main():
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}")
 
-    dataset = truthful_qa(config)
-    min_truth_qa: list[str] = [row.question for row in dataset][: config.n_runs]  # type: ignore
+    dataset = get_qa_dataset(config)
+    prompts: list[str] = [row.question for row in dataset][: config.n_runs]  # type: ignore
 
     for i in range(config.n_runs):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
-        samples = model.sample(prompt=min_truth_qa[i])
+        samples = model.sample(prompt=prompts[i])
         texts_ = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
         texts.append(texts_)
         save(texts, config, unique_id, rank=offset)

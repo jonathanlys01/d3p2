@@ -33,6 +33,16 @@ def commonsense_qa(cfg: Config) -> pd.DataFrame:
     return df
 
 
+def get_qa_dataset(cfg: Config) -> pd.DataFrame:
+    """Get the QA dataset based on the config's qa_dataset field."""
+    if cfg.qa_dataset == "truthful_qa":
+        return truthful_qa(cfg)
+    elif cfg.qa_dataset == "commonsense_qa":
+        return commonsense_qa(cfg)
+    else:
+        raise ValueError(f"Unknown qa_dataset: {cfg.qa_dataset}. Available: 'truthful_qa', 'commonsense_qa'")
+
+
 if __name__ == "__main__":
     cfg = Config()
     for name, func in [("TruthfulQA", truthful_qa), ("CommonsenseQA", commonsense_qa)]:

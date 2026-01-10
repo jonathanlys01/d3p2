@@ -129,7 +129,7 @@ class MDLMSampler(nn.Module):
         self,
         init_x: Optional[torch.Tensor] = None,
     ):
-        num_steps = self.config.num_steps
+        num_steps = self.config.mdlm_steps
 
         if init_x is None:
             if self.config.initial_mask_ratio == 1.0:

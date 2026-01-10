@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from config import Cache, Config
-from data import truthful_qa
+from data import get_qa_dataset
 from llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from subsample import get_subsample_selector
 from utils import get_tokenizer, process_model_args, sample_categorical, tqdm
@@ -134,7 +134,7 @@ class LLADASampler(nn.Module):
     @torch.no_grad()
     def sample(self, prompt: str):
         num_blocks = self.config.gen_length // self.config.block_length
-        steps = self.config.steps // num_blocks
+        steps = self.config.llada_steps // num_blocks
         batch_size = self.config.batch_size
 
         prompt_tokens = self._preprocess_prompt(prompt)
@@ -220,7 +220,7 @@ def main_block():
     limit = 50
     cfg = Config()
     sampler = LLADASampler(cfg)
-    dataset = truthful_qa(cfg)
+    dataset = get_qa_dataset(cfg)
 
     samples = []
     prompts = []
