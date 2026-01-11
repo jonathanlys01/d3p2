@@ -51,7 +51,7 @@ class AutoregressiveSampler(nn.Module):
         return torch.cat([bos, tokens], dim=1)
 
     @torch.no_grad()
-    def sample(self, prompt: str | None = None):
+    def sample(self, prompt: str | None = None):  # noqa: C901, PLR0912, PLR0915
         batch_size = self.config.batch_size
 
         # Initialize sequence with prompt or BOS
@@ -67,6 +67,11 @@ class AutoregressiveSampler(nn.Module):
         attention_mask = torch.ones_like(seq, dtype=torch.long)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         past_key_values = None
+
+        # For mean embedding strategy: track cumulative embeddings
+        use_mean_embedding = self.config.ar_embedding_method == "mean"
+        embedding_sum: torch.Tensor | None = None
+        embedding_count = 0
 
         disable = False
         if self.distributed_utils:
@@ -90,10 +95,23 @@ class AutoregressiveSampler(nn.Module):
             logits = outputs.logits[:, -1]
             probs = F.softmax(logits, dim=-1).unsqueeze(1)
 
+            # Update cumulative embedding sum for mean strategy
+            if use_mean_embedding and embeddings is not None:
+                current_emb = embeddings[:, -1, :]  # [B, hidden_dim]
+                embedding_sum = current_emb.clone() if embedding_sum is None else embedding_sum + current_emb
+                embedding_count += 1
+
             if subsample_step and self.config.group_size > 1:
+                # Compute embedding for Cache based on strategy (always shape [B, 1, E])
+                if use_mean_embedding and embedding_sum is not None:
+                    mean_emb = (embedding_sum / embedding_count).unsqueeze(1)  # [B, 1, E]
+                    cache_embeddings = mean_emb
+                else:
+                    cache_embeddings = embeddings[:, -1:] if embeddings is not None else None
+
                 cache = Cache(
                     log_p_x0=logits.unsqueeze(1),
-                    embeddings=embeddings[:, -1:] if embeddings is not None else None,
+                    embeddings=cache_embeddings,
                     x=seq,
                 )
                 slice_idx = self.selector.subsample(cache)
@@ -104,6 +122,8 @@ class AutoregressiveSampler(nn.Module):
                     seq = seq[slice_idx]
                     finished = finished[slice_idx]
                     attention_mask = attention_mask[slice_idx]
+                    if use_mean_embedding and embedding_sum is not None:
+                        embedding_sum = embedding_sum[slice_idx]
 
                     # Expand
                     g = self.config.group_size
@@ -111,6 +131,8 @@ class AutoregressiveSampler(nn.Module):
                     seq = seq.repeat_interleave(g, dim=0)
                     finished = finished.repeat_interleave(g, dim=0)
                     attention_mask = attention_mask.repeat_interleave(g, dim=0)
+                    if use_mean_embedding and embedding_sum is not None:
+                        embedding_sum = embedding_sum.repeat_interleave(g, dim=0)
                     if past_key_values is not None:
                         past_key_values = DynamicCache(
                             tuple(kv[slice_idx].repeat_interleave(g, dim=0) for kv in layer)

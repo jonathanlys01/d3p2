@@ -52,6 +52,7 @@ class Config:
     cfg_scale: float = 3.0
     llada_steps: int = 128
     gen_length: int = 128
+    ar_embedding_method: str = "last"  # "last" or "mean" for AR embedding selection
     block_length: int = 32
     remasking: str = "low_confidence"  # "low_confidence" or "random"
     logits_eos_inf: bool = False

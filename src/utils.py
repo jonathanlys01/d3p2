@@ -150,7 +150,7 @@ class DistributedUtils:
         elif self.cfg.model == "llada":
             seq_len = self.cfg.block_length
         elif self.cfg.model == "ar":
-            seq_len = 1  # Autoregressive only uses last token embedding for selection
+            seq_len = 1  # Autoregressive only uses last/mean token embedding for selection
         else:
             raise ValueError(f"Unknown model type: {self.cfg.model}")
         b_size = self.world_size * self.cfg.batch_size
