@@ -71,7 +71,7 @@ def get_ar_embeddings(
         model: The AR model
         input_ids: Input token IDs [B, seq_len]
         position: Token position to evaluate (1-indexed, so position=1 means first token)
-        strategy: "last" (only last token) or "mean_previous" (mean of all tokens up to position)
+        strategy: "last" (only last token) or "mean" (mean of all tokens up to position)
 
     Returns:
         Embeddings of shape [B, hidden_dim]
@@ -91,7 +91,7 @@ def get_ar_embeddings(
     if strategy == "last":
         # Use only the last token's embedding
         return hidden_states[:, -1, :]  # [B, hidden_dim]
-    elif strategy == "mean_previous":
+    elif strategy == "mean":
         # Mean of all token embeddings up to and including current position
         return hidden_states.mean(dim=1)  # [B, hidden_dim]
     else:
@@ -135,7 +135,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
     # Sweep over positions (instead of mask ratios like in diffusion models)
     # We evaluate at different points in the sequence to see correlation trends
     positions = list(range(10, seq_length + 1, 10))  # Every 10 tokens from 10 to seq_length
-    pooling_strategies = ["last", "mean_previous"]
+    pooling_strategies = ["last", "mean"]
 
     results = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
     all_ref_acs_scores: list[float] = []
