@@ -51,7 +51,16 @@ class Perplexity(torch.nn.Module):
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
     def _forward(self, texts: list[str]) -> list[float]:
-        inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
+        # Clean texts - strip whitespace
+        texts = [t.strip() for t in texts]
+
+        inputs = self.tokenizer(
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            add_special_tokens=False,  # Don't add BOS/EOS for PPL calculation
+        ).to(device)
 
         self.model.to(device)
 
@@ -61,6 +70,9 @@ class Perplexity(torch.nn.Module):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = inputs["input_ids"][..., 1:].contiguous()
 
+            # Create mask for non-padded positions (shifted by 1 like labels)
+            attention_mask = inputs["attention_mask"][..., 1:].contiguous()
+
             loss = self.loss_fn(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
@@ -68,19 +80,27 @@ class Perplexity(torch.nn.Module):
 
             loss = loss.view(shift_labels.size())
 
-        # Clamp loss to prevent overflow in exp() - max reasonable loss ~15 gives ppl ~3.3M
+        # Clamp loss to prevent overflow in exp()
         loss = loss.clamp(max=15.0)
 
-        # Compute mean loss per sample, handling NaN from empty sequences
-        mean_loss = loss.mean(dim=1)
+        # Compute mean loss per sample, only over non-padded tokens
+        # Mask out padded positions and compute proper mean
+        loss = loss * attention_mask  # zero out padded positions
+        token_counts = attention_mask.sum(dim=1).clamp(min=1)  # avoid div by zero
+        mean_loss = loss.sum(dim=1) / token_counts
+
+        # Handle NaN from empty sequences
         mean_loss = torch.nan_to_num(mean_loss, nan=15.0, posinf=15.0, neginf=0.0)
 
         ppl = torch.exp(mean_loss)  # perplexity per sample
         return ppl.cpu().tolist()
 
-    def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float, float]:
+    def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float, float, float]:
         """
         Compute perplexity for a list of texts, optionally in batches.
+
+        Returns:
+            (mean_ppl, median_ppl, min_ppl, max_ppl, std_ppl, mad_ppl)
         """
 
         # flatten because independent evaluation
@@ -96,14 +116,13 @@ class Perplexity(torch.nn.Module):
         ppls_tensor = torch.tensor(ppls)
 
         mean_ppl = ppls_tensor.mean().item()
+        median_ppl = ppls_tensor.median().item()
         min_ppl = ppls_tensor.min().item()
         max_ppl = ppls_tensor.max().item()
         std_ppl = ppls_tensor.std().item()
+        mad_ppl = torch.mean(torch.abs(ppls_tensor - median_ppl)).item()
 
-        _median = ppls_tensor.median().item()
-        mad_ppm = torch.mean(torch.abs(ppls_tensor - _median)).item()
-
-        return mean_ppl, min_ppl, max_ppl, std_ppl, mad_ppm
+        return mean_ppl, median_ppl, min_ppl, max_ppl, std_ppl, mad_ppl
 
 
 class AverageCosineSimilarity(torch.nn.Module):
@@ -359,7 +378,7 @@ class Evaluator:
         self.force = force
 
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
-        ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
+        ppl, median_ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
         avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
 
         # Compute diversity metrics (Distinct-2 and Self-BLEU)
@@ -369,6 +388,7 @@ class Evaluator:
         return {
             # PPL
             "perplexity": ppl,
+            "median_perplexity": median_ppl,
             "min_perplexity": min_ppl,
             "max_perplexity": max_ppl,
             "std_perplexity": std_ppl,
