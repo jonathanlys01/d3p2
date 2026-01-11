@@ -14,7 +14,7 @@ import ot
 import sacrebleu
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaModel, PreTrainedTokenizerBase
 
 import mauve
 from config import CACHE_DIR
@@ -41,8 +41,14 @@ class Perplexity(torch.nn.Module):
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=self.tokenizer.pad_token_id)
         self.loss = None
 
-        self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
-        self.lm_head.weight = self.model.wte.weight  # tie weights
+        if isinstance(self.model, GPT2Model):
+            self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
+            self.lm_head.weight = self.model.wte.weight  # tie weights
+        elif isinstance(self.model, LlamaModel):
+            self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
+            self.lm_head.weight = self.model.embed_tokens.weight  # tie weights
+        else:
+            raise ValueError(f"Unsupported model type: {type(self.model)}")
 
     def _forward(self, texts: list[str]) -> list[float]:
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
