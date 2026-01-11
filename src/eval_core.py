@@ -62,7 +62,14 @@ class Perplexity(torch.nn.Module):
 
             loss = loss.view(shift_labels.size())
 
-        ppl = torch.exp(loss.mean(dim=1))  # perplexity per sample
+        # Clamp loss to prevent overflow in exp() - max reasonable loss ~15 gives ppl ~3.3M
+        loss = loss.clamp(max=15.0)
+
+        # Compute mean loss per sample, handling NaN from empty sequences
+        mean_loss = loss.mean(dim=1)
+        mean_loss = torch.nan_to_num(mean_loss, nan=15.0, posinf=15.0, neginf=0.0)
+
+        ppl = torch.exp(mean_loss)  # perplexity per sample
         return ppl.cpu().tolist()
 
     def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float, float]:
