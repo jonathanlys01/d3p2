@@ -14,7 +14,8 @@ import ot
 import sacrebleu
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaModel, PreTrainedTokenizerBase
+from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 import mauve
 from config import CACHE_DIR
@@ -44,9 +45,8 @@ class Perplexity(torch.nn.Module):
         if isinstance(self.model, GPT2Model):
             self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
             self.lm_head.weight = self.model.wte.weight  # tie weights
-        elif isinstance(self.model, LlamaModel):
-            self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
-            self.lm_head.weight = self.model.embed_tokens.weight  # tie weights
+        elif isinstance(self.model, LlamaForCausalLM):
+            self.lm_head = self.model.lm_head  # reference model's existing lm_head
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -65,7 +65,12 @@ class Perplexity(torch.nn.Module):
         self.model.to(device)
 
         with torch.inference_mode():
-            last_hidden_states: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
+            if isinstance(self.model, LlamaForCausalLM):
+                outputs: CausalLMOutputWithPast = self.model(**inputs, return_dict=True, output_hidden_states=True)
+                assert outputs.hidden_states is not None
+                last_hidden_states = outputs.hidden_states[-1]
+            else:
+                last_hidden_states: torch.Tensor = self.model(**inputs, return_dict=True).last_hidden_state
             logits = self.lm_head(last_hidden_states)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = inputs["input_ids"][..., 1:].contiguous()
@@ -363,7 +368,11 @@ class Evaluator:
         cos_model_id: str = "jinaai/jina-embeddings-v2-base-en",
     ):
         ppl_models_args = process_model_args(ppl_model_id, cache_dir=CACHE_DIR)
-        ppl_model = AutoModel.from_pretrained(**ppl_models_args)
+        if "llama" in ppl_model_id:
+            ppl_model = LlamaForCausalLM.from_pretrained(**ppl_models_args)
+        else:
+            ppl_model = AutoModel.from_pretrained(**ppl_models_args)
+
         ppl_tokenizer = AutoTokenizer.from_pretrained(**ppl_models_args)
         self.perplexity_model = Perplexity(ppl_model, ppl_tokenizer)
         self.mauve_model = MAUVE(ppl_model, ppl_tokenizer)  # reuse PPL model for MAUVE (gpt2)
