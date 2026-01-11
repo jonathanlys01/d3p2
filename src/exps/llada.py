@@ -18,7 +18,11 @@ def main():
 
     sampler = LLADASampler(cfg)
     sampler.model = compile_model(sampler.model, cfg, dynamic=True)
-    evaluator = Evaluator(batch_size=cfg.batch_size)
+    evaluator = Evaluator(
+        batch_size=cfg.eval_batch_size,
+        ppl_model_id=cfg.ppl_model_id,
+        cos_model_id=cfg.cos_model_id,
+    )
 
     # 2. Load Dataset
     dataset = get_qa_dataset(cfg)

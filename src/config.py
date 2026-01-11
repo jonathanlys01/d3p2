@@ -95,6 +95,7 @@ class Config:
     subsample_end: int = 1024
 
     # eval
+    eval_batch_size: int = 8  # batch size for evaluation (separate from inference batch_size)
     ppl_model_id: str = "gpt2"
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
 

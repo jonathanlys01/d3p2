@@ -41,7 +41,7 @@ def main():
     # 4. Initialize Evaluator
     print("Initializing Evaluator...")
     evaluator = Evaluator(
-        batch_size=16,
+        batch_size=config.eval_batch_size,
         ppl_model_id=config.ppl_model_id,
         cos_model_id=config.cos_model_id,
     )

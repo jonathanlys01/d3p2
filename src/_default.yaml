@@ -32,6 +32,7 @@ seed: 42
 cache_dir: ./.cache
 n_runs: 8
 qa_dataset_len: -1  # number of QA samples to use (-1 for all)
+eval_batch_size: 8  # batch size for evaluation (low to avoid OOM with llama 8B)
 compile_model: true
 mdlm_steps: 1024
 cat_temperature: 1.0

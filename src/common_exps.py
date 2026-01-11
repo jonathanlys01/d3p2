@@ -88,7 +88,7 @@ def generate_samples(config: Config):
 
 def eval_samples(unique_id: str, config: Config):
     evaluator = Evaluator(
-        batch_size=16,
+        batch_size=config.eval_batch_size,
         force=True,
         ppl_model_id=config.ppl_model_id,
         cos_model_id=config.cos_model_id,
