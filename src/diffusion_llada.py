@@ -155,14 +155,19 @@ class LLADASampler(nn.Module):
         if self.distributed_utils:
             disable = self.distributed_utils.rank != 0
 
-        for num_block in tqdm(range(num_blocks), desc="Blocks", disable=disable):
+        # When there's only one block, show progress for steps instead
+        single_block = num_blocks == 1
+        block_iter = range(num_blocks) if single_block else tqdm(range(num_blocks), desc="Blocks", disable=disable)
+
+        for num_block in block_iter:
             start = prompt_len + num_block * self.config.block_length
             end = prompt_len + (num_block + 1) * self.config.block_length
             block_mask_index = x[:, start:end] == self.mask_index
 
             num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
 
-            for step in range(steps):
+            step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
+            for step in step_iter:
                 mask_index = x == self.mask_index
 
                 # Apply CFG only if step is within the guidance range
