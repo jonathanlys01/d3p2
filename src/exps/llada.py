@@ -12,8 +12,6 @@ from utils import compile_model, print, seed_all
 
 
 def main():
-    limit = -1
-
     # 1. Initialize Sampler and Evaluator
     cfg = Config()
     seed_all(cfg.seed)
@@ -24,8 +22,8 @@ def main():
 
     # 2. Load Dataset
     dataset = get_qa_dataset(cfg)
-    if limit > 0:
-        dataset = dataset.head(limit)
+    if cfg.qa_dataset_len > 0:
+        dataset = dataset.head(cfg.qa_dataset_len)
 
     print(f"Evaluating {len(dataset)} samples from {cfg.qa_dataset}...")
 

@@ -217,14 +217,17 @@ class LLADASampler(nn.Module):
 
 
 def main_block():
-    limit = 50
-    cfg = Config()
+    cfg = Config(
+        disable_sys_args=True,
+        qa_dataset_len=50,
+    )
     sampler = LLADASampler(cfg)
     dataset = get_qa_dataset(cfg)
 
     samples = []
     prompts = []
 
+    limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
     for i, row in enumerate(dataset.itertuples()):
         if i >= limit:
             break

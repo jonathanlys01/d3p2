@@ -43,9 +43,10 @@ def main():
     print(f"Experiment ID: {unique_id}")
 
     dataset = get_qa_dataset(config)
-    prompts: list[str] = [row.question for row in dataset][: config.n_runs]  # type: ignore
+    limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
+    prompts: list[str] = [row.question for row in dataset][:limit]  # type: ignore
 
-    for i in range(config.n_runs):
+    for i in range(min(config.n_runs, len(prompts))):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
         samples = model.sample(prompt=prompts[i])
         texts_ = model.tokenizer.batch_decode(samples, skip_special_tokens=True)

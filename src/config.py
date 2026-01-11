@@ -60,8 +60,8 @@ class Config:
     guidance_end: int = -1  # step at which to stop applying CFG (-1 means steps)
 
     # Autoregressive
-    ar_model_path: str = "gpt2-large"
-    ar_tokenizer: str = "gpt2-large"
+    ar_model_path: str = "meta-llama/Meta-Llama-3-8B"
+    ar_tokenizer: str = "meta-llama/Meta-Llama-3-8B"
     ar_embedding_method: str = "last"  # "last" or "mean" for AR embedding selection
 
     # sampling
@@ -99,6 +99,7 @@ class Config:
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
 
     qa_dataset: str = "truthful_qa"  # "truthful_qa" or "commonsense_qa"
+    qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
     truthful_qa_path: str = "truthfulqa/truthful_qa"
     commonsense_qa_path: str = "commonsense_qa"
 
