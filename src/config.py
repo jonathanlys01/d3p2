@@ -52,13 +52,17 @@ class Config:
     cfg_scale: float = 3.0
     llada_steps: int = 128
     gen_length: int = 128
-    ar_embedding_method: str = "last"  # "last" or "mean" for AR embedding selection
     block_length: int = 32
     remasking: str = "low_confidence"  # "low_confidence" or "random"
     logits_eos_inf: bool = False
     confidence_eos_eot_inf: bool = True
     guidance_start: int = 0  # step at which to start applying CFG (0-indexed)
     guidance_end: int = -1  # step at which to stop applying CFG (-1 means steps)
+
+    # Autoregressive
+    ar_model_path: str = "gpt2-large"
+    ar_tokenizer: str = "gpt2-large"
+    ar_embedding_method: str = "last"  # "last" or "mean" for AR embedding selection
 
     # sampling
     mdlm_steps: int = SEQUENCE_LENGTH  # number of MDLM sampling steps

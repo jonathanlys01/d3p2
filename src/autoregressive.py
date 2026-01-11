@@ -17,10 +17,6 @@ from utils import get_tokenizer, print, process_model_args, sample_categorical, 
 NEG_INFINITY = -1_000_000.0
 torch.set_float32_matmul_precision("high")
 
-# MODEL_ID = "gpt2"
-# MODEL_ID = "/Brain/public/models/meta-llama/Meta-Llama-3-8B/"
-MODEL_ID = "gpt2-large"
-
 
 class AutoregressiveSampler(nn.Module):
     """Autoregressive sampler with beam-style exploration."""
@@ -28,13 +24,18 @@ class AutoregressiveSampler(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
 
-        model_args = process_model_args(MODEL_ID, cache_dir=config.cache_dir)
+        model_args = process_model_args(config.ar_model_path, cache_dir=config.cache_dir)
         self.model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(**model_args)
         self.selector = get_subsample_selector(config)
         self.config = config
-        self.tokenizer = (
-            get_tokenizer(config, "mdlm") if "gpt2" in MODEL_ID else AutoTokenizer.from_pretrained(**model_args)
-        )
+
+        # Use ar_tokenizer if specified, otherwise fall back to model path
+        tokenizer_path = config.ar_tokenizer or config.ar_model_path
+        if "gpt2" in tokenizer_path.lower():
+            self.tokenizer = get_tokenizer(config, "mdlm")
+        else:
+            tokenizer_args = process_model_args(tokenizer_path, cache_dir=config.cache_dir)
+            self.tokenizer = AutoTokenizer.from_pretrained(**tokenizer_args)
 
         self.model_length = config.gen_length
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
