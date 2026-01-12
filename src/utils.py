@@ -460,8 +460,16 @@ def get_initial_data(tokenizer, mask_index: int, config: Config) -> torch.Tensor
     path_to_bin = config.data_path
     data = np.memmap(path_to_bin, dtype=np.uint16, mode="r")
     seq_length = config.sequence_length - 2  # account for bos/eos tokens
-    start_idx = np.random.randint(0, len(data) - seq_length - 1, size=config.batch_size)
-    batch_data = np.stack([data[i : i + seq_length] for i in start_idx], axis=0)
+    if config.single_init:
+        # Sample one sequence and repeat it across the batch
+        start_idx = np.random.randint(0, len(data) - seq_length - 1)
+        single_seq = data[start_idx : start_idx + seq_length]
+        batch_data = np.tile(single_seq, (config.batch_size, 1))
+    else:
+        # Sample batch_size different sequences
+        start_idx = np.random.randint(0, len(data) - seq_length - 1, size=config.batch_size)
+        batch_data = np.stack([data[i : i + seq_length] for i in start_idx], axis=0)
+
     bos_tensor = np.full((config.batch_size, 1), tokenizer.bos_token_id, dtype=np.int64)
     eos_tensor = np.full((config.batch_size, 1), tokenizer.eos_token_id, dtype=np.int64)
     batch_data = np.concatenate([bos_tensor, batch_data, eos_tensor], axis=1)
@@ -474,3 +482,6 @@ def get_initial_data(tokenizer, mask_index: int, config: Config) -> torch.Tensor
     batch_data[rows, indices] = mask_index
 
     return batch_data
+
+
+# TODO: single init sequence for the whole batch
