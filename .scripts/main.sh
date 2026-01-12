@@ -9,4 +9,4 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # python configs mdlm_model_path=/Brain/public/models/kuleshov-group/mdlm-owt/
 
-python main.py mdlm_model_path=/Brain/public/models/kuleshov-group/mdlm-owt/ $1 # > out_debug.log 2>&1
+python exps/main.py mdlm_model_path=/Brain/public/models/kuleshov-group/mdlm-owt/ $1 # > out_debug.log 2>&1

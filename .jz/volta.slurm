@@ -26,6 +26,6 @@ source .venv/bin/activate
 echo "Job started at $(date)"
 
 set -x
-srun python src/main.py --config=src/_default.yaml $1
+srun python src/exps/main.py --config=src/_default.yaml $1
 
 echo "Job ended at $(date)"

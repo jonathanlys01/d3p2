@@ -30,7 +30,7 @@ set -x
 
 cd $WORK/projects/d3p2/src
 
-srun python sweep_rbf.py --config=_default.yaml
+srun python exps/sweeps/rbf.py --config=_default.yaml
 
 
 echo "Job ended at $(date)"

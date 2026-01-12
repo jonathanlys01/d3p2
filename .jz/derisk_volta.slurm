@@ -34,6 +34,6 @@ cd $WORK/projects/d3p2
 
 COMMON="n_groups=4 group_size=4 n_runs=2 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
 
-srun python src/main.py $COMMON dpp=True w_interaction=0.1
+srun python src/exps/main.py $COMMON dpp=True w_interaction=0.1
 
 echo "Job ended at $(date)"
