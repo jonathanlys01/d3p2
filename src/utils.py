@@ -498,4 +498,8 @@ def get_initial_data(tokenizer, mask_index: int, config: Config) -> torch.Tensor
             rows = torch.arange(config.batch_size).unsqueeze(1).expand(-1, num_tokens_to_mask)
             batch_data[rows, indices] = mask_index
 
+    # log number of mask tokens
+    print(f"Number of mask tokens: {num_tokens_to_mask}")
+    effective_mask_num = batch_data.eq(mask_index).sum().item()
+    print(f"Effective number of mask tokens: {effective_mask_num}")
     return batch_data

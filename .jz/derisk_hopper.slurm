@@ -36,8 +36,8 @@ cd $WORK/projects/d3p2
 ROOT=$(pwd)/src
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-COMMON="n_groups=4 group_size=4 n_runs=2 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
+COMMON="n_groups=4 group_size=4 n_runs=2 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH initial_mask_ratio=0.9 single_init=True" 
 
-srun python src/exps/main.py $COMMON method=greedy_map _w_interaction=0.1
+srun python src/exps/main.py $COMMON method=greedy_map _w_interaction=1
 
 echo "Job ended at $(date)"

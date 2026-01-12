@@ -71,7 +71,7 @@ class Config:
     # Source data
     data_path: str = "path_to.bin"
     initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
-    single_init: bool = False  # sample a single sequence and repeat it across the batch
+    single_init: bool = True  # sample a single sequence and repeat it across the batch
 
     # Subset selection ###################################################################################
     method: str = "random"  # subset selection method
