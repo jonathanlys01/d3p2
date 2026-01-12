@@ -108,6 +108,7 @@ class Config:
     cache_dir: str = CACHE_DIR
 
     batch_size: int = 0  # to be set in __post_init__
+    interactive: bool = True
 
     def __post_init__(self):  # noqa: C901, PLR0912
         # Always set model-specific embedding_dim and batch_size first

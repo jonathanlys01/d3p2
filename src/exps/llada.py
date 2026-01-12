@@ -4,16 +4,18 @@ from datetime import datetime
 
 import torch
 
+import utils
 from config import RESULTS_DIR, Config
 from data.qa import get_qa_dataset
 from diffusion_llada import LLADASampler
 from eval_core import Evaluator
-from utils import compile_model, print, seed_all
+from utils import compile_model, seed_all
+from utils import print as u_print
 
 
 def main():
-    # 1. Initialize Sampler and Evaluator
     cfg = Config()
+    utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
 
     sampler = LLADASampler(cfg)
@@ -44,7 +46,7 @@ def main():
         correct_answers: list[str] = row.correct_answers  # type: ignore
         incorrect_answers: list[str] = row.incorrect_answers  # type: ignore
 
-        print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...")
+        u_print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...", verbose=True)
 
         # Sample
         with torch.no_grad():
@@ -59,7 +61,7 @@ def main():
             completion_tokens = sample[prompt_len:]
             gen_text = sampler.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
             batch_gen.append(gen_text)
-            print(f"  Generated: {gen_text}")
+            u_print(f"  Generated: {gen_text}", verbose=True)
 
         all_generations.append(batch_gen)
         all_good_refs.append(correct_answers)

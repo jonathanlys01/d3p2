@@ -60,3 +60,4 @@ subsample_end: 1024
 
 method: greedy_map
 transversal: True
+interactive: false

@@ -24,8 +24,13 @@ def tqdm(it: Iterable[T], **kwargs) -> tqdm_:
 warnings.filterwarnings("ignore", category=IdrTorchWarning)  # ignore idr_torch warnings
 
 
-def print(*args, **kwargs):
-    """Print only from rank 0."""
+INTERACTIVE: bool = True  # Module-level flag, set from config at script startup
+
+
+def print(*args, verbose: bool = False, **kwargs):
+    """Print only from rank 0. If verbose=True, also requires INTERACTIVE mode."""
+    if verbose and not INTERACTIVE:
+        return
     if kwargs.pop("force", False) or idr_torch.rank == 0:
         bprint(*args, **kwargs)
 
