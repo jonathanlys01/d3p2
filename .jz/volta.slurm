@@ -21,6 +21,8 @@ mkdir -p slurm-logs
 module purge
 
 cd $WORK/projects/d3p2
+ROOT=$(pwd)/src
+export PYTHONPATH=$ROOT:$PYTHONPATH
 source .venv/bin/activate
 
 echo "Job started at $(date)"

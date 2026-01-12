@@ -28,9 +28,11 @@ source .venv/bin/activate
 
 set -x
 
-cd $WORK/projects/d3p2/src
+cd $WORK/projects/d3p2
+ROOT=$(pwd)/src
+export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/sweeps/rbf.py --config=_default.yaml
+srun python src/exps/sweeps/rbf.py --config=src/_default.yaml
 
 
 echo "Job ended at $(date)"
