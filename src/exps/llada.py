@@ -106,10 +106,7 @@ def main():
             {
                 "config": asdict(cfg),
                 "results": global_metrics,
-                "samples": [
-                    {"prompt": dataset.iloc[i].question, "generations": all_generations[i]}
-                    for i in range(len(all_generations))
-                ],
+                "text_samples": all_generations,
             },
             f,
             indent=4,
