@@ -25,7 +25,7 @@ module load arch/h100
 
 source .venv/bin/activate
 
-MODEL_PATH=$SCRATCH/models/kuleshov-group/mdlm-owt/
+MODEL_PATH=$WORK/models/kuleshov-group/mdlm-owt/
 TOKENIZER_PATH=$DSDIR/HuggingFace_Models/gpt2/
 
 set -x
