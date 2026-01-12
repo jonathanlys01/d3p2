@@ -104,23 +104,20 @@ class MDLMSampler(nn.Module):
             q_xs = p_x0 * (move_chance_t - move_chance_s)[slice_idx]  # k x L x V
             q_xs[:, :, self.mask_index] = move_chance_s[slice_idx, :, 0]
 
-            # q_xs = q_xs / self.config.cat_temperature
-
             _x = sample_categorical(q_xs, expand=self.config.group_size if subsample_step else None)
 
-            copy_flag = copy_flag[slice_idx]  # k x L
+            # Slice and possibly repeat intermediate tensors
+            copy_flag = copy_flag[slice_idx]
+            original_x = x[slice_idx]
 
-            if last_step and self.config.group_size > 1:
-                return _x * (1 - copy_flag) + x[slice_idx] * copy_flag
-
-            if subsample_step and self.config.group_size > 1:
+            if (subsample_step or last_step) and self.config.group_size > 1:
                 copy_flag = copy_flag.repeat_interleave(self.config.group_size, dim=0)
-                x = x[slice_idx].repeat_interleave(self.config.group_size, dim=0)
+                original_x = original_x.repeat_interleave(self.config.group_size, dim=0)
 
-            ret = _x * (1 - copy_flag) + x * copy_flag
+            ret = _x * (1 - copy_flag) + original_x * copy_flag
 
-        if self.distributed_utils and subsample_step:
-            ret = self.distributed_utils.dispatch_sequences(ret)
+        if self.distributed_utils and (subsample_step or last_step):
+            ret = self.distributed_utils.dispatch_sequences(ret, last=last_step)
 
         return ret
 
@@ -151,13 +148,9 @@ class MDLMSampler(nn.Module):
 
         assert x is not None
 
-        # last step cleanup
-        if self.config.group_size > 1:
-            t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
-            x = self._ddpm_update(x=x, t=t, dt=0, step=-1)
-
-        if self.distributed_utils:
-            x = self.distributed_utils.dispatch_sequences(x, last=True)  # get last full batch
+        # last step cleanup: sample from p(x0 | xt) to fill remaining masks
+        t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
+        x = self._ddpm_update(x=x, t=t, dt=timesteps[-1].item(), step=-1)
 
         return x
 

@@ -74,7 +74,7 @@ class Config:
 
     # Subset selection ###################################################################################
     method: str = "random"  # subset selection method
-    transversal: bool = False  # use transversal sampling
+    transversal: bool = True  # use transversal sampling
 
     group_size: int = 2
     n_groups: int = 2

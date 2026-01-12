@@ -236,13 +236,13 @@ class DistributedUtils:
         all_batch_sizes = all_stats[:, 0]
         all_seq_lens = all_stats[:, 1]
 
-        # Handle empty case
-        if all_batch_sizes.sum().item() == 0:
-            return torch.empty((0,), dtype=torch.int32, device="cuda")
-
         # Pad to max size and max length
         max_batch_size: int = int(all_batch_sizes.max().item())
         max_seq_len: int = int(all_seq_lens.max().item())
+
+        # Handle empty case
+        if all_batch_sizes.sum().item() == 0:
+            return torch.empty((0, max_seq_len), dtype=torch.int32, device="cuda")
 
         if local_batch_size == 0 or sequences is None:
             local_data = torch.full((max_batch_size, max_seq_len), -1, dtype=torch.int32, device="cuda")
