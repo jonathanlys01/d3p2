@@ -14,7 +14,7 @@
 #SBATCH --error=slurm-logs/%x-%j.err
 #SBATCH --time=10:00:00
 #SBATCH --qos=qos_gpu_a100-t3
-#SBATCH --signal=B:SIGTERM@120
+#SBATCH --signal=B:SIGTERM@360
 
 
 mkdir -p slurm-logs

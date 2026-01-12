@@ -4,6 +4,7 @@ Shared experiment logic for distributed runs and Optuna sweeps.
 
 import json
 import os
+import signal
 import uuid
 from dataclasses import asdict
 from datetime import datetime
@@ -19,6 +20,17 @@ from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
 from eval_core import Evaluator
 from utils import compile_model, print, seed_all
+
+
+# Graceful shutdown handling for SLURM pre-termination signal (--signal=B:SIGTERM@120)
+_shutdown_requested = False
+
+
+def _handle_shutdown_signal(signum, _frame):
+    """Signal handler that sets the shutdown flag without interrupting current work."""
+    global _shutdown_requested  # noqa: PLW0603
+    _shutdown_requested = True
+    print(f"Received signal {signum}, will stop after current trial completes.")
 
 
 def _bcast(obj):
@@ -117,11 +129,28 @@ def run_experiment(config: Config, model: MDLMSampler | None = None):
     return metrics
 
 
+class _GracefulShutdownCallback:
+    """Optuna callback that stops optimization when shutdown is requested."""
+
+    def __call__(self, study: optuna.Study, _trial: optuna.trial.FrozenTrial) -> None:
+        if _shutdown_requested:
+            print("Graceful shutdown: stopping optimization after trial completion.")
+            study.stop()
+
+
 def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=None):
     """
     Unified Optuna sweep loop handling both master and worker ranks.
     Model is initialized once and reused across all trials.
+
+    Handles SIGTERM gracefully by stopping after the current trial completes.
     """
+    global _shutdown_requested  # noqa: PLW0603
+    _shutdown_requested = False  # Reset in case of prior runs
+
+    # Register signal handler for graceful shutdown (SLURM --signal=B:SIGTERM@120)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+
     dist.init_process_group(
         backend="nccl",
         init_method="env://",
@@ -153,7 +182,11 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
                 for trial_params in init_trials:
                     study.enqueue_trial(trial_params)
 
-        study.optimize(lambda trial: objective_fn(trial, og_config, model), n_trials=n_trials)
+        study.optimize(
+            lambda trial: objective_fn(trial, og_config, model),
+            n_trials=n_trials,
+            callbacks=[_GracefulShutdownCallback()],
+        )
         _bcast(False)  # signal workers to stop
 
     else:
@@ -165,5 +198,9 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
             cfg = _bcast(None)
             assert cfg is not None
             run_experiment(cfg, model)
+
+            # Workers also check for shutdown signal
+            if _shutdown_requested:
+                print("Worker: graceful shutdown requested, waiting for master.")
 
     dist.destroy_process_group()
