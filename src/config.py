@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 if TYPE_CHECKING:
     import torch
 
-AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "random"]
+AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "random", "baseline"]
 
 
 SEQUENCE_LENGTH = 1_024
