@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import asdict
 from datetime import datetime
 
@@ -101,6 +102,7 @@ def main():
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = f"{RESULTS_DIR}/llada_eval_{timestamp}.json"
+    os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(save_path, "w") as f:
         json.dump(
             {
