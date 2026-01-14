@@ -60,8 +60,10 @@ class BaseSelector(nn.Module):
 
         if self.config._kernel_type == "cosine":
             S = _compute_cosine(flat)
-        else:  # rbf
+        elif self.config._kernel_type == "rbf":
             S = _compute_rbf(flat, self.config._rbf_gamma)
+        else:
+            raise ValueError(f"Unknown kernel type: {self.config._kernel_type}")
 
         K = S if self.config._w_interaction < 0 else self.config._w_interaction * S + torch.diag(scores)
 

@@ -47,7 +47,7 @@ block_length: 128
 n_groups: 2
 group_size: 2
 
-_kernel_type: rbf
+_kernel_type: cosine
 _kernel_power: 1
 _w_interaction: 0.0
 _w_split: 0.0
