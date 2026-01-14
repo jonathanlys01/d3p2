@@ -3,8 +3,6 @@ import os
 from dataclasses import asdict
 from datetime import datetime
 
-import torch
-
 import utils
 from config import RESULTS_DIR, Config
 from data.qa import get_qa_dataset
@@ -32,11 +30,9 @@ def main():
     if cfg.qa_dataset_len > 0:
         dataset = dataset.head(cfg.qa_dataset_len)
 
-    print(f"Evaluating {len(dataset)} samples from {cfg.qa_dataset}...")
+    u_print(f"Evaluating {len(dataset)} samples from {cfg.qa_dataset}...")
 
-    all_generations = []
-    all_good_refs = []
-    all_bad_refs = []
+    all_generations, all_good_refs, all_bad_refs = [], [], []
 
     wd_good_scores: list[float] = []
     wd_bad_scores: list[float] = []
@@ -47,11 +43,13 @@ def main():
         correct_answers: list[str] = row.correct_answers  # type: ignore
         incorrect_answers: list[str] = row.incorrect_answers  # type: ignore
 
-        u_print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...", verbose=True)
+        if cfg.interactive:
+            u_print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...", verbose=True)
+        else:
+            u_print(f"[{i + 1}/{len(dataset)}]")
 
         # Sample
-        with torch.no_grad():
-            sample_ids = sampler.sample(prompt=prompt)
+        sample_ids = sampler.sample(prompt=prompt)
 
         # Decode
         batch_gen = []
