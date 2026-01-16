@@ -65,8 +65,18 @@ class BaseSelector(nn.Module):
         else:
             raise ValueError(f"Unknown kernel type: {self.config._kernel_type}")
 
-        K = S if self.config._w_interaction < 0 else self.config._w_interaction * S + torch.diag(scores)
+        # Combine similarity S with quality scores based on kernel method
+        if self.config._w_interaction < 0:
+            K = S  # No quality term
+        elif self.config._kernel_method == "multiplicative":
+            # L-ensemble: K = diag(q) @ (w*S + (1-w)*I) @ diag(q)
+            # = w * outer(q,q) * S + (1-w) * diag(q^2)
+            w = self.config._w_interaction
+            K = w * torch.outer(scores, scores) * S + (1 - w) * torch.diag(scores**2)
+        else:  # additive (default)
+            K = self.config._w_interaction * S + torch.diag(scores)
 
+        # _w_split is always additive (soft constraint for group separation)
         if self.config._w_split > 0:
             g_size = self.config.group_size
             expansion_factor = self.config.n_groups * self.distributed_mul

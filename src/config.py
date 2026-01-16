@@ -83,6 +83,7 @@ class Config:
     # Subsample parameters (specific to each method)
 
     _kernel_type: str = "rbf"  # type of kernel to use in DPP
+    _kernel_method: str = "additive"  # "additive": w*S + diag(q), "multiplicative": diag(q) @ S @ diag(q)
     _kernel_power: int = 1  # power for eigenvalue modulation
     _w_interaction: float = 0.0  # weight for diversity term in DPP, -1 for no quality term
     _w_split: float = 0.0  # weight for split groups in DPP
