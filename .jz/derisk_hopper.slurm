@@ -35,6 +35,8 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/main.py --config=_jz.yaml n_runs=2 initial_mask_ratio=0.99 single_init=True method=greedy_map _w_interaction=5.0
+srun python exps/main.py --config=_jz.yaml n_runs=2 initial_mask_ratio=0.95 single_init=True method=greedy_map _w_interaction=5.0
+
+# divide the estimated CI by 4 = sqrt(16) (true run is with n_runs = 32)
 
 echo "Job ended at $(date)"
