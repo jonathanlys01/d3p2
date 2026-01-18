@@ -148,6 +148,10 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
     global _shutdown_requested  # noqa: PLW0603
     _shutdown_requested = False  # Reset in case of prior runs
 
+    # Use config.n_trials as default if not explicitly provided
+    if n_trials is None:
+        n_trials = og_config.n_trials
+
     # Register signal handler for graceful shutdown (SLURM --signal=B:SIGTERM@120)
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
 

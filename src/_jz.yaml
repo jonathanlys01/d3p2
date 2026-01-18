@@ -31,4 +31,6 @@ _w_interaction: 5.0
 
 subsample_start: 0
 
+n_trials: 200  # Optuna sweep trials
+
 interactive: false

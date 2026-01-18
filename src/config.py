@@ -109,6 +109,9 @@ class Config:
     # cache
     cache_dir: str = CACHE_DIR
 
+    # optuna
+    n_trials: int = 100  # number of Optuna trials for hyperparameter sweeps
+
     batch_size: int = 0  # to be set in __post_init__
     interactive: bool = True
 

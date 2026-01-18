@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#SBATCH --account=vaz@a100
-#SBATCH --constraint=a100
+#SBATCH --account=sxq@h100
+#SBATCH --constraint=h100
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
@@ -9,11 +9,11 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=greedy_map
+#SBATCH --job-name=map_sweep
 #SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
 #SBATCH --time=20:00:00
-#SBATCH --qos=qos_gpu_a100-t3
+#SBATCH --qos=qos_gpu_h100-t3
 #SBATCH --signal=B:SIGTERM@360
 
 mkdir -p slurm-logs
@@ -21,7 +21,7 @@ echo "Job started at $(date)"
 
 # Load the modules
 module purge
-module load arch/a100
+module load arch/h100
 
 cd $WORK/projects/d3p2
 source .venv/bin/activate
@@ -32,6 +32,6 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/main.py --config=_jz.yaml
+srun python exps/main.py --config=_jz.yaml initial_mask_ratio=0.99 single_init=True method=greedy_map
 
 echo "Job ended at $(date)"

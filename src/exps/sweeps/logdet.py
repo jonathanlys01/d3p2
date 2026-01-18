@@ -46,4 +46,4 @@ if __name__ == "__main__":
         for temp in [1e-5, 3e-3, 1.0]:
             init_trials.append({"w_interaction": qual, "determinant_temperature": temp})
 
-    run_sweep(SWEEP_NAME, og_config, _objective, n_trials=None, init_trials=init_trials)
+    run_sweep(SWEEP_NAME, og_config, _objective, init_trials=init_trials)

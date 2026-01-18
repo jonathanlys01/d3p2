@@ -40,4 +40,4 @@ def _objective(trial, og_config: Config, model):
 if __name__ == "__main__":
     og_config = Config()
     init_trials = [{"cat_temperature": qual} for qual in [0.7, 0.9, 1.1]]
-    run_sweep(SWEEP_NAME, og_config, _objective, n_trials=200, init_trials=init_trials)
+    run_sweep(SWEEP_NAME, og_config, _objective, init_trials=init_trials)

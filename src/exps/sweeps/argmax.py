@@ -41,4 +41,4 @@ def _objective(trial, og_config: Config, model):
 if __name__ == "__main__":
     og_config = Config()
     init_trials = [{"w_interaction": qual} for qual in [0.0, 0.3, 1.0, 3.0]]
-    run_sweep(SWEEP_NAME, og_config, _objective, n_trials=None, init_trials=init_trials)
+    run_sweep(SWEEP_NAME, og_config, _objective, init_trials=init_trials)
