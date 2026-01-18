@@ -3,23 +3,23 @@
 # Paths
 
 # MDLM
-mdlm_model_path: ${env:WORK}/models/kuleshov-group/mdlm-owt/
-mdlm_tokenizer: ${env:DSDIR}/HuggingFace_Models/gpt2/
+mdlm_model_path: ${oc.env:WORK}/models/kuleshov-group/mdlm-owt/
+mdlm_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/gpt2/
 
 # LLADA
-llada_model_path: ${env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
-llada_tokenizer: ${env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
+llada_model_path: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
+llada_tokenizer: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
 
 
 # Large model for PPL (0.8B)
-ppl_model_id: ${env:DSDIR}/HuggingFace_Models/gpt2-large/
-cos_model_id: ${env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
+ppl_model_id: ${oc.env:DSDIR}/HuggingFace_Models/gpt2-large/
+cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
 
 # Autoregressive
-ar_model_path: ${env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
-ar_tokenizer: ${env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
+ar_model_path: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
+ar_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 
-data_path: ${env:WORK}/data/fineweb-edu/val.bin
+data_path: ${oc.env:WORK}/data/fineweb-edu/val.bin
 
 #TODO:
 seed: 42
