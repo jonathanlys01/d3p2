@@ -23,15 +23,15 @@ echo "Job started at $(date)"
 module purge
 module load arch/a100
 
+cd $WORK/projects/d3p2
 source .venv/bin/activate
 
-set -x
-
-cd $WORK/projects/d3p2
 ROOT=$(pwd)/src
+cd $ROOT
+
+set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python src/exps/main.py --config=src/_default.yaml
-
+srun python exps/main.py --config=_jz.yaml
 
 echo "Job ended at $(date)"

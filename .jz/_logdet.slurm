@@ -10,7 +10,7 @@
 #SBATCH --hint=nomultithread
 
 #SBATCH --job-name=d6p4_logdet
-##SBATCH --output=slurm-logs/%x-%j.out
+#SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
 #SBATCH --time=20:00:00
 #SBATCH --qos=qos_gpu_a100-t3
@@ -24,15 +24,15 @@ echo "Job started at $(date)"
 module purge
 module load arch/a100
 
+cd $WORK/projects/d3p2
 source .venv/bin/activate
 
-set -x
-
-cd $WORK/projects/d3p2
 ROOT=$(pwd)/src
+cd $ROOT
+
+set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python src/exps/sweeps/logdet.py --config=src/_default.yaml
-
+srun python exps/sweeps/logdet.py --config=_jz.yaml
 
 echo "Job ended at $(date)"

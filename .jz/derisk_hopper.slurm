@@ -23,21 +23,18 @@ echo "Job started at $(date)"
 module purge
 module load arch/h100
 
+cd $WORK/projects/d3p2
 source .venv/bin/activate
 
-MODEL_PATH=$WORK/models/kuleshov-group/mdlm-owt/
-TOKENIZER_PATH=$DSDIR/HuggingFace_Models/gpt2/
-
-set -x
 
 srun nvidia-smi
 
-cd $WORK/projects/d3p2
 ROOT=$(pwd)/src
+cd $ROOT
+
+set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-COMMON="n_groups=4 group_size=4 n_runs=2 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH initial_mask_ratio=0.9 single_init=True" 
-
-srun python src/exps/main.py $COMMON method=greedy_map _w_interaction=1
+srun python exps/main.py --config=_jz.yaml n_runs=2 initial_mask_ratio=0.9 single_init=True method=greedy_map _w_interaction=5.0
 
 echo "Job ended at $(date)"

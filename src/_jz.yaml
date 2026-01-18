@@ -1,57 +1,34 @@
-# Default configurations for experiments on JZ
+# JZ-specific configurations (overrides defaults in config.py)
 
-# Paths
-
-# MDLM
+# Model paths (JZ cluster)
 mdlm_model_path: ${oc.env:WORK}/models/kuleshov-group/mdlm-owt/
 mdlm_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/gpt2/
 
-# LLADA
 llada_model_path: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
 llada_tokenizer: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
 
-
-# Large model for PPL (0.8B)
-ppl_model_id: ${oc.env:DSDIR}/HuggingFace_Models/gpt2-large/
-cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
-
-# Autoregressive
 ar_model_path: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 ar_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 
+# Eval model paths
+ppl_model_id: ${oc.env:DSDIR}/HuggingFace_Models/gpt2-large/
+cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
+
+# Data path
 data_path: ${oc.env:WORK}/data/fineweb-edu/val.bin
 
-#TODO:
+# JZ-specific experiment settings (differ from defaults)
 seed: 42
-cache_dir: ./.cache
 n_runs: 8
-qa_dataset_len: -1  # number of QA samples to use (-1 for all)
-eval_batch_size: 8  # batch size for evaluation (low to avoid OOM with llama 8B)
-compile_model: true
-mdlm_steps: 1024
-cat_temperature: 1.0
-
-# Llada parameters
-cfg_scale: 0.5
-llada_steps: 128
-gen_length: 128
-block_length: 128
-
-# Per GPU
 n_groups: 4
 group_size: 8
 
+cfg_scale: 0.5
+block_length: 128
+
 _kernel_type: cosine
-_kernel_power: 1
 _w_interaction: 5.0
-_w_split: 0.0
-_rbf_gamma: 1.0
-_temperature: 0.0
-_diversity_alpha: 0.0
 
 subsample_start: 0
-subsample_end: 1024
 
-method: greedy_map
-transversal: True
 interactive: false
