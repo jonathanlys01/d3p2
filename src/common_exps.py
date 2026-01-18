@@ -98,13 +98,14 @@ def generate_samples(config: Config):
     return generate_samples_with_model(config, model)
 
 
-def eval_samples(unique_id: str, config: Config):
-    evaluator = Evaluator(
-        batch_size=config.eval_batch_size,
-        force=True,
-        ppl_model_id=config.ppl_model_id,
-        cos_model_id=config.cos_model_id,
-    )
+def eval_samples(unique_id: str, config: Config, evaluator: Evaluator | None = None):
+    if evaluator is None:
+        evaluator = Evaluator(
+            batch_size=config.eval_batch_size,
+            force=True,
+            ppl_model_id=config.ppl_model_id,
+            cos_model_id=config.cos_model_id,
+        )
 
     metrics = {}
     # Evaluation expects the result file to exist
@@ -116,7 +117,7 @@ def eval_samples(unique_id: str, config: Config):
     return metrics
 
 
-def run_experiment(config: Config, model: MDLMSampler | None = None):
+def run_experiment(config: Config, model: MDLMSampler | None = None, evaluator: Evaluator | None = None):
     """Run experiment with optional pre-initialized model."""
     torch.cuda.empty_cache()
     if model is None:
@@ -125,7 +126,7 @@ def run_experiment(config: Config, model: MDLMSampler | None = None):
         unique_id, master = generate_samples_with_model(config, model)
     if not master:
         return None
-    metrics = eval_samples(str(unique_id), config)
+    metrics = eval_samples(str(unique_id), config, evaluator)
     return metrics
 
 
@@ -172,6 +173,14 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
     model.model = compile_model(model.model, og_config)
 
     if is_master:
+        # Initialize evaluator once before the sweep
+        evaluator = Evaluator(
+            batch_size=og_config.eval_batch_size,
+            force=True,
+            ppl_model_id=og_config.ppl_model_id,
+            cos_model_id=og_config.cos_model_id,
+        )
+
         storage = JournalStorage(JournalFileBackend(f"optuna_{sweep_name}.log"))
         study = optuna.create_study(
             directions=["minimize", "minimize"],
@@ -187,7 +196,7 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
                     study.enqueue_trial(trial_params)
 
         study.optimize(
-            lambda trial: objective_fn(trial, og_config, model),
+            lambda trial: objective_fn(trial, og_config, model, evaluator),
             n_trials=n_trials,
             callbacks=[_GracefulShutdownCallback()],
         )

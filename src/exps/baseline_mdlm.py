@@ -17,22 +17,9 @@ from utils import compile_model, seed_all
 K_MATCH = 8  # match number of output sequences from main exp
 
 
-def main():
-    config = Config()
-
+def run_baseline(config: Config, sampler: MDLMSampler, evaluator: Evaluator):
     seed_all(config.seed)
     unique_id = uuid.uuid4()
-
-    # Initialize Sampler
-    print("Initializing MDLMSampler...")
-    sampler = MDLMSampler(config)
-    sampler.model = compile_model(sampler.model, config) if config.compile_model else sampler.model
-
-    evaluator = Evaluator(
-        batch_size=config.eval_batch_size,
-        ppl_model_id=config.ppl_model_id,
-        cos_model_id=config.cos_model_id,
-    )
 
     # Generate sequences (baseline method keeps all n_groups sequences)
     print(f"Generating {config.n_groups} sequences (baseline method)...")
@@ -60,6 +47,23 @@ def main():
     with open(save_path, "w") as f:
         json.dump(results, f, indent=4)
     print(f"\nResults saved to {save_path}")
+
+
+def main():
+    config = Config()
+
+    # Initialize Sampler
+    print("Initializing MDLMSampler...")
+    sampler = MDLMSampler(config)
+    sampler.model = compile_model(sampler.model, config) if config.compile_model else sampler.model
+
+    evaluator = Evaluator(
+        batch_size=config.eval_batch_size,
+        ppl_model_id=config.ppl_model_id,
+        cos_model_id=config.cos_model_id,
+    )
+
+    run_baseline(config, sampler, evaluator)
 
 
 if __name__ == "__main__":
