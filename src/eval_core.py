@@ -14,6 +14,7 @@ import ot
 import sacrebleu
 import torch
 import torch.nn.functional as F
+from scipy.stats._continuous_distns import t
 from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
@@ -27,6 +28,76 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
+    """
+    Compute comprehensive statistics for a list of values.
+    Returns dictionary with keys formatted as {prefix}_{stat}.
+    The main value (mean) is also returned as {prefix} for backward compatibility.
+    """
+    # Filter valid values (finite numbers)
+    valid_values = [v for v in values if isinstance(v, (int, float)) and np.isfinite(v)]
+
+    stats = {}
+    n = len(valid_values)
+
+    if n == 0:
+        # Return NaNs for empty/invalid input
+        keys = ["mean", "median", "min", "max", "std", "mad", "stderr", "ci95"]
+        for k in keys:
+            stats[f"{prefix}_{k}"] = float("nan")
+        stats[prefix] = float("nan")
+        stats[f"{prefix}_count"] = 0.0
+        return stats
+
+    data = np.array(valid_values)
+    mean_val = np.mean(data).item()
+    median_val = np.median(data).item()
+    min_val = np.min(data).item()
+    max_val = np.max(data).item()
+    std_val = np.std(data, ddof=1).item() if n > 1 else 0.0
+    mad_val = np.mean(np.abs(data - median_val)).item()
+
+    stderr_val = std_val / np.sqrt(n) if n > 0 else 0.0
+
+    # Determine critical value for 95% CI using student-t distribution
+    if 1 < n < 30:
+        critical_value = float(t.ppf(0.975, df=n - 1))
+    elif n >= 30:
+        critical_value = 1.96
+    else:
+        # For n=1, stderr is 0.0, so CI is 0.0
+        critical_value = 0.0
+
+    ci95_val = critical_value * stderr_val  # 95% Confidence Interval
+
+    stats[prefix] = mean_val
+    stats[f"{prefix}_mean"] = mean_val
+    stats[f"{prefix}_median"] = median_val
+    stats[f"{prefix}_min"] = min_val
+    stats[f"{prefix}_max"] = max_val
+    stats[f"{prefix}_std"] = std_val
+    stats[f"{prefix}_mad"] = mad_val
+    stats[f"{prefix}_stderr"] = stderr_val
+    stats[f"{prefix}_ci95"] = ci95_val
+    stats[f"{prefix}_count"] = float(n)
+
+    return stats
+
+
+def _format_summary_value(mean: float, ci95: float, sig_figs: int = 4) -> str:
+    """Format a mean and CI value with specified significant figures."""
+
+    def format_num(x):
+        if x == 0:
+            return "0"
+        if np.isnan(x):
+            return "NaN"
+        # format with general precision
+        return f"{x:.{sig_figs}g}"
+
+    return f"{format_num(mean)} ± {format_num(ci95)}"
 
 
 class Perplexity(torch.nn.Module):
@@ -100,12 +171,10 @@ class Perplexity(torch.nn.Module):
         ppl = torch.exp(mean_loss)  # perplexity per sample
         return ppl.cpu().tolist()
 
-    def forward(self, texts: list[list[str]], batch_size: int = 0) -> tuple[float, float, float, float, float, float]:
+    def forward(self, texts: list[list[str]], batch_size: int = 0) -> dict[str, float]:
         """
         Compute perplexity for a list of texts, optionally in batches.
-
-        Returns:
-            (mean_ppl, median_ppl, min_ppl, max_ppl, std_ppl, mad_ppl)
+        Returns full statistics dictionary.
         """
 
         # flatten because independent evaluation
@@ -118,16 +187,7 @@ class Perplexity(torch.nn.Module):
             batch = flattened_texts[start : start + batch_size]
             ppls.extend(self._forward(batch))
 
-        ppls_tensor = torch.tensor(ppls)
-
-        mean_ppl = ppls_tensor.mean().item()
-        median_ppl = ppls_tensor.median().item()
-        min_ppl = ppls_tensor.min().item()
-        max_ppl = ppls_tensor.max().item()
-        std_ppl = ppls_tensor.std().item()
-        mad_ppl = torch.mean(torch.abs(ppls_tensor - median_ppl)).item()
-
-        return mean_ppl, median_ppl, min_ppl, max_ppl, std_ppl, mad_ppl
+        return compute_statistics(ppls, "perplexity")
 
 
 class AverageCosineSimilarity(torch.nn.Module):
@@ -146,13 +206,15 @@ class AverageCosineSimilarity(torch.nn.Module):
             S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
 
             n = S.size(0)
-            avg_cos_sim = S.sum() / max(n * (n - 1), 1)  # unbiased average
+            if n <= 1:
+                return 0.0
+            avg_cos_sim = S.sum() / (n * (n - 1))  # unbiased average
 
         return avg_cos_sim.item()
 
-    def forward(self, texts: list[list[str]]) -> tuple[float, float, float, float]:
+    def forward(self, texts: list[list[str]]) -> dict[str, float]:
         """
-        Compute average cosine similarity for a list of texts, optionally in batches.
+        Compute average cosine similarity statistics for a list of texts of groups.
         """
 
         avg_cos_sims = []
@@ -160,13 +222,7 @@ class AverageCosineSimilarity(torch.nn.Module):
             avg_cos_sim = self._forward(group)
             avg_cos_sims.append(avg_cos_sim)
 
-        cos_sims_tensor = torch.tensor(avg_cos_sims)
-        min_cos_sim = cos_sims_tensor.min().item()
-        max_cos_sim = cos_sims_tensor.max().item()
-        mean_cos_sim = cos_sims_tensor.mean().item()
-        std_cos_sim = cos_sims_tensor.std().item() if len(cos_sims_tensor) > 1 else -1.0
-
-        return mean_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim
+        return compute_statistics(avg_cos_sims, "cosine_similarity")
 
 
 class MAUVE(torch.nn.Module):
@@ -304,7 +360,7 @@ class StringMetrics(torch.nn.Module):
         references is a list of lists of strings (multiple possible answers per question).
         If references is None or empty, only diversity metrics are computed.
         """
-        result: dict[str, float] = {}
+        all_metrics = {}
 
         # Compute reference-based metrics (F1 and BLEU) if references are provided
         if references and any(refs for refs in references):
@@ -320,7 +376,8 @@ class StringMetrics(torch.nn.Module):
                 best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
                 f1_scores.append(best_f1)
 
-            avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+            # Compute stats for F1
+            all_metrics.update(compute_statistics(f1_scores, "f1"))
 
             bleu_score = 0.0
             if len(flattened_references) > 0:
@@ -338,11 +395,9 @@ class StringMetrics(torch.nn.Module):
                 bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
                 bleu_score = bleu.score
 
-            result["f1"] = avg_f1
-            result["bleu"] = bleu_score
+            all_metrics["bleu"] = bleu_score
 
-        # Compute Distinct-2 and Self-BLEU per group, then average
-        # These are diversity metrics computed within each generation group
+        # Compute Distinct-2 and Self-BLEU per group
         distinct_2_scores = []
         self_bleu_scores = []
         for group in predictions:
@@ -350,13 +405,10 @@ class StringMetrics(torch.nn.Module):
                 distinct_2_scores.append(self.compute_distinct_n(group, n=2))
                 self_bleu_scores.append(self.compute_self_bleu(group))
 
-        avg_distinct_2 = sum(distinct_2_scores) / len(distinct_2_scores) if distinct_2_scores else 0.0
-        avg_self_bleu = sum(self_bleu_scores) / len(self_bleu_scores) if self_bleu_scores else 0.0
+        all_metrics.update(compute_statistics(distinct_2_scores, "distinct_2"))
+        all_metrics.update(compute_statistics(self_bleu_scores, "self_bleu"))
 
-        result["distinct_2"] = avg_distinct_2
-        result["self_bleu"] = avg_self_bleu
-
-        return result
+        return all_metrics
 
 
 class Evaluator:
@@ -387,30 +439,34 @@ class Evaluator:
         self.force = force
 
     def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
-        ppl, median_ppl, min_ppl, max_ppl, std_ppl, mad_ppl = self.perplexity_model(texts, batch_size=self.batch_size)
-        avg_cos_sim, min_cos_sim, max_cos_sim, std_cos_sim = self.cosine_model(texts)
+        # Compute all metrics
+        ppl_stats = self.perplexity_model(texts, batch_size=self.batch_size)
+        cos_stats = self.cosine_model(texts)
+        string_stats = self.string_metrics(texts, references=None)
 
-        # Compute diversity metrics (Distinct-2 and Self-BLEU)
-        # Pass None for references since these metrics compare generations within each group
-        string_metrics = self.string_metrics(texts, references=None)
+        # Merge all metrics
+        metrics = {**ppl_stats, **cos_stats, **string_stats}
 
-        return {
-            # PPL
-            "perplexity": ppl,
-            "median_perplexity": median_ppl,
-            "min_perplexity": min_ppl,
-            "max_perplexity": max_ppl,
-            "std_perplexity": std_ppl,
-            "mad_perplexity": mad_ppl,
-            # Cosine similarity
-            "cosine_similarity": avg_cos_sim,
-            "std_cosine_similarity": std_cos_sim,
-            "min_cosine_similarity": min_cos_sim,
-            "max_cosine_similarity": max_cos_sim,
-            # Diversity metrics
-            "distinct_2": string_metrics["distinct_2"],
-            "self_bleu": string_metrics["self_bleu"],
-        }
+        # create a summary string
+        summary_parts = []
+
+        # Define metrics to include in summary with display names
+        summary_targets = [
+            ("perplexity", "PPL"),
+            ("cosine_similarity", "CosSim"),
+            ("distinct_2", "Dist-2"),
+            ("self_bleu", "S-BLEU"),
+        ]
+
+        for key, display_name in summary_targets:
+            if key in metrics and f"{key}_ci95" in metrics:
+                val_str = _format_summary_value(metrics[key], metrics[f"{key}_ci95"])
+                summary_parts.append(f"{display_name}: {val_str}")
+
+        if summary_parts:
+            metrics["metrics_summary"] = " | ".join(summary_parts)
+
+        return metrics
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
         out = self.mauve_model(references, generations)
