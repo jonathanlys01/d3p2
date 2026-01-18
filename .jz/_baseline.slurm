@@ -37,8 +37,6 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 srun python exps/baseline_mdlm.py --config=_jz.yaml \
     n_groups=32 \
     group_size=1 \
-    method=baseline \
-    initial_mask_ratio=0.99 \
-    single_init=True
+    method=baseline
 
 echo "Job ended at $(date)"

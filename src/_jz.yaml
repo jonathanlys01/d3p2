@@ -14,8 +14,11 @@ ar_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 ppl_model_id: ${oc.env:DSDIR}/HuggingFace_Models/gpt2-large/
 cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
 
-# Data path
+# Data
 data_path: ${oc.env:WORK}/data/fineweb-edu/val.bin
+initial_mask_ratio: 0.97
+single_init: true
+
 
 # JZ-specific experiment settings (differ from defaults)
 seed: 42

@@ -5,6 +5,8 @@ Main 5D3P experiment script.
 
 from dataclasses import asdict
 
+import numpy as np
+
 from common_exps import _bcast, print, run_experiment, run_sweep
 from config import Config
 
@@ -44,7 +46,7 @@ def _objective(trial, og_config: Config, model, evaluator):
 if __name__ == "__main__":
     og_config = Config()
     init_trials = []
-    for qual in [0.0, 4.0, 8.0]:
+    for qual in np.linspace(0.0, 8.0, 3):
         for temp in [1e-5, 3e-3, 1.0]:
             for gamma in [1e-2, 1.0, 1e2]:
                 init_trials.append(
