@@ -19,7 +19,6 @@ data_path: ${oc.env:WORK}/data/fineweb-edu/val.bin
 
 # JZ-specific experiment settings (differ from defaults)
 seed: 42
-n_runs: 32
 n_groups: 4
 group_size: 8
 
@@ -31,6 +30,7 @@ _w_interaction: 5.0
 
 subsample_start: 0
 
+n_runs: 8
 n_trials: 200  # Optuna sweep trials
 
 interactive: false

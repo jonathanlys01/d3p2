@@ -97,7 +97,7 @@ def _format_num(x: float, sig_figs: int = 4) -> str:
 
 def _format_summary_value(mean: float, ci95: float, sig_figs: int = 4) -> str:
     """Format a mean and symmetric CI value."""
-    return f"{_format_num(mean, sig_figs)} ± {_format_num(ci95, sig_figs)}"
+    return f"{_format_num(mean, sig_figs)} pm {_format_num(ci95, sig_figs)}"
 
 
 def _format_asymmetric_ci(mean: float, lower: float, upper: float, sig_figs: int = 4) -> str:
