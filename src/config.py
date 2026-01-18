@@ -195,7 +195,36 @@ class Cache:
     embeddings: Optional["torch.Tensor"] = None
 
 
+# Utils
+def _is_likely_path(value: str) -> bool:
+    """Check if a string is likely to be a path using multiple heuristics."""
+    if not isinstance(value, str) or not value:
+        return False
+
+    if "/" in value or "\\" in value:
+        return True
+    path_extensions = (".bin", ".pt", ".pth", ".yaml", ".yml", ".json", ".txt", ".csv", ".log")
+    if any(value.endswith(ext) for ext in path_extensions):
+        return True
+    path_keywords = ("path", "dir", "file", "cache", "results")
+    return any(kw in value.lower() for kw in path_keywords)
+
+
 if __name__ == "__main__":
-    print("Config file for the project")
     config = Config()
-    print(OmegaConf.to_yaml(OmegaConf.structured(config)))
+    config_dict = OmegaConf.to_container(OmegaConf.structured(config))
+    statuses = ["\033[92m(OK)\033[0m", "\033[91m(NOK)\033[0m"]
+
+    print("Verifying paths...")
+    print("=" * 50)
+
+    assert hasattr(config_dict, "items")
+    for key, value in config_dict.items():
+        if isinstance(value, str) and _is_likely_path(value):
+            expanded = os.path.expandvars(os.path.expanduser(value))
+            exists = os.path.exists(expanded)
+            print(f"{key}: {value} {statuses[exists]}")
+        else:
+            print(f"{key}: {value}")
+
+    print("\n" + "=" * 50)
