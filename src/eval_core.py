@@ -86,18 +86,23 @@ def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
     return stats
 
 
+def _format_num(x: float, sig_figs: int = 4) -> str:
+    """Format a number with specified significant figures."""
+    if x == 0:
+        return "0"
+    if np.isnan(x):
+        return "NaN"
+    return f"{x:.{sig_figs}g}"
+
+
 def _format_summary_value(mean: float, ci95: float, sig_figs: int = 4) -> str:
-    """Format a mean and CI value with specified significant figures."""
+    """Format a mean and symmetric CI value."""
+    return f"{_format_num(mean, sig_figs)} ± {_format_num(ci95, sig_figs)}"
 
-    def format_num(x):
-        if x == 0:
-            return "0"
-        if np.isnan(x):
-            return "NaN"
-        # format with general precision
-        return f"{x:.{sig_figs}g}"
 
-    return f"{format_num(mean)} ± {format_num(ci95)}"
+def _format_asymmetric_ci(mean: float, lower: float, upper: float, sig_figs: int = 4) -> str:
+    """Format a mean and asymmetric CI bounds."""
+    return f"{_format_num(mean, sig_figs)} [{_format_num(lower, sig_figs)}, {_format_num(upper, sig_figs)}]"
 
 
 class Perplexity(torch.nn.Module):
@@ -122,7 +127,7 @@ class Perplexity(torch.nn.Module):
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
     def _forward(self, texts: list[str]) -> list[float]:
-        # Clean texts - strip whitespace
+        """Compute per-sample mean NLL (loss) values. Statistics should be computed in this space."""
         texts = [t.strip() for t in texts]
 
         inputs = self.tokenizer(
@@ -130,7 +135,7 @@ class Perplexity(torch.nn.Module):
             return_tensors="pt",
             padding=True,
             truncation=True,
-            add_special_tokens=False,  # Don't add BOS/EOS for PPL calculation
+            add_special_tokens=False,
         ).to(device)
 
         self.model.to(device)
@@ -145,49 +150,52 @@ class Perplexity(torch.nn.Module):
             logits = self.lm_head(last_hidden_states)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = inputs["input_ids"][..., 1:].contiguous()
-
-            # Create mask for non-padded positions (shifted by 1 like labels)
             attention_mask = inputs["attention_mask"][..., 1:].contiguous()
 
             loss = self.loss_fn(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
             )
-
             loss = loss.view(shift_labels.size())
 
-        # Clamp loss to prevent overflow in exp()
         loss = loss.clamp(max=15.0)
-
-        # Compute mean loss per sample, only over non-padded tokens
-        # Mask out padded positions and compute proper mean
-        loss = loss * attention_mask  # zero out padded positions
-        token_counts = attention_mask.sum(dim=1).clamp(min=1)  # avoid div by zero
+        loss = loss * attention_mask
+        token_counts = attention_mask.sum(dim=1).clamp(min=1)
         mean_loss = loss.sum(dim=1) / token_counts
-
-        # Handle NaN from empty sequences
         mean_loss = torch.nan_to_num(mean_loss, nan=15.0, posinf=15.0, neginf=0.0)
 
-        ppl = torch.exp(mean_loss)  # perplexity per sample
-        return ppl.cpu().tolist()
+        return mean_loss.cpu().tolist()
 
     def forward(self, texts: list[list[str]], batch_size: int = 0) -> dict[str, float]:
         """
-        Compute perplexity for a list of texts, optionally in batches.
-        Returns full statistics dictionary.
+        Compute perplexity statistics. Statistics are computed in NLL (loss) space,
+        then transformed to perplexity space via exp().
         """
-
-        # flatten because independent evaluation
         flattened_texts = [text for sublist in texts for text in sublist]
-
         batch_size = batch_size or len(flattened_texts)
 
-        ppls = []
+        # Collect per-sample NLL values
+        nlls = []
         for start in range(0, len(flattened_texts), batch_size):
             batch = flattened_texts[start : start + batch_size]
-            ppls.extend(self._forward(batch))
+            nlls.extend(self._forward(batch))
 
-        return compute_statistics(ppls, "perplexity")
+        # Compute statistics in NLL space
+        nll_stats = compute_statistics(nlls, "nll")
+
+        # Transform to perplexity space: PPL = exp(NLL)
+        ppl_stats = {
+            "perplexity": np.exp(nll_stats["nll"]),
+            "perplexity_mean": np.exp(nll_stats["nll_mean"]),
+            "perplexity_median": np.exp(nll_stats["nll_median"]),
+            "perplexity_min": np.exp(nll_stats["nll_min"]),
+            "perplexity_max": np.exp(nll_stats["nll_max"]),
+            "perplexity_ci95_lower": np.exp(nll_stats["nll_mean"] - nll_stats["nll_ci95"]),
+            "perplexity_ci95_upper": np.exp(nll_stats["nll_mean"] + nll_stats["nll_ci95"]),
+            "perplexity_count": nll_stats["nll_count"],
+        }
+
+        return ppl_stats
 
 
 class AverageCosineSimilarity(torch.nn.Module):
@@ -459,7 +467,15 @@ class Evaluator:
         ]
 
         for key, display_name in summary_targets:
-            if key in metrics and f"{key}_ci95" in metrics:
+            # Handle asymmetric CIs (perplexity) and symmetric CIs (other metrics)
+            if key == "perplexity" and f"{key}_ci95_lower" in metrics:
+                val_str = _format_asymmetric_ci(
+                    metrics[key],
+                    metrics[f"{key}_ci95_lower"],
+                    metrics[f"{key}_ci95_upper"],
+                )
+                summary_parts.append(f"{display_name}: {val_str}")
+            elif key in metrics and f"{key}_ci95" in metrics:
                 val_str = _format_summary_value(metrics[key], metrics[f"{key}_ci95"])
                 summary_parts.append(f"{display_name}: {val_str}")
 
@@ -487,39 +503,32 @@ class Evaluator:
         """
         Evaluate and select the k best sequences across different groups based on a metric.
         Initially implemented for PPL (lower is better).
-        Returns the subset that maximizes (or minimizes for PPL) this metric.
+        Returns the subset that minimizes NLL (lower NLL = lower PPL).
         """
         if metric.lower() != "ppl":
             raise ValueError(f"Metric {metric} not implemented for evaluate_baseline. Only 'ppl' is supported.")
 
-        # 1. Flatten the sequences to compute metrics in batches
         flattened_texts = [text for sublist in full_sequences for text in sublist]
         group_sizes = [len(sublist) for sublist in full_sequences]
 
-        # 2. Compute the metric (Perplexity)
         batch_size = self.batch_size or len(flattened_texts)
-        ppls = []
-        # We use Perplexity._forward directly to get per-sample scores
+        nlls = []
         for start in range(0, len(flattened_texts), batch_size):
             batch = flattened_texts[start : start + batch_size]
-            ppls.extend(self.perplexity_model._forward(batch))
+            nlls.extend(self.perplexity_model._forward(batch))
 
-        # 3. Unflatten the scores to match group structure
-        unflattened_ppls = []
+        # Unflatten scores to match group structure
+        unflattened_nlls = []
         cursor = 0
         for size in group_sizes:
-            unflattened_ppls.append(ppls[cursor : cursor + size])
+            unflattened_nlls.append(nlls[cursor : cursor + size])
             cursor += size
 
-        # 4. Select k best from each group
+        # Select k best (lowest NLL) from each group
         selected_sequences = []
-        for group_texts, group_ppls in zip(full_sequences, unflattened_ppls):
-            # Sort by PPL (ascending, lower is better)
-            indexed_ppls = list(enumerate(group_ppls))
-            indexed_ppls.sort(key=lambda x: x[1])
-
-            # Select top k indices
-            top_k_indices = [idx for idx, _ in indexed_ppls[:k]]
+        for group_texts, group_nlls in zip(full_sequences, unflattened_nlls):
+            indexed_nlls = sorted(enumerate(group_nlls), key=lambda x: x[1])
+            top_k_indices = [idx for idx, _ in indexed_nlls[:k]]
             selected_sequences.append([group_texts[idx] for idx in top_k_indices])
 
         return selected_sequences
