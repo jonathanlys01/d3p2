@@ -196,10 +196,19 @@ class Cache:
 
 
 # Utils
+def _expand_path(value: str) -> str:
+    """Expand environment variables and user home in a path string."""
+    return os.path.expandvars(os.path.expanduser(value))
+
+
 def _is_likely_path(value: str) -> bool:
     """Check if a string is likely to be a path using multiple heuristics."""
     if not isinstance(value, str) or not value:
         return False
+
+    # Check if it's an existing directory (definitive proof it's a path)
+    if os.path.isdir(_expand_path(value)):
+        return True
 
     if "/" in value or "\\" in value:
         return True
@@ -213,7 +222,7 @@ def _is_likely_path(value: str) -> bool:
 if __name__ == "__main__":
     config = Config()
     config_dict = OmegaConf.to_container(OmegaConf.structured(config))
-    statuses = ["\033[92m(OK)\033[0m", "\033[91m(NOK)\033[0m"]
+    statuses = ["\033[91m(NOK)\033[0m", "\033[92m(OK)\033[0m"]
 
     print("Verifying paths...")
     print("=" * 50)
@@ -221,8 +230,7 @@ if __name__ == "__main__":
     assert hasattr(config_dict, "items")
     for key, value in config_dict.items():
         if isinstance(value, str) and _is_likely_path(value):
-            expanded = os.path.expandvars(os.path.expanduser(value))
-            exists = os.path.exists(expanded)
+            exists = os.path.exists(_expand_path(value))
             print(f"{key}: {value} {statuses[exists]}")
         else:
             print(f"{key}: {value}")
