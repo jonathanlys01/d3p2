@@ -57,6 +57,7 @@ def _save(text, config, uid, rank=0):
 
 def generate_samples_with_model(config: Config, model: MDLMSampler):
     """Generate samples using a pre-initialized model."""
+    model.update_config(config)
     offset = 0
     if model.distributed_utils:
         offset = model.distributed_utils.rank

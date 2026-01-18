@@ -40,6 +40,11 @@ class MDLMSampler(nn.Module):
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
+    def update_config(self, config: Config):
+        """Update model and selector config (for reusing model across sweep trials)."""
+        self.config = config
+        self.selector.config = config
+
     def _subs_parameterization(self, logits, xt):
         with torch.no_grad():
             logits[:, :, self.mask_index] = NEG_INFINITY
