@@ -35,6 +35,6 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/main.py --config=_jz.yaml n_runs=2 initial_mask_ratio=0.9 single_init=True method=greedy_map _w_interaction=5.0
+srun python exps/main.py --config=_jz.yaml n_runs=2 initial_mask_ratio=0.95 single_init=True method=greedy_map _w_interaction=5.0
 
 echo "Job ended at $(date)"
