@@ -1,3 +1,5 @@
+"""Correlation experiment comparing entropy and self-certainty scoring methods against GPT-2 PPL."""
+
 import os
 
 import matplotlib.pyplot as plt
@@ -7,9 +9,10 @@ import torch.nn.functional as F
 from scipy.stats import spearmanr
 from transformers import AutoModel, AutoTokenizer
 
-from config import Config
+from config import Cache, Config
 from eval_core import Perplexity
 from mdlm_ref.modeling_mdlm import MDLM
+from subsample.base import _compute_scores
 from utils import get_tokenizer, seed_all, tqdm
 
 
@@ -81,10 +84,46 @@ def get_mdlm_log_likelihood(model, sequence, mc_num=128, batch_size=16, mask_id=
     return likelihood_sum / num_batches
 
 
+@torch.no_grad()
+def compute_internal_scores(model, sequence, mask_id, mc_num=64, batch_size=16) -> tuple[float, float]:
+    """
+    Compute both entropy and self-certainty scores for a sequence.
+
+    Returns:
+        tuple: (entropy_score, self_certainty_score) both in [0, 1]
+    """
+    device = model.device
+    seq_batch = sequence[None, :].repeat(batch_size, 1).to(device)
+
+    entropy_scores_accum: list[float] = []
+    self_certainty_scores_accum: list[float] = []
+
+    num_batches = mc_num // batch_size
+
+    for _ in range(num_batches):
+        perturbed_seq, p_mask, _ = forward_process(seq_batch, mask_id)
+        timesteps = p_mask[:, 0]
+
+        output = model(perturbed_seq, timesteps=timesteps, return_dict=True)
+        log_probs = F.log_softmax(output.logits, dim=-1)  # [B, L, V]
+
+        # Create cache with log probabilities
+        cache = Cache(log_p_x0=log_probs)
+
+        # Compute both scores (unnormalized within batch)
+        entropy_score = _compute_scores(cache, score_method="entropy")  # [B]
+        self_certainty_score = _compute_scores(cache, score_method="self-certainty")  # [B]
+
+        entropy_scores_accum.append(float(entropy_score.mean().item()))
+        self_certainty_scores_accum.append(float(self_certainty_score.mean().item()))
+
+    return np.mean(entropy_scores_accum).item(), np.mean(self_certainty_scores_accum).item()
+
+
 def main():  # noqa: PLR0915
     config = Config()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Starting MDLM Likelihood Correlation Experiment on {device}")
+    print(f"Starting Score Method Correlation Experiment on {device}")
 
     seed_all(config.seed)
 
@@ -112,7 +151,6 @@ def main():  # noqa: PLR0915
     data_path = config.data_path
     if not os.path.exists(data_path):
         print(f"Warning: Data path {data_path} not found. Using dummy data for demonstration if needed.")
-        # Attempt to find it or exit
         if "path_to.bin" in data_path:
             print("Please provide a valid data_path in Config or via CLI.")
             return
@@ -126,11 +164,14 @@ def main():  # noqa: PLR0915
     MC_SAMPLES = 128
     MC_BATCH_SIZE = 64
 
+    # Storage for all methods
+    entropy_scores: list[float] = []
+    self_certainty_scores: list[float] = []
     mdlm_likelihoods: list[float] = []
     gpt2_perplexities: list[float] = []
 
     print(f"Processing {N_SAMPLES} samples...")
-    for i in tqdm(range(N_SAMPLES), desc="Likelihood Estimation"):
+    for i in tqdm(range(N_SAMPLES), desc="Score Estimation"):
         start_idx = np.random.randint(0, len(data) - SEQ_LENGTH - 1)
         sample_ids = data[start_idx : start_idx + SEQ_LENGTH]
 
@@ -149,6 +190,17 @@ def main():  # noqa: PLR0915
             mask_id=mask_id,
         )
 
+        # 3. Internal scores (entropy and self-certainty)
+        entropy_s, self_cert_s = compute_internal_scores(
+            mdlm_model,
+            seq_tensor,
+            mask_id,
+            mc_num=MC_SAMPLES,
+            batch_size=MC_BATCH_SIZE,
+        )
+
+        entropy_scores.append(entropy_s)
+        self_certainty_scores.append(self_cert_s)
         mdlm_likelihoods.append(ll)
         gpt2_perplexities.append(ppl)
 
@@ -156,41 +208,74 @@ def main():  # noqa: PLR0915
         print("Insufficient data collected. Check errors above.")
         return
 
+    # Convert to arrays
+    entropy_scores = np.array(entropy_scores)  # type: ignore
+    self_certainty_scores = np.array(self_certainty_scores)  # type: ignore
     mdlm_likelihoods = np.array(mdlm_likelihoods)  # type: ignore
     gpt2_perplexities = np.array(gpt2_perplexities)  # type: ignore
 
-    # Correlation: MDLM Log-Likelihood vs Reference Log-Likelihood (approx -log PPL)
+    # Reference: GPT-2 log-likelihood (approx -log PPL)
     ref_log_likelihoods = -np.log(gpt2_perplexities)
 
-    corr, p_val = spearmanr(mdlm_likelihoods, ref_log_likelihoods)
+    # Compute correlations for all methods
+    corr_ll, p_ll = spearmanr(mdlm_likelihoods, ref_log_likelihoods)
+    corr_entropy, p_entropy = spearmanr(entropy_scores, ref_log_likelihoods)
+    corr_self_cert, p_self_cert = spearmanr(self_certainty_scores, ref_log_likelihoods)
 
-    print("\n--- Experiment Results ---")
-    print(f"Spearman Correlation: {corr:.4f}")
-    print(f"p-value: {p_val:.6e}")
-    print(f"Samples processed: {len(mdlm_likelihoods)}")
+    print("\n" + "=" * 60)
+    print("EXPERIMENT RESULTS: Score Method Correlation with GPT-2 PPL")
+    print("=" * 60)
+    print(f"\nSamples processed: {len(mdlm_likelihoods)}")
+    print(f"\n{'Method':<25} {'Spearman Corr':<15} {'p-value':<15}")
+    print("-" * 55)
+    print(f"{'MDLM Log-Likelihood':<25} {corr_ll:>12.4f}   {p_ll:>12.2e}")
+    print(f"{'Entropy Score':<25} {corr_entropy:>12.4f}   {p_entropy:>12.2e}")
+    print(f"{'Self-Certainty Score':<25} {corr_self_cert:>12.4f}   {p_self_cert:>12.2e}")
+    print("=" * 60)
 
-    # Plotting
-    plt.figure(figsize=(10, 7))
-    plt.scatter(ref_log_likelihoods, mdlm_likelihoods, alpha=0.6, c="darkblue", edgecolors="white")
-    plt.xlabel("GPT-2 Log-Likelihood (Approximated as -log PPL)")
-    plt.ylabel("MDLM Estimated Log-Likelihood")
-    plt.title(f"Internal vs External Quality Correlation\nSpearman: {corr:.4f} (p={p_val:.2e})")
-    plt.grid(True, linestyle="--", alpha=0.7)
+    # Create comparison plot
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # Plot 1: MDLM Log-Likelihood
+    axes[0].scatter(ref_log_likelihoods, mdlm_likelihoods, alpha=0.4, c="darkblue", s=10)
+    axes[0].set_xlabel("GPT-2 Log-Likelihood (-log PPL)")
+    axes[0].set_ylabel("MDLM Log-Likelihood")
+    axes[0].set_title(f"MDLM LL\nSpearman: {corr_ll:.4f}")
+    axes[0].grid(True, linestyle="--", alpha=0.5)
+
+    # Plot 2: Entropy Score
+    axes[1].scatter(ref_log_likelihoods, entropy_scores, alpha=0.4, c="darkgreen", s=10)
+    axes[1].set_xlabel("GPT-2 Log-Likelihood (-log PPL)")
+    axes[1].set_ylabel("Entropy Score")
+    axes[1].set_title(f"Entropy\nSpearman: {corr_entropy:.4f}")
+    axes[1].grid(True, linestyle="--", alpha=0.5)
+
+    # Plot 3: Self-Certainty Score
+    axes[2].scatter(ref_log_likelihoods, self_certainty_scores, alpha=0.4, c="darkred", s=10)
+    axes[2].set_xlabel("GPT-2 Log-Likelihood (-log PPL)")
+    axes[2].set_ylabel("Self-Certainty Score")
+    axes[2].set_title(f"Self-Certainty\nSpearman: {corr_self_cert:.4f}")
+    axes[2].grid(True, linestyle="--", alpha=0.5)
+
+    plt.suptitle("Score Method Correlation with External Quality (GPT-2)", fontsize=14)
+    plt.tight_layout()
 
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
-    plot_path = os.path.join(results_dir, "likelihood_correlation.png")
+    plot_path = os.path.join(results_dir, "score_method_correlation.png")
     plt.savefig(plot_path, dpi=300)
-    print(f"Plot saved to {plot_path}")
+    print(f"\nPlot saved to {plot_path}")
 
     # Save results
     np.savez(
-        os.path.join(results_dir, "likelihood_results.npz"),
+        os.path.join(results_dir, "score_method_results.npz"),
+        entropy_scores=entropy_scores,
+        self_certainty_scores=self_certainty_scores,
         mdlm_ll=mdlm_likelihoods,
         gpt2_ppl=gpt2_perplexities,
         ref_ll=ref_log_likelihoods,
     )
-    print(f"Raw results saved to {results_dir}/likelihood_results.npz")
+    print(f"Raw results saved to {results_dir}/score_method_results.npz")
 
 
 if __name__ == "__main__":

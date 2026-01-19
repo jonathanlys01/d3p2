@@ -44,7 +44,7 @@ class BaseSelector(nn.Module):
         if self.config._w_interaction < 0:
             scores = torch.zeros(B, device=cache.embeddings.device)
         else:
-            scores = compute_scores(cache)
+            scores = _compute_scores(cache)
 
         flat = cache.embeddings.float().reshape(B, -1)  # [B, L*E]
         flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)
@@ -94,14 +94,10 @@ class BaseSelector(nn.Module):
 
     @torch.no_grad()
     def compute_scores(self, cache: Cache) -> torch.Tensor | None:
-        """Compute scores based on entropy of predicted distribution."""
+        """Compute scores based on entropy or self-certainty of predicted distribution."""
         assert cache.log_p_x0 is not None
 
-        logZ = cache.log_p_x0.float()
-        H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
-        scores = H.mean(dim=-1)  # [B] average entropy per sequence
-        scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)  # [0, 1]
-        scores = 1 - scores
+        scores = _compute_scores(cache, self.config._score_method)
 
         if self.distributed_utils:
             scores = self.distributed_utils.all_gather_scores(scores)
@@ -120,15 +116,33 @@ class BaseSelector(nn.Module):
 # General subsample utils
 
 
-def compute_scores(cache: Cache) -> torch.Tensor:
-    """Compute scores based on entropy of predicted distribution."""
+def _compute_scores(cache: Cache, score_method: str = "entropy") -> torch.Tensor:
+    """Compute scores based on entropy or self-certainty of predicted distribution.
+
+    Args:
+        cache: Cache containing log_p_x0 predictions [B, L, V]
+        score_method: "entropy" (1 - normalized entropy) or
+                      "self-certainty" (negative CE between prediction and uniform)
+
+    Returns:
+        Normalized scores in [0, 1] where higher = better quality
+    """
     assert cache.log_p_x0 is not None
 
-    logZ = cache.log_p_x0.float()
-    H = -torch.sum(torch.exp(logZ) * logZ, dim=-1)  # [B, L] entropy per position
-    scores = H.mean(dim=-1)  # [B] average entropy per sequence
-    scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)  # [0, 1]
-    scores = 1 - scores
+    logZ = cache.log_p_x0.float()  # [B, L, V]
+    p = torch.exp(logZ)  # [B, L, V]
+
+    if score_method == "self-certainty":
+        # Self-certainty: CE(uniform, p) = -sum(uniform * log(p)) = -mean(log(p))
+        # Higher log-prob under uniform sampling = more certain predictions
+        uniform_ce = -logZ.mean(dim=-1)  # [B, L] CE with uniform reference
+        scores = -uniform_ce.mean(dim=-1)  # [B] higher = more certain = better
+    else:  # entropy (default)
+        H = -torch.sum(p * logZ, dim=-1)  # [B, L] entropy per position
+        scores = -H.mean(dim=-1)  # [B] negative entropy (higher = more certain = better)
+
+    # Normalize to [0, 1]
+    scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
     return scores
 
 

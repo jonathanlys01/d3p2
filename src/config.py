@@ -90,6 +90,7 @@ class Config:
     _rbf_gamma: float = 1  # RBF kernel gamma parameter (when using RBF kernel)
     _temperature: float = 0.0  # temperature for any sampling
     _diversity_alpha: float = 0.0  # diversity coefficient for diverse beam search
+    _score_method: str = "entropy"  # "entropy" or "self-certainty" (CE with uniform distribution)
     ######################################################################################################
 
     # windowing
