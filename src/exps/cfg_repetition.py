@@ -57,19 +57,18 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         "samples_by_cfg": {},
     }
 
-    sampler = None  # Track for cleanup at the end
+    # Create sampler once and reuse across all CFG values
+    sampler = LLADASampler(cfg)
+    sampler.model = compile_model(sampler.model, cfg, dynamic=True)
 
     for idx, cfg_value in enumerate(cfg_values):
         print(f"\n{'=' * 60}")
         print(f"Testing CFG scale: {cfg_value}")
         print(f"{'=' * 60}")
 
-        # Create new config with updated CFG value (frozen dataclass)
+        # Create new config with updated CFG value
         iter_cfg = replace(cfg, cfg_scale=cfg_value)
-
-        # Create sampler with updated config
-        sampler = LLADASampler(iter_cfg)
-        sampler.model = compile_model(sampler.model, iter_cfg, dynamic=True)
+        sampler.update_config(iter_cfg)
 
         all_generations: list[list[str]] = []
 
@@ -111,13 +110,11 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         all_results["metrics_by_cfg"][str(cfg_value)] = repetition_metrics
         all_results["samples_by_cfg"][str(cfg_value)] = all_generations
 
-        # Only cleanup on the last iteration
-        is_last = idx == len(cfg_values) - 1
-        if is_last and sampler.distributed_utils:
-            sampler.distributed_utils.cleanup()
-
-        del sampler
-        torch.cuda.empty_cache()
+    # Cleanup after all iterations
+    if sampler.distributed_utils:
+        sampler.distributed_utils.cleanup()
+    del sampler
+    torch.cuda.empty_cache()
 
     # Summary table
     print(f"\n{'=' * 60}")

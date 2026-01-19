@@ -45,6 +45,11 @@ class LLADASampler(nn.Module):
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
+    def update_config(self, config: Config):
+        """Update model and selector config (for reusing model across sweep trials)."""
+        self.config = config
+        self.selector.config = config
+
     def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
