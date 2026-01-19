@@ -28,7 +28,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     """Run the CFG repetition experiment across multiple CFG values."""
 
     if cfg_values is None:
-        cfg_values = list(np.linspace(0.0, 5.0, 6))
+        cfg_values = np.linspace(0.0, 5.0, 6).tolist()
 
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
