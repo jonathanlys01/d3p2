@@ -14,8 +14,12 @@ class BaselineSelection(BaseSelector):
         assert config.group_size == 1
 
     def _sample(self):
-        """Independent sampling."""
-        return torch.arange(self.config.n_groups)
+        """Independent sampling: return global indices on rank 0, None otherwise."""
+        if self.distributed_utils and self.distributed_utils.rank != 0:
+            return None
+
+        n_global = self.config.n_groups * self.distributed_mul
+        return torch.arange(n_global, device=self.device)
 
     def _transversal(self, cache: Cache):  # noqa: ARG002
         return self._sample()
