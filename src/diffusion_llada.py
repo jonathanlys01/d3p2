@@ -141,6 +141,7 @@ class LLADASampler(nn.Module):
         num_blocks = self.config.gen_length // self.config.block_length
         steps = self.config.llada_steps // num_blocks
         batch_size = self.config.batch_size
+        assert self.config.cfg_scale >= 0, f"cfg_scale must be non-negative, got {self.config.cfg_scale}"
 
         prompt_tokens = self._preprocess_prompt(prompt)
         prompt_len = prompt_tokens.shape[1]
@@ -177,7 +178,7 @@ class LLADASampler(nn.Module):
 
                 # Apply CFG only if step is within the guidance range
                 apply_cfg = (
-                    self.config.cfg_scale > 0.0 and self.config.guidance_start <= step < self.config.guidance_end
+                    self.config.cfg_scale != 1.0 and self.config.guidance_start <= step < self.config.guidance_end
                 )
 
                 if apply_cfg:
@@ -191,7 +192,7 @@ class LLADASampler(nn.Module):
                     logits, un_logits = torch.chunk(logits, 2, dim=0)
                     embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)
 
-                    logits = un_logits + (self.config.cfg_scale + 1) * (logits - un_logits)
+                    logits = un_logits + self.config.cfg_scale * (logits - un_logits)
                 else:
                     logits, out = self._forward_model(x)
                     embeddings = out[-1]
