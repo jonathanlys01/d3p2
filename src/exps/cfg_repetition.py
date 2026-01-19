@@ -5,10 +5,6 @@ This script demonstrates that high CFG values (1-3) lead to increased repetition
 in generated text. It sweeps CFG values and measures diversity metrics:
 - distinct_2: ratio of unique bigrams (lower = more repetition)
 - self_bleu: BLEU score between generations (higher = more repetition)
-
-Usage:
-    python -m exps.cfg_repetition [options]
-    python -m exps.cfg_repetition cfg_values=[1.0,1.5,2.0,2.5,3.0]
 """
 
 import json
@@ -16,6 +12,7 @@ import os
 from dataclasses import asdict, replace
 from datetime import datetime
 
+import numpy as np
 import torch
 
 import utils
@@ -31,7 +28,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     """Run the CFG repetition experiment across multiple CFG values."""
 
     if cfg_values is None:
-        cfg_values = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+        cfg_values = list(np.linspace(0.0, 5.0, 6))
 
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
@@ -138,12 +135,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
 
 
 def main():
-    cfg = Config(
-        # Use baseline selector (no subsampling)
-        method="baseline",
-        group_size=1,
-    )
-
+    cfg = Config()
     results = run_cfg_experiment(cfg)
 
     # Save results
