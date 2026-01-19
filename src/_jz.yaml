@@ -16,13 +16,13 @@ cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
 
 # Data
 data_path: ${oc.env:WORK}/data/fineweb-edu/val.bin
-initial_mask_ratio: 0.97
+initial_mask_ratio: 1.0
 single_init: true
 
 
 # JZ-specific experiment settings (differ from defaults)
 seed: 42
-n_groups: 4
+n_groups: 2
 group_size: 8
 
 cfg_scale: 0.5

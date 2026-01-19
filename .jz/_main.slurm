@@ -4,17 +4,16 @@
 #SBATCH --constraint=h100
 
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
 #SBATCH --job-name=map_sweep
 #SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
-#SBATCH --time=20:00:00
+#SBATCH --time=11:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --signal=B:SIGTERM@360
 
 mkdir -p slurm-logs
 echo "Job started at $(date)"

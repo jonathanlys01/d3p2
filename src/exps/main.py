@@ -11,7 +11,7 @@ from common_exps import _bcast, print, run_experiment, run_sweep
 from config import Config
 
 
-SWEEP_NAME = "d3p2_optuna_study"
+SWEEP_NAME = "MAIN_MAP_study"
 
 
 def _objective(trial, og_config: Config, model, evaluator):
