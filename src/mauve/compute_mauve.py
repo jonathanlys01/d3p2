@@ -11,7 +11,7 @@ from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
 from sklearn.metrics import auc as compute_area_under_curve
 
-from .utils import get_tokenizer, get_model, featurize_tokens_from_model, get_device_from_arg
+from .utils_mauve import get_tokenizer, get_model, featurize_tokens_from_model, get_device_from_arg
 
 
 MODEL, TOKENIZER, MODEL_NAME = None, None, None
