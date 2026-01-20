@@ -12,7 +12,8 @@ REFERENCE_BIN="/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val
 echo "========================================"
 echo "Step 1: Generating samples with baseline_mdlm (100 runs)"
 echo "========================================"
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/baseline_mdlm.py --config=_default.yaml n_runs=100 "$@"
+MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml n_runs=100 "$@"
 
 # Find the most recent baseline output file
 BASELINE_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
@@ -22,7 +23,8 @@ echo ""
 echo "========================================"
 echo "Step 2: Generating samples with single_run_mdlm (100 runs)"
 echo "========================================"
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu single_run_mdlm.py --config=_default.yaml n_runs=100 "$@"
+MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml n_runs=100 "$@"
 
 # Find the most recent single_run output file (should be the newest)
 SINGLE_RUN_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
