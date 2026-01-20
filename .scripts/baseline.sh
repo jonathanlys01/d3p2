@@ -7,7 +7,7 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # Reference corpus for MAUVE evaluation
 # Using the validation data from the config (adjust path if needed)
-REFERENCE_BIN="${WORK}/projects/nanoGPT-but-looped/src/data/fineweb-edu/val.bin"
+REFERENCE_BIN="/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val.bin"
 
 echo "========================================"
 echo "Step 1: Generating samples with baseline_mdlm (100 runs)"
