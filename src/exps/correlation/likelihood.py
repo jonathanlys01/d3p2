@@ -176,8 +176,10 @@ def main():  # noqa: PLR0915
         sample_ids = data[start_idx : start_idx + SEQ_LENGTH]
 
         # 1. GPT-2 Perplexity
-        text = mdlm_tokenizer.decode(sample_ids, skip_special_tokens=True)
-        ppl = ppl_evaluator._forward([text])[0]
+        text: str = mdlm_tokenizer.decode(sample_ids, skip_special_tokens=True)
+        ppl_ = ppl_evaluator._forward([text])
+        assert ppl_ is not None
+        ppl = float(ppl_[0])
 
         # 2. MDLM Log-Likelihood
         seq_tensor = torch.from_numpy(sample_ids.astype(np.int64)).to(device)

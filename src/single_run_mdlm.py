@@ -8,6 +8,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
+from common_exps import eval_samples
 from config import RESULTS_DIR, Config
 from diffusion_mdlm import MDLMSampler
 from utils import compile_model, print, seed_all
@@ -63,6 +64,12 @@ def main():
     for file in os.listdir(RESULTS_DIR):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
             os.remove(os.path.join(RESULTS_DIR, file))
+
+    # Evaluate samples on master only
+    if model.distributed_utils is None or model.distributed_utils.rank == 0:
+        print("Running evaluation...")
+        metrics = eval_samples(str(unique_id), config)
+        print(f"Evaluation complete: {metrics}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
