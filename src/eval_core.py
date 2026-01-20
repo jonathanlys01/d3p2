@@ -21,6 +21,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 import mauve
 from config import CACHE_DIR
 from jina_ref.modeling_bert import JinaBertModel
+from utils import print as u_print
 from utils import process_model_args, tqdm
 
 
@@ -126,7 +127,7 @@ class Perplexity(torch.nn.Module):
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
-    def _forward(self, texts: list[str]) -> list[float]:
+    def _forward(self, texts: list[str]) -> list[float] | None:
         """Compute per-sample mean NLL (loss) values. Statistics should be computed in this space."""
         texts = [t.strip() for t in texts]
 
@@ -137,6 +138,10 @@ class Perplexity(torch.nn.Module):
             truncation=True,
             add_special_tokens=False,
         ).to(device)
+
+        # Skip forward pass if inputs are empty (0 tokens) to avoid reshape errors
+        if inputs["input_ids"].numel() == 0:
+            return None
 
         self.model.to(device)
 
@@ -178,7 +183,9 @@ class Perplexity(torch.nn.Module):
         nlls = []
         for start in range(0, len(flattened_texts), batch_size):
             batch = flattened_texts[start : start + batch_size]
-            nlls.extend(self._forward(batch))
+            result = self._forward(batch)
+            if result is not None:
+                nlls.extend(result)
 
         # Compute statistics in NLL space
         nll_stats = compute_statistics(nlls, "nll")
@@ -515,7 +522,11 @@ class Evaluator:
         nlls = []
         for start in range(0, len(flattened_texts), batch_size):
             batch = flattened_texts[start : start + batch_size]
-            nlls.extend(self.perplexity_model._forward(batch))
+            result = self.perplexity_model._forward(batch)
+            if result is not None:
+                nlls.extend(result)
+            else:
+                u_print("Skipping batch of empty texts", batch)
 
         # Unflatten scores to match group structure
         unflattened_nlls = []
