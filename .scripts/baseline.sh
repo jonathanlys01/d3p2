@@ -12,6 +12,7 @@ export OMP_NUM_THREADS=1
 
 # Configuration
 N_RUNS=${1:-100}
+shift
 INTERACTION_VALUES=(0 1 3)
 
 echo "========================================"
