@@ -4,17 +4,16 @@
 #SBATCH --constraint=h100
 
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=argmax_sweep
+#SBATCH --job-name=categorical_sweep
 #SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
-#SBATCH --time=20:00:00
+#SBATCH --time=07:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --signal=B:SIGTERM@360
 
 mkdir -p slurm-logs
 echo "Job started at $(date)"
@@ -32,6 +31,6 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/sweeps/argmax.py --config=_jz.yaml
+srun python exps/sweeps/cat.py --config=_jz.yaml cat_temperature=1.0 _w_interaction=0.0 n_trials=200
 
 echo "Job ended at $(date)"
