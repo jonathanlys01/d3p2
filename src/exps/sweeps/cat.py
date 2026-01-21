@@ -5,6 +5,8 @@ Main 5D3P experiment script.
 
 from dataclasses import asdict
 
+import numpy as np
+
 from common_exps import _bcast, print, run_experiment, run_sweep
 from config import Config
 
@@ -13,7 +15,7 @@ SWEEP_NAME = "d3p2_cat_optuna_study"
 
 
 def _objective(trial, og_config: Config, model, evaluator):
-    cat_temperature = trial.suggest_float("cat_temperature", 1.0, 1.5)
+    cat_temperature = trial.suggest_float("cat_temperature", 1.0, 1.2)
 
     dict_config = asdict(og_config)
     dict_config["cat_temperature"] = cat_temperature
@@ -39,5 +41,5 @@ def _objective(trial, og_config: Config, model, evaluator):
 
 if __name__ == "__main__":
     og_config = Config()
-    init_trials = [{"cat_temperature": qual} for qual in [1.0, 1.25, 1.5]]
+    init_trials = [{"cat_temperature": qual} for qual in np.linspace(1.0, 1.2, 5).tolist()]
     run_sweep(SWEEP_NAME, og_config, _objective, init_trials=init_trials)
