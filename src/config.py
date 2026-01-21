@@ -96,6 +96,7 @@ class Config:
     # windowing
     subsample_start: int = -1
     subsample_end: int = 1024
+    subsample_k: int = 0  # if > 0 and < batch_size, subsample k best sequences from pool based on perplexity
 
     # eval
     eval_batch_size: int = 8  # batch size for evaluation (separate from inference batch_size)
@@ -152,6 +153,9 @@ class Config:
         self.__dict__.update(args)
 
         assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
+
+        if self.subsample_k > 0:
+            assert self.method == "baseline", "subsample_k only makes sense for baseline method"
 
         # Re-set embedding_dim and batch_size in case model/n_groups/group_size changed via CLI
         if self.model == "mdlm":

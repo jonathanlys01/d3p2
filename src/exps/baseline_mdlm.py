@@ -32,6 +32,7 @@ def save(text, config, uid, rank=0):
 
 def main():
     config = Config()
+    assert config.method == "baseline", "This script can only be used with the baseline setting"
 
     model = MDLMSampler(config)
     model.model = compile_model(model.model, config)

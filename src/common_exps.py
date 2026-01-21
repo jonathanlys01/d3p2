@@ -55,7 +55,7 @@ def _save(text, config, uid, rank=0):
         json.dump(samples, f, indent=4)
 
 
-def generate_samples_with_model(config: Config, model: MDLMSampler):
+def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: Evaluator | None = None):
     """Generate samples using a pre-initialized model."""
     model.update_config(config)
     offset = 0
@@ -68,9 +68,25 @@ def generate_samples_with_model(config: Config, model: MDLMSampler):
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}, n_runs: {config.n_runs}")
 
+    # Check if we need to do K-subsampling
+    should_subsample = config.subsample_k > 0
+    if should_subsample and evaluator is None:
+        raise ValueError("K-subsampling requires an evaluator to be provided")
+
     for _ in range(config.n_runs):
         samples = model.sample()
-        texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
+        decoded = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
+
+        # Apply K-subsampling if enabled
+        if should_subsample:
+            assert evaluator is not None
+            print(f"Selecting {config.subsample_k} best sequences from {len(decoded)} candidates (metric: ppl)...")
+            selected_groups = evaluator.evaluate_baseline([decoded], metric="ppl", k=config.subsample_k)
+            selected = selected_groups[0]
+            texts.append(selected)
+        else:
+            texts.append(decoded)
+
         _save(texts, config, unique_id, rank=offset)
 
     samples = {
@@ -124,7 +140,7 @@ def run_experiment(config: Config, model: MDLMSampler | None = None, evaluator: 
     if model is None:
         unique_id, master = generate_samples(config)
     else:
-        unique_id, master = generate_samples_with_model(config, model)
+        unique_id, master = generate_samples_with_model(config, model, evaluator)
     if not master:
         return None
     metrics = eval_samples(str(unique_id), config, evaluator)

@@ -41,5 +41,6 @@ def _objective(trial, og_config: Config, model, evaluator):
 
 if __name__ == "__main__":
     og_config = Config()
+    assert og_config.method == "baseline", "This script can only be used with the baseline setting"
     init_trials = [{"cat_temperature": qual} for qual in np.linspace(1.0, 1.2, 5).tolist()]
     run_sweep(SWEEP_NAME, og_config, _objective, init_trials=init_trials)
