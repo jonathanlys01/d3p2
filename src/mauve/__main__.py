@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
 
-from config import CACHE_DIR
+from config import CACHE_DIR, SEQUENCE_LENGTH
 from mauve.compute_mauve import compute_mauve
 from utils import process_model_args
 
@@ -19,45 +19,46 @@ def load_reference_texts(
     bin_path: str,
     tokenizer: PreTrainedTokenizerBase,
     max_samples: int = 5000,
+    seq_len: int = SEQUENCE_LENGTH,
 ) -> list[str]:
     """
     Load reference texts from a .bin file.
     The .bin is a numpy memmap of uint16 tokens encoded with a transformers tokenizer.
 
+    In the training data of MDLM, every sequence starts with BOS and ends with EOS.
+    In GPT-2, BOS == EOS. This function filters out the EOS tokens and chunks
+    the remaining tokens into sequences of size (seq_len - 2) to match
+    the content length used during training.
+
     Args:
         bin_path: Path to the .bin file containing tokenized data
         tokenizer: Transformers tokenizer to use for decoding
         max_samples: Maximum number of sequences to load
+        seq_len: Total sequence length used in training
 
     Returns:
         List of decoded text strings
     """
     arr = np.memmap(bin_path, dtype=np.uint16, mode="r")
     eos_token_id = tokenizer.eos_token_id
+    content_len = seq_len - 2
 
-    # Split on EOS tokens to get individual sequences
-    texts = []
-    current_tokens = []
+    buffer_request = max_samples * seq_len * 2
+    raw_tokens = np.array(arr[:buffer_request])
+    filtered_tokens = raw_tokens[raw_tokens != eos_token_id]
 
-    for token in arr:
-        if token == eos_token_id:
-            if current_tokens:
-                text = tokenizer.decode(current_tokens, skip_special_tokens=False)
-                if text.strip():  # Skip empty texts
-                    texts.append(text)
-                    if len(texts) >= max_samples:
-                        break
-            current_tokens = []
-        else:
-            current_tokens.append(int(token))
+    num_sequences = min(max_samples, len(filtered_tokens) // content_len)
+    if num_sequences == 0:
+        print(f"Warning: Not enough tokens in {bin_path} to form even one sequence of length {content_len}")
+        return []
 
-    # Handle last sequence if no trailing EOS
-    if current_tokens and len(texts) < max_samples:
-        text = tokenizer.decode(current_tokens, skip_special_tokens=False)
-        if text.strip():
-            texts.append(text)
+    packed_tokens = filtered_tokens[: num_sequences * content_len].reshape(num_sequences, content_len)
 
-    print(f"Loaded {len(texts)} reference texts from {bin_path}")
+    # Decode in batch for performance
+    # Convert uint16 to int for tokenizer compatibility
+    texts = tokenizer.batch_decode(packed_tokens.astype(int).tolist(), skip_special_tokens=False)
+
+    print(f"Loaded {len(texts)} reference texts from {bin_path} (seq_len={seq_len}, content_len={content_len})")
     return texts
 
 
@@ -113,6 +114,12 @@ def main():
         default=8,
         help="Batch size for featurization (default: 8)",
     )
+    parser.add_argument(
+        "--seq_len",
+        type=int,
+        default=SEQUENCE_LENGTH,
+        help="Sequence length used in training - reference sequences will be truncated to seq_len-2 (default: 1024)",
+    )
     args = parser.parse_args()
 
     # Initialize tokenizer for decoding reference .bin file
@@ -120,7 +127,9 @@ def main():
     ref_tokenizer = AutoTokenizer.from_pretrained(**ref_tokenizer_args)
 
     # Load reference texts from .bin
-    ref_texts = load_reference_texts(args.bin_path, tokenizer=ref_tokenizer, max_samples=args.max_ref_samples)
+    ref_texts = load_reference_texts(
+        args.bin_path, tokenizer=ref_tokenizer, max_samples=args.max_ref_samples, seq_len=args.seq_len
+    )
 
     # Load generated samples from JSON
     gen_texts = load_samples_from_json(args.json_path)

@@ -15,7 +15,10 @@ echo "========================================"
 echo "Step 1: Generating samples with baseline_mdlm ($N_RUNS runs)"
 echo "========================================"
 MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS "$@"
+
+set -ex
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=8 group_size=1 "$@"
+set +ex
 
 # Find the most recent baseline output file
 BASELINE_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
@@ -26,7 +29,10 @@ echo "========================================"
 echo "Step 2: Generating samples with single_run_mdlm ($N_RUNS runs)"
 echo "========================================"
 MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml _w_interaction=5.0 n_runs=$N_RUNS "$@"
+
+set -ex
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml _w_interaction=5.0 n_runs=$N_RUNS n_groups=2 group_size=4 "$@"
+set +ex
 
 # Find the most recent single_run output file (should be the newest)
 SINGLE_RUN_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
