@@ -1,25 +1,11 @@
 #!/bin/bash
 
-# source $JOME/d3p2/.venv/bin/activate
-
 ROOT=$JOME/d3p2/src
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 export OMP_NUM_THREADS=1
 
-N_RUNS=8
 
-echo "all steps experiment"
-torchrun --nproc_per_node=gpu single_run_mdlm.py --config=_default.yaml n_runs=$N_RUNS subsample_start=0 subsample_end=1024
-
-echo "partial steps experiment"
-torchrun --nproc_per_node=gpu single_run_mdlm.py --config=_default.yaml n_runs=$N_RUNS subsample_start=300 subsample_end=400
-
-echo "no subsampling experiment"
-torchrun --nproc_per_node=gpu single_run_mdlm.py --config=_default.yaml n_runs=$N_RUNS subsample_start=0 subsample_end=0
-
-cd src
-
-python eval_core.py -f results/ --batch_size 8
-
+# 3 baseline runs to assess the impact of the cat temperature
+torchrun --nproc_per_node=gpu exps/sweeps/cat.py --config=_default.yaml n_trials=3 ppl_model_id=gpt2-large n_groups=4 group_size=8 cat_temperature=1.0 _w_interaction=0.0
