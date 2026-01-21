@@ -11,7 +11,7 @@ REFERENCE_BIN="/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val
 export OMP_NUM_THREADS=1 
 
 # Configuration
-N_RUNS=100
+N_RUNS=${1:-100}
 INTERACTION_VALUES=(0 1 3)
 
 echo "========================================"
