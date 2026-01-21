@@ -68,26 +68,31 @@ def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: E
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}, n_runs: {config.n_runs}")
 
-    # Check if we need to do K-subsampling
-    should_subsample = config.subsample_k > 0
+    # Check if we need to do K-subsampling (only on master rank)
+    is_master = model.distributed_utils is None or model.distributed_utils.rank == 0
+    should_subsample = config.subsample_k > 0 and is_master
     if should_subsample and evaluator is None:
         raise ValueError("K-subsampling requires an evaluator to be provided")
 
     for _ in range(config.n_runs):
-        samples = model.sample()
+        samples = model.sample()  # dispatch_sequences gathers all seqs to all ranks
         decoded = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
 
-        # Apply K-subsampling if enabled
+        # Apply K-subsampling only on master (all ranks have same sequences after dispatch)
         if should_subsample:
             assert evaluator is not None
             print(f"Selecting {config.subsample_k} best sequences from {len(decoded)} candidates (metric: ppl)...")
             selected_groups = evaluator.evaluate_baseline([decoded], metric="ppl", k=config.subsample_k)
             selected = selected_groups[0]
             texts.append(selected)
-        else:
+        elif is_master or config.subsample_k == 0:
+            # Save sequences if: (1) master rank, or (2) no K-subsampling
+            # Workers skip saving when subsample_k > 0 since only master creates final output
             texts.append(decoded)
 
-        _save(texts, config, unique_id, rank=offset)
+        # Only save temp files if we're actually collecting texts
+        if is_master or config.subsample_k == 0:
+            _save(texts, config, unique_id, rank=offset)
 
     samples = {
         "text_samples": texts,
@@ -220,6 +225,8 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
         _bcast(False)  # signal workers to stop
 
     else:
+        # Workers don't need evaluator - K-subsampling only happens on master
+        # (all ranks get same sequences via dispatch_sequences anyway)
         while True:
             proceed = _bcast(None)
             if not proceed:
