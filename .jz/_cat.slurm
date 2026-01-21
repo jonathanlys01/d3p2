@@ -12,7 +12,7 @@
 #SBATCH --job-name=categorical_sweep
 #SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
-#SBATCH --time=07:00:00
+#SBATCH --time=11:00:00
 #SBATCH --qos=qos_gpu_h100-t3
 
 mkdir -p slurm-logs
