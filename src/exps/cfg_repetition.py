@@ -114,22 +114,22 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     torch.cuda.empty_cache()
 
     # Summary table
-    print(f"\n{'=' * 60}")
-    print("SUMMARY: CFG vs Repetition Metrics")
-    print(f"{'=' * 60}")
-    print(f"{'CFG':>8} | {'Distinct-2':>12} | {'Self-BLEU':>12} | {'Cos-Sim':>10} | {'PPL':>10}")
-    print("-" * 60)
+    u_print(f"\n{'=' * 60}")
+    u_print("SUMMARY: CFG vs Repetition Metrics")
+    u_print(f"{'=' * 60}")
+    u_print(f"{'CFG':>8} | {'Distinct-2':>12} | {'Self-BLEU':>12} | {'Cos-Sim':>10} | {'PPL':>10}")
+    u_print("-" * 60)
 
     for cfg_val in cfg_values:
         m = all_results["metrics_by_cfg"][str(cfg_val)]
-        print(
+        u_print(
             f"{cfg_val:>8.1f} | {m['distinct_2']:>12.4f} | {m['self_bleu']:>12.4f} |"
             f" {m['cosine_similarity']:>10.4f} | {m['perplexity']:>10.2f}",
         )
 
-    print("-" * 60)
-    print("Higher Self-BLEU and Cosine Similarity = More Repetition")
-    print("Lower Distinct-2 = More Repetition")
+    u_print("-" * 60)
+    u_print("Higher Self-BLEU and Cosine Similarity = More Repetition")
+    u_print("Lower Distinct-2 = More Repetition")
 
     return all_results
 
@@ -154,7 +154,7 @@ def main():
             f,
             indent=4,
         )
-    print(f"\nResults saved to {save_path}")
+    u_print(f"\nResults saved to {save_path}")
 
 
 if __name__ == "__main__":
