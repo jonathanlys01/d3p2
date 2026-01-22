@@ -551,8 +551,12 @@ class Evaluator:
         metrics = data.get("metrics", None)
         if not self.force and metrics is not None:
             return
-
-        texts = data["text_samples"]
+        
+        # texts = data["text_samples"]
+        texts = data.get("text_samples", None)
+        if texts is None:
+            print(f"Skipping {file_path}")
+            return None
         metrics = self.evaluate(texts)
 
         data["metrics"] = metrics
