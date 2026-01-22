@@ -15,23 +15,6 @@ N_RUNS=${1:-100}
 shift
 INTERACTION_VALUES=(0 1 3)
 
-echo "========================================"
-echo "Step 1: Generating baseline samples ($N_RUNS runs)"
-echo "========================================"
-MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-
-set -ex
-torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=8 group_size=1 "$@"
-set +ex
-
-BASELINE_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
-echo "Baseline output: $BASELINE_OUTPUT"
-
-echo ""
-echo "========================================"
-echo "Step 2: Generating samples with varying interaction parameters"
-echo "========================================"
-
 # Array to store output paths
 declare -a INTERACTION_OUTPUTS
 
@@ -54,12 +37,8 @@ done
 
 echo ""
 echo "========================================"
-echo "Step 3: Evaluating all experiments"
+echo "Step 2: Evaluating all experiments"
 echo "========================================"
-
-echo ""
-echo "Evaluating baseline..."
-python -m mauve "$REFERENCE_BIN" "$BASELINE_OUTPUT" --batch_size=8
 
 for i in "${!INTERACTION_VALUES[@]}"; do
     w_int="${INTERACTION_VALUES[$i]}"
@@ -73,7 +52,6 @@ echo ""
 echo "========================================"
 echo "Comparison complete!"
 echo "========================================"
-echo "Baseline: $BASELINE_OUTPUT"
 for i in "${!INTERACTION_VALUES[@]}"; do
     echo "_w_interaction=${INTERACTION_VALUES[$i]}: ${INTERACTION_OUTPUTS[$i]}"
 done
