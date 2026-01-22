@@ -49,7 +49,7 @@ class Config:
     # LLaDA
     llada_model_path: str = "GSAI-ML/LLaDA-8B-Base"
     llada_tokenizer: str = "GSAI-ML/LLaDA-8B-Base"
-    cfg_scale: float = 3.0
+    cfg_scale: float = 0.0
     llada_steps: int = 128
     gen_length: int = 128
     block_length: int = 32

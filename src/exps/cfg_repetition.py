@@ -24,11 +24,14 @@ from utils import compile_model, seed_all
 from utils import print as u_print
 
 
-def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> dict:  # noqa: PLR0915
+def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> dict:  # noqa: C901, PLR0915
     """Run the CFG repetition experiment across multiple CFG values."""
 
     if cfg_values is None:
-        cfg_values = np.logspace(np.log10(0.5), np.log10(2.5), num=8).tolist()
+        if cfg.cfg_scale != 0.0:
+            cfg_values = [cfg.cfg_scale]
+        else:
+            cfg_values = np.logspace(np.log10(0.5), np.log10(2.5), num=8).tolist()
 
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
@@ -116,22 +119,23 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     torch.cuda.empty_cache()
 
     # Summary table
-    u_print(f"\n{'=' * 60}")
-    u_print("SUMMARY: CFG vs Repetition Metrics")
-    u_print(f"{'=' * 60}")
-    u_print(f"{'CFG':>8} | {'Distinct-2':>12} | {'Self-BLEU':>12} | {'Cos-Sim':>10} | {'PPL':>10}")
-    u_print("-" * 60)
+    if len(cfg_values) > 1:
+        u_print(f"\n{'=' * 60}")
+        u_print("SUMMARY: CFG vs Repetition Metrics")
+        u_print(f"{'=' * 60}")
+        u_print(f"{'CFG':>8} | {'Distinct-2':>12} | {'Self-BLEU':>12} | {'Cos-Sim':>10} | {'PPL':>10}")
+        u_print("-" * 60)
 
-    for cfg_val in cfg_values:
-        m = all_results["metrics_by_cfg"][str(cfg_val)]
-        u_print(
-            f"{cfg_val:>8.1f} | {m['distinct_2']:>12.4f} | {m['self_bleu']:>12.4f} |"
-            f" {m['cosine_similarity']:>10.4f} | {m['perplexity']:>10.2f}",
-        )
+        for cfg_val in cfg_values:
+            m = all_results["metrics_by_cfg"][str(cfg_val)]
+            u_print(
+                f"{cfg_val:>8.1f} | {m['distinct_2']:>12.4f} | {m['self_bleu']:>12.4f} |"
+                f" {m['cosine_similarity']:>10.4f} | {m['perplexity']:>10.2f}",
+            )
 
-    u_print("-" * 60)
-    u_print("Higher Self-BLEU and Cosine Similarity = More Repetition")
-    u_print("Lower Distinct-2 = More Repetition")
+        u_print("-" * 60)
+        u_print("Higher Self-BLEU and Cosine Similarity = More Repetition")
+        u_print("Lower Distinct-2 = More Repetition")
 
     return all_results
 
@@ -142,7 +146,8 @@ def main():
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = f"{RESULTS_DIR}/cfg_repetition_{timestamp}.json"
+    cfg_suffix = f"_cfg{cfg.cfg_scale:.2f}" if cfg.cfg_scale != 0.0 else "_sweep"
+    save_path = f"{RESULTS_DIR}/cfg_repetition_{timestamp}{cfg_suffix}.json"
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     with open(save_path, "w") as f:
