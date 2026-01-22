@@ -212,6 +212,8 @@ class AverageCosineSimilarity(torch.nn.Module):
 
     def _forward(self, texts: list[str]) -> float:
         self.model.to(device)
+        if isinstance(texts, str):
+            texts = [texts]
 
         with torch.inference_mode():
             embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
@@ -551,7 +553,7 @@ class Evaluator:
         metrics = data.get("metrics", None)
         if not self.force and metrics is not None:
             return
-        
+
         # texts = data["text_samples"]
         texts = data.get("text_samples", None)
         if texts is None:
