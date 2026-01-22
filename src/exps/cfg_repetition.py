@@ -45,8 +45,8 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     if cfg.qa_dataset_len > 0:
         dataset = dataset.head(cfg.qa_dataset_len)
 
-    print(f"Running CFG repetition experiment with {len(dataset)} samples")
-    print(f"CFG values to test: {cfg_values}")
+    u_print(f"Running CFG repetition experiment with {len(dataset)} samples")
+    u_print(f"CFG values to test: {cfg_values}")
 
     all_results: dict = {
         "cfg_values": cfg_values,
@@ -59,9 +59,9 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     sampler.model = compile_model(sampler.model, cfg, dynamic=True)
 
     for idx, cfg_value in enumerate(cfg_values):
-        print(f"\n{'=' * 60}")
-        print(f"Testing CFG scale: {cfg_value}")
-        print(f"{'=' * 60}")
+        u_print(f"\n{'=' * 60}")
+        u_print(f"Testing CFG scale: {cfg_value}")
+        u_print(f"{'=' * 60}")
 
         # Create new config with updated CFG value
         iter_cfg = replace(cfg, cfg_scale=cfg_value)
