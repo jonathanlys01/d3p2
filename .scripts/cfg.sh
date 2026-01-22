@@ -8,8 +8,8 @@ cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # To launch on 2 4-gpu nodes:
-# ./cfg.sh 0 0 && ./cfg.sh 1 1 && ./cfg.sh 2 2 && ./cfg.sh 3 3
-# ./cfg.sh 0 4 && ./cfg.sh 1 5 && ./cfg.sh 2 6 && ./cfg.sh 3 7
+# .scripts/cfg.sh 0 0 && .scripts/cfg.sh 1 1 && .scripts/cfg.sh 2 2 && .scripts/cfg.sh 3 3
+# .scripts/cfg.sh 0 4 && .scripts/cfg.sh 1 5 && .scripts/cfg.sh 2 6 && .scripts/cfg.sh 3 7
 gpu_id=$1
 i=$2
 
