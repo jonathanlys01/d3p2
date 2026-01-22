@@ -210,24 +210,61 @@ class AverageCosineSimilarity(torch.nn.Module):
         super().__init__()
         self.model = model
 
-    def _forward(self, texts: list[str]) -> float:
+    def _encode(self, texts: list[str]) -> torch.Tensor:
+        """Encode texts to normalized embeddings."""
         self.model.to(device)
-        if isinstance(texts, str):
-            texts = [texts]
-
         with torch.inference_mode():
             embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
             x = embeddings.reshape(len(texts), -1)  # n_samples x D
-            S = F.cosine_similarity(x.unsqueeze(1), x.unsqueeze(0), dim=-1)
+            x = F.normalize(x, p=2, dim=-1)
+        return x
 
-            S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
+    def _forward(self, texts: list[str]) -> float:
+        if isinstance(texts, str):
+            texts = [texts]
 
-            n = S.size(0)
-            if n <= 1:
-                return 0.0
-            avg_cos_sim = S.sum() / (n * (n - 1))  # unbiased average
+        x = self._encode(texts)  # [n_samples, D], already normalized
+        S = torch.mm(x, x.t())  # cosine similarity matrix (since x is normalized)
+
+        S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
+
+        n = S.size(0)
+        if n <= 1:
+            return 0.0
+        avg_cos_sim = S.sum() / (n * (n - 1))  # unbiased average
 
         return avg_cos_sim.item()
+
+    def compute_max_alignment(
+        self,
+        predictions: list[list[str]],
+        references: list[list[str]],
+    ) -> list[float]:
+        """
+        For each question (group), compute max cosine similarity between any prediction and any reference.
+        Returns a list of max alignment scores (one per question).
+        """
+        max_alignments = []
+        for preds, refs in zip(predictions, references):
+            if not preds or not refs:
+                max_alignments.append(0.0)
+                continue
+
+            # Encode all predictions and references for this question
+            all_texts = preds + refs
+            embeddings = self._encode(all_texts)
+
+            pred_embs = embeddings[: len(preds)]  # [num_preds, D]
+            ref_embs = embeddings[len(preds) :]  # [num_refs, D]
+
+            # Compute cosine similarity matrix: [num_preds, num_refs]
+            sim_matrix = torch.mm(pred_embs, ref_embs.t())
+
+            # Take max across all pred-ref pairs
+            max_sim = sim_matrix.max().item()
+            max_alignments.append(max_sim)
+
+        return max_alignments
 
     def forward(self, texts: list[list[str]]) -> dict[str, float]:
         """
@@ -370,7 +407,7 @@ class StringMetrics(torch.nn.Module):
 
         return sum(bleu_scores) / len(bleu_scores)
 
-    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901
+    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912
         """
         Compute F1, BLEU, Distinct-2, and Self-BLEU scores.
         predictions is a list of lists of strings (multiple generations per question).
@@ -413,6 +450,39 @@ class StringMetrics(torch.nn.Module):
                 bleu_score = bleu.score
 
             all_metrics["bleu"] = bleu_score
+
+            # Compute metric@k variants: max F1 and max BLEU across k predictions per question
+            k = len(predictions[0]) if predictions and predictions[0] else 0
+            all_metrics["k"] = float(k)
+
+            if k > 0:
+                # F1@k: for each question, find the prediction with the best F1 against references
+                f1_at_k_scores = []
+                for preds, refs in zip(predictions, references):
+                    if not preds or not refs:
+                        continue
+                    # Compute F1 for each prediction against all references, take max
+                    best_f1_for_question = 0.0
+                    for pred in preds:
+                        f1_for_pred = max([self._compute_f1(pred, ref) for ref in refs])
+                        best_f1_for_question = max(best_f1_for_question, f1_for_pred)
+                    f1_at_k_scores.append(best_f1_for_question)
+
+                all_metrics.update(compute_statistics(f1_at_k_scores, "f1_at_k"))
+
+                # BLEU@k: for each question, find the prediction with best sentence BLEU
+                bleu_at_k_scores = []
+                for preds, refs in zip(predictions, references):
+                    if not preds or not refs:
+                        continue
+                    # Compute sentence BLEU for each prediction against references, take max
+                    best_bleu_for_question = 0.0
+                    for pred in preds:
+                        bleu_result = sacrebleu.sentence_bleu(pred, refs)
+                        best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
+                    bleu_at_k_scores.append(best_bleu_for_question)
+
+                all_metrics.update(compute_statistics(bleu_at_k_scores, "bleu_at_k"))
 
         # Compute Distinct-2 and Self-BLEU per group
         distinct_2_scores = []
@@ -505,8 +575,19 @@ class Evaluator:
     ) -> tuple[float, float]:
         return self.wasserstein_model(good_references, bad_references, generations)
 
-    def compute_string_metrics(self, predictions: list[list[str]], references: list[list[str]]) -> dict[str, float]:
-        return self.string_metrics(predictions, references)
+    def compute_string_metrics(
+        self,
+        predictions: list[list[str]],
+        references: list[list[str]],
+    ) -> dict[str, float]:
+        metrics = self.string_metrics(predictions, references)
+
+        # Compute cos@k: max cosine alignment between predictions and references
+        if references and any(refs for refs in references):
+            cos_at_k_scores = self.cosine_model.compute_max_alignment(predictions, references)
+            metrics.update(compute_statistics(cos_at_k_scores, "cos_at_k"))
+
+        return metrics
 
     def evaluate_baseline(self, full_sequences: list[list[str]], metric: str, k: int) -> list[list[str]]:
         """
