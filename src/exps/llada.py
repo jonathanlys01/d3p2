@@ -12,7 +12,7 @@ from utils import compile_model, seed_all
 from utils import print as u_print
 
 
-def main():
+def main():  # noqa: PLR0915
     cfg = Config()
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
