@@ -74,8 +74,7 @@ def main():
     }
 
     if model.distributed_utils is None or model.distributed_utils.rank == 0:  # save on master only (or non-distributed)
-        postfix = str(uuid.uuid4())[:8]
-        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{postfix}"
+        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
         os.makedirs(RESULTS_DIR, exist_ok=True)
         with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
             json.dump(samples, f, indent=4)
