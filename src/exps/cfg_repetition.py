@@ -103,6 +103,8 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         print(f"\nResults for CFG={cfg_value}:")
         for k, v in repetition_metrics.items():
             print(f"  {k:25}: {v:.4f}")
+        if "metrics_summary" in metrics:
+            print(f"  Summary: {metrics['metrics_summary']}")
 
         all_results["metrics_by_cfg"][str(cfg_value)] = repetition_metrics
         all_results["samples_by_cfg"][str(cfg_value)] = all_generations

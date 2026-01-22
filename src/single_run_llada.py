@@ -76,7 +76,8 @@ def main():
         # Extract references for the questions we sampled
         references: list[list[str]] = [row.correct_answers for row in dataset][:limit]  # type: ignore
         metrics = eval_samples(str(unique_id), config, references=references)
-        print(f"Evaluation complete: {metrics}")
+        assert metrics is not None and metrics["metrics_summary"] is not None
+        print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

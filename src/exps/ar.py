@@ -75,5 +75,8 @@ if __name__ == "__main__":
         print("\n" + "=" * 40)
         print("Evaluation Results:")
         for k, v in metrics.items():
-            print(f"{k:25}: {v:.4f}")
+            if k != "metrics_summary":
+                print(f"{k:25}: {v:.4f}")
+        print("-" * 40)
+        print(f"Summary: {metrics.get('metrics_summary', 'N/A')}")
         print("=" * 40)

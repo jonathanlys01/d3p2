@@ -94,7 +94,10 @@ def main():
     print("\n" + "=" * 40)
     print("Evaluation Results:")
     for k, v in global_metrics.items():
-        print(f"{k:25}: {v:.4f}")
+        if k != "metrics_summary" and isinstance(v, (int, float)):
+            print(f"{k:25}: {v:.4f}")
+    print("-" * 40)
+    print(f"Summary: {global_metrics.get('metrics_summary', 'N/A')}")
     print("=" * 40)
 
     # Save results
