@@ -15,7 +15,7 @@ SWEEP_NAME = "d3p2_divbs_optuna_study"
 
 
 def _objective(trial, og_config: Config, model, evaluator):
-    div_alpha = trial.suggest_float("_diversity_alpha", 0.0, 1.0)  # TODO: find upper value
+    div_alpha = trial.suggest_float("_diversity_alpha", 0.0, 10.0)
 
     dict_config = asdict(og_config)
     dict_config["_diversity_alpha"] = div_alpha
@@ -42,5 +42,5 @@ def _objective(trial, og_config: Config, model, evaluator):
 if __name__ == "__main__":
     og_config = Config()
     assert og_config.method == "diverse_beam"
-    init_trials = [{"_diversity_alpha": alpha} for alpha in np.linspace(0.0, 1.0, 5).tolist()]
+    init_trials = [{"_diversity_alpha": alpha} for alpha in np.linspace(0.0, 10.0, 5).tolist()]
     run_sweep(SWEEP_NAME, og_config, _objective, init_trials=init_trials)
