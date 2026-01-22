@@ -576,7 +576,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="Force re-evaluation even if metrics exist.")
     args = parser.parse_args()
 
-    files = [f for f in os.listdir(args.folder_path) if f.endswith(".json")]
+    files = [f for f in os.listdir(args.folder_path) if f.endswith(".json") and not f.startswith("temp")]
     evaluator = Evaluator(args.batch_size, args.force)
     pbar = tqdm(files, desc="Evaluating files")
 
