@@ -8,6 +8,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
+from common_exps import eval_samples
 from config import RESULTS_DIR, Config
 from data import get_qa_dataset
 from diffusion_llada import LLADASampler
@@ -69,6 +70,14 @@ def main():
     for file in os.listdir(RESULTS_DIR):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
             os.remove(os.path.join(RESULTS_DIR, file))
+
+    # Evaluate samples on master only
+    if model.distributed_utils is None or model.distributed_utils.rank == 0:
+        print("Running evaluation...")
+        # Extract references for the questions we sampled
+        references: list[list[str]] = [row.correct_answers for row in dataset][:limit]  # type: ignore
+        metrics = eval_samples(str(unique_id), config, references=references)
+        print(f"Evaluation complete: {metrics}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

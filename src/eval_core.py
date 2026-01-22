@@ -525,11 +525,11 @@ class Evaluator:
         self.batch_size = batch_size
         self.force = force
 
-    def evaluate(self, texts: list[list[str]]) -> dict[str, float]:
+    def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:
         # Compute all metrics
         ppl_stats = self.perplexity_model(texts, batch_size=self.batch_size)
         cos_stats = self.cosine_model(texts)
-        string_stats = self.string_metrics(texts, references=None)
+        string_stats = self.string_metrics(texts, references=references)
 
         # Merge all metrics
         metrics = {**ppl_stats, **cos_stats, **string_stats}
@@ -627,7 +627,7 @@ class Evaluator:
 
         return selected_sequences
 
-    def eval_from_file(self, file_path: str) -> dict[str, float] | None:
+    def eval_from_file(self, file_path: str, references: list[list[str]] | None = None) -> dict[str, float] | None:
         with open(file_path, "r") as f:
             data = json.load(f)
 
@@ -640,7 +640,7 @@ class Evaluator:
         if texts is None:
             print(f"Skipping {file_path}")
             return None
-        metrics = self.evaluate(texts)
+        metrics = self.evaluate(texts, references=references)
 
         data["metrics"] = metrics
 

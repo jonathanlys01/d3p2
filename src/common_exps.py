@@ -120,7 +120,12 @@ def generate_samples(config: Config):
     return generate_samples_with_model(config, model)
 
 
-def eval_samples(unique_id: str, config: Config, evaluator: Evaluator | None = None):
+def eval_samples(
+    unique_id: str,
+    config: Config,
+    evaluator: Evaluator | None = None,
+    references: list[list[str]] | None = None,
+):
     if evaluator is None:
         evaluator = Evaluator(
             batch_size=config.eval_batch_size,
@@ -134,12 +139,17 @@ def eval_samples(unique_id: str, config: Config, evaluator: Evaluator | None = N
     for file in os.listdir(RESULTS_DIR):
         if file.endswith(f"{unique_id}.json"):
             file_path = os.path.join(RESULTS_DIR, file)
-            metrics = evaluator.eval_from_file(file_path)
+            metrics = evaluator.eval_from_file(file_path, references=references)
 
     return metrics
 
 
-def run_experiment(config: Config, model: MDLMSampler | None = None, evaluator: Evaluator | None = None):
+def run_experiment(
+    config: Config,
+    model: MDLMSampler | None = None,
+    evaluator: Evaluator | None = None,
+    references: list[list[str]] | None = None,
+):
     """Run experiment with optional pre-initialized model."""
     torch.cuda.empty_cache()
     if model is None:
@@ -148,7 +158,7 @@ def run_experiment(config: Config, model: MDLMSampler | None = None, evaluator: 
         unique_id, master = generate_samples_with_model(config, model, evaluator)
     if not master:
         return None
-    metrics = eval_samples(str(unique_id), config, evaluator)
+    metrics = eval_samples(str(unique_id), config, evaluator, references=references)
     return metrics
 
 
