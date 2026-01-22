@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from config import Cache
-from subsample.base import BaseSelector
+from subsample.base import BaseSelector, _compute_scores
 
 
 def _sample_from_logits(scores: torch.Tensor, k: int, temperature: float) -> torch.Tensor:
@@ -62,13 +62,15 @@ class DiverseBeamSearch(BaseSelector):
     def _transversal(self, cache: Cache) -> torch.Tensor | None:
         """Transversal selection with diversity penalty, one sample per group."""
         assert cache.embeddings is not None
-        flat = F.normalize(cache.embeddings.float().reshape(cache.embeddings.size(0), -1), dim=-1, eps=1e-12)
+        assert cache.log_p_x0 is not None
 
-        if (scores := self.compute_scores(cache)) is None:
-            return None
+        flat = F.normalize(cache.embeddings.float().reshape(cache.embeddings.size(0), -1), dim=-1, eps=1e-12)
+        scores = _compute_scores(cache)
+
         if self.distributed_utils:
-            flat = self.distributed_utils.all_gather_embeddings(flat)
-            if flat is None:
+            # Must gather BOTH tensors together to avoid rank synchronization issues
+            flat, scores = self.distributed_utils.all_gather(flat, scores)
+            if flat is None or scores is None:
                 return None
 
         total_groups = self.config.n_groups * self.distributed_mul
@@ -81,13 +83,15 @@ class DiverseBeamSearch(BaseSelector):
     def _non_transversal(self, cache: Cache) -> torch.Tensor | None:
         """Global MMR selection without group constraints."""
         assert cache.embeddings is not None
-        flat = F.normalize(cache.embeddings.float().reshape(cache.embeddings.size(0), -1), dim=-1, eps=1e-12)
+        assert cache.log_p_x0 is not None
 
-        if (scores := self.compute_scores(cache)) is None:
-            return None
+        flat = F.normalize(cache.embeddings.float().reshape(cache.embeddings.size(0), -1), dim=-1, eps=1e-12)
+        scores = _compute_scores(cache)
+
         if self.distributed_utils:
-            flat = self.distributed_utils.all_gather_embeddings(flat)
-            if flat is None:
+            # Must gather BOTH tensors together to avoid rank synchronization issues
+            flat, scores = self.distributed_utils.all_gather(flat, scores)
+            if flat is None or scores is None:
                 return None
 
         item_size = scores.size(0)
