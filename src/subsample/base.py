@@ -1,6 +1,7 @@
 """Base selector class and utility functions for subset selection."""
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from config import Cache, Config
@@ -35,7 +36,7 @@ class BaseSelector(nn.Module):
         return ret
 
     @torch.no_grad()
-    def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
+    def compute_kernel_old(self, cache: Cache) -> torch.Tensor | None:
         """Compute the DPP kernel matrix from embeddings and scores."""
         assert cache.embeddings is not None
 
@@ -91,6 +92,55 @@ class BaseSelector(nn.Module):
             K = (K_modded + K_modded.T) / 2
 
         return K
+
+    @torch.no_grad()
+    def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
+        """
+        Compute the DPP kernel matrix L using Quality-Diversity decomposition.
+
+        Math: L_ij = q_i * S_ij * q_j
+        where q_i = exp(score_i * w_interaction)
+
+        - w_interaction acts as 'inverse temperature'.
+        - Higher w -> Sharper quality peak (Greedy).
+        - Lower w -> Flatter quality (Diversity).
+        """
+        assert cache.embeddings is not None
+        assert self.config._kernel_method == "multiplicative", "Only multiplicative kernel method is supported for now"
+
+        B = cache.embeddings.size(0)
+        flat = cache.embeddings.float().reshape(B, -1)
+        flat = F.normalize(flat, dim=-1, eps=1e-12)
+        scores = _compute_scores(cache, self.config._score_method)
+
+        if self.distributed_utils:
+            flat, scores = self.distributed_utils.all_gather(flat, scores)
+            if flat is None or scores is None:
+                return None
+
+        # Kernel
+
+        if self.config._kernel_type == "rbf":
+            S = _compute_rbf(flat, self.config._rbf_gamma)
+        else:
+            S = torch.matmul(flat, flat.T)
+
+        # Numerically stable
+        w_inter = self.config._w_interaction
+
+        if w_inter <= 1e-5:
+            # q_i = 1
+            S.diagonal().add_(1e-6)
+            return S
+
+        scaled_scores = scores * w_inter
+        scaled_scores = scaled_scores - scaled_scores.max()
+        quality = torch.exp(scaled_scores)  # [B]
+
+        L = quality.unsqueeze(1) * S * quality.unsqueeze(0)
+        L.diagonal().add_(1e-6)  # small regularization
+
+        return L
 
     @torch.no_grad()
     def compute_scores(self, cache: Cache) -> torch.Tensor | None:
