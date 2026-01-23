@@ -6,5 +6,6 @@ cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 export OMP_NUM_THREADS=1
 
+MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
 
-torchrun --nproc_per_node=gpu exps/sweeps/div_bs.py --config=_default.yaml n_trials=200 ppl_model_id=gpt2-large n_groups=2 group_size=8 method=diverse_beam
+torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/sweeps/div_bs.py --config=_default.yaml n_trials=200 ppl_model_id=gpt2-large n_groups=2 group_size=8 method=diverse_beam
