@@ -8,13 +8,15 @@ cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # To launch on 2 4-gpu nodes:
-# .scripts/cfg.sh 0 0 && .scripts/cfg.sh 1 1 && .scripts/cfg.sh 2 2 && .scripts/cfg.sh 3 3
-# .scripts/cfg.sh 0 4 && .scripts/cfg.sh 1 5 && .scripts/cfg.sh 2 6 && .scripts/cfg.sh 3 7
+# node 0: for g in {0..3}; do .scripts/cfg.sh $g $g & done; wait
+# node 1: for g in {0..3}; do .scripts/cfg.sh $g $((g+4)) & done; wait
+# Or for 4 gpus and 2 sequential (like gpu 0 will do 0 and then 4):
+# for g in {0..3}; do ( .scripts/cfg.sh $g $g && .scripts/cfg.sh $g $((g+4)) ) & done; wait
 gpu_id=$1
 i=$2
 
 CFG_VAL=$(python -c "import numpy as np; vals = np.logspace(np.log10(0.5), np.log10(2.5), num=8); print(vals[$i])")
 echo "Launching CFG=$CFG_VAL on GPU $gpu_id"
-CUDA_VISIBLE_DEVICES=$gpu_id python exps/cfg_exp.py --config=_default.yaml n_groups=4 group_size=1 method=baseline cfg_scale=$CFG_VAL &
+CUDA_VISIBLE_DEVICES=$gpu_id python exps/cfg_exp.py --config=_default.yaml n_groups=4 group_size=1 method=baseline cfg_scale=$CFG_VAL
 
 # OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/cfg_exp.py --config=_default.yaml group_size=1 method=baseline "$@"

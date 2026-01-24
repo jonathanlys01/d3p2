@@ -10,8 +10,10 @@ cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # To launch on 2 4-gpu nodes (8 values total):
-# .scripts/interaction.sh 0 0 && .scripts/interaction.sh 1 1 && .scripts/interaction.sh 2 2 && .scripts/interaction.sh 3 3
-# .scripts/interaction.sh 0 4 && .scripts/interaction.sh 1 5 && .scripts/interaction.sh 2 6 && .scripts/interaction.sh 3 7
+# node 0: for g in {0..3}; do .scripts/interaction.sh $g $g & done; wait
+# node 1: for g in {0..3}; do .scripts/interaction.sh $g $((g+4)) & done; wait
+# Or for 4 gpus and 2 sequential (like gpu 0 will do 0 and then 4):
+# for g in {0..3}; do ( .scripts/interaction.sh $g $g && .scripts/interaction.sh $g $((g+4)) ) & done; wait
 
 gpu_id=$1
 i=$2
@@ -26,4 +28,4 @@ CUDA_VISIBLE_DEVICES=$gpu_id python exps/interaction_exp.py \
     n_groups=4 \
     group_size=2 \
     method=dpp \
-    _w_interaction=$INT_VAL &
+    _w_interaction=$INT_VAL
