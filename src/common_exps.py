@@ -13,6 +13,7 @@ import idr_torch
 import optuna
 import torch
 import torch.distributed as dist
+from optuna import Study
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
@@ -171,7 +172,7 @@ class _GracefulShutdownCallback:
             study.stop()
 
 
-def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=None):
+def run_sweep(sweep_name, og_config, objective_fn, init_trials=None, study_to_restart: Study | None = None):
     """
     Unified Optuna sweep loop handling both master and worker ranks.
     Model is initialized once and reused across all trials.
@@ -181,9 +182,7 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
     global _shutdown_requested  # noqa: PLW0603
     _shutdown_requested = False  # Reset in case of prior runs
 
-    # Use config.n_trials as default if not explicitly provided
-    if n_trials is None:
-        n_trials = og_config.n_trials
+    n_trials = og_config.n_trials
 
     # Register signal handler for graceful shutdown (SLURM --signal=B:SIGTERM@120)
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
@@ -213,13 +212,16 @@ def run_sweep(sweep_name, og_config, objective_fn, n_trials=None, init_trials=No
             cos_model_id=og_config.cos_model_id,
         )
 
-        storage = JournalStorage(JournalFileBackend(f"optuna_{sweep_name}.log"))
-        study = optuna.create_study(
-            directions=["minimize", "minimize"],
-            study_name=sweep_name,
-            storage=storage,
-            load_if_exists=True,
-        )
+        if not study_to_restart:
+            storage = JournalStorage(JournalFileBackend(f"optuna_{sweep_name}.log"))
+            study = optuna.create_study(
+                directions=["minimize", "minimize"],
+                study_name=sweep_name,
+                storage=storage,
+                load_if_exists=True,
+            )
+        else:
+            study = study_to_restart
 
         if len(study.trials) == 0:  # enqueue initial points
             study.set_user_attr("og_config", asdict(og_config))
