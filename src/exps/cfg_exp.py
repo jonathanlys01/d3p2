@@ -1,10 +1,13 @@
 """
-CFG Repetition Experiment for LLaDA.
+CFG Experiment for LLaDA.
 
-This script demonstrates that high CFG values (1-3) lead to increased repetition
-in generated text. It sweeps CFG values and measures diversity metrics:
+This script sweeps CFG values and measures all available metrics:
+- perplexity: language model perplexity
+- cosine_similarity: average pairwise cosine similarity
 - distinct_2: ratio of unique bigrams (lower = more repetition)
 - self_bleu: BLEU score between generations (higher = more repetition)
+- f1, bleu: reference-based metrics (when references available)
+- f1_at_k, bleu_at_k: best-of-k metrics
 """
 
 import json
@@ -24,8 +27,8 @@ from utils import compile_model, seed_all
 from utils import print as u_print
 
 
-def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> dict:  # noqa: C901, PLR0915
-    """Run the CFG repetition experiment across multiple CFG values."""
+def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> dict:  # noqa: C901, PLR0912, PLR0915
+    """Run the CFG experiment across multiple CFG values, measuring all metrics."""
 
     if cfg_values is None:
         if cfg.cfg_scale != 0.0:
@@ -36,7 +39,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
 
-    # Initialize evaluator (only need string metrics for repetition)
+    # Initialize evaluator for all metrics
     evaluator = Evaluator(
         batch_size=cfg.eval_batch_size,
         ppl_model_id=cfg.ppl_model_id,
@@ -48,7 +51,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     if cfg.qa_dataset_len > 0:
         dataset = dataset.head(cfg.qa_dataset_len)
 
-    u_print(f"Running CFG repetition experiment with {len(dataset)} samples")
+    u_print(f"Running CFG experiment with {len(dataset)} samples")
     u_print(f"CFG values to test: {cfg_values}")
 
     all_results: dict = {
@@ -67,7 +70,8 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         u_print(f"{'=' * 60}")
 
         # Create new config with updated CFG value
-        iter_cfg = replace(cfg, cfg_scale=cfg_value)
+        # Set disable_sys_args=True to prevent __post_init__ from re-reading CLI args
+        iter_cfg = replace(cfg, cfg_scale=cfg_value, disable_sys_args=True)
         sampler.update_config(iter_cfg)
 
         all_generations: list[list[str]] = []
@@ -92,24 +96,29 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
 
             all_generations.append(batch_gen)
 
-        # Compute metrics for this CFG value
+        # Compute all metrics for this CFG value
         metrics = evaluator.evaluate(all_generations)
 
-        # Focus on repetition-related metrics
-        repetition_metrics = {
-            "distinct_2": metrics["distinct_2"],
-            "self_bleu": metrics["self_bleu"],
-            "cosine_similarity": metrics["cosine_similarity"],
-            "perplexity": metrics["perplexity"],
+        # Extract core metrics (filter out CI and summary stats for display)
+        core_metrics = {
+            k: v
+            for k, v in metrics.items()
+            if not any(
+                suffix in k for suffix in ["_ci95", "_std", "_lower", "_upper", "_median", "_min", "_max", "_summary"]
+            )
+            and k != "metrics_summary"
         }
 
         print(f"\nResults for CFG={cfg_value}:")
-        for k, v in repetition_metrics.items():
-            print(f"  {k:25}: {v:.4f}")
+        for k, v in core_metrics.items():
+            if isinstance(v, float):
+                print(f"  {k:25}: {v:.4f}")
+            else:
+                print(f"  {k:25}: {v}")
         if "metrics_summary" in metrics:
             print(f"  Summary: {metrics['metrics_summary']}")
 
-        all_results["metrics_by_cfg"][str(cfg_value)] = repetition_metrics
+        all_results["metrics_by_cfg"][str(cfg_value)] = metrics
         all_results["samples_by_cfg"][str(cfg_value)] = all_generations
 
     # Cleanup after all iterations
@@ -120,22 +129,20 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
 
     # Summary table
     if len(cfg_values) > 1:
-        u_print(f"\n{'=' * 60}")
-        u_print("SUMMARY: CFG vs Repetition Metrics")
-        u_print(f"{'=' * 60}")
-        u_print(f"{'CFG':>8} | {'Distinct-2':>12} | {'Self-BLEU':>12} | {'Cos-Sim':>10} | {'PPL':>10}")
-        u_print("-" * 60)
+        u_print(f"\n{'=' * 80}")
+        u_print("SUMMARY: CFG vs All Metrics")
+        u_print(f"{'=' * 80}")
+        u_print(f"{'CFG':>8} | {'PPL':>10} | {'Cos-Sim':>10} | {'Dist-2':>10} | {'S-BLEU':>10}")
+        u_print("-" * 80)
 
         for cfg_val in cfg_values:
             m = all_results["metrics_by_cfg"][str(cfg_val)]
             u_print(
-                f"{cfg_val:>8.1f} | {m['distinct_2']:>12.4f} | {m['self_bleu']:>12.4f} |"
-                f" {m['cosine_similarity']:>10.4f} | {m['perplexity']:>10.2f}",
+                f"{cfg_val:>8.2f} | {m.get('perplexity', 0):>10.2f} | {m.get('cosine_similarity', 0):>10.4f} |"
+                f" {m.get('distinct_2', 0):>10.4f} | {m.get('self_bleu', 0):>10.4f}",
             )
 
-        u_print("-" * 60)
-        u_print("Higher Self-BLEU and Cosine Similarity = More Repetition")
-        u_print("Lower Distinct-2 = More Repetition")
+        u_print("-" * 80)
 
     return all_results
 
@@ -147,7 +154,7 @@ def main():
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cfg_suffix = f"_cfg{cfg.cfg_scale:.2f}" if cfg.cfg_scale != 0.0 else "_sweep"
-    save_path = f"{RESULTS_DIR}/cfg_repetition_{timestamp}{cfg_suffix}.json"
+    save_path = f"{RESULTS_DIR}/cfg_exp_{timestamp}{cfg_suffix}.json"
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     with open(save_path, "w") as f:
