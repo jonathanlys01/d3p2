@@ -8,6 +8,7 @@ from dataclasses import asdict
 
 import numpy as np
 import optuna
+from optuna.distributions import FloatDistribution
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
@@ -61,13 +62,27 @@ if __name__ == "__main__":
 
     if len(study_new.trials) == 0:
         print("Migrating trials from old study...")
-        trials = [
-            trial
-            for trial in study_old.trials
-            if trial.params["w_interaction"] > 0 and trial.state == optuna.trial.TrialState.COMPLETE
-        ]
-        study_new.add_trials(trials)
-        print(f"Successfully migrated {len(trials)} trials.")
+        # Create trials with the correct log-scale distribution
+        log_dist = FloatDistribution(1e-1, 5e3, log=True)
+
+        migrated_count = 0
+        for old_trial in study_old.trials:
+            w = old_trial.params["w_interaction"]
+            # Skip trials outside the new log-scale range or incomplete
+            if w < 1e-1 or old_trial.state != optuna.trial.TrialState.COMPLETE:
+                continue
+
+            new_trial = optuna.create_trial(
+                params={"w_interaction": w},
+                distributions={"w_interaction": log_dist},
+                values=old_trial.values,
+                user_attrs=old_trial.user_attrs,
+                state=optuna.trial.TrialState.COMPLETE,
+            )
+            study_new.add_trial(new_trial)
+            migrated_count += 1
+
+        print(f"Successfully migrated {migrated_count} trials.")
 
         print("Enqueueing initial trials...")
         init_trials = [{"w_interaction": w} for w in np.logspace(-1, 3, 5).tolist()]
