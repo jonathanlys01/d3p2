@@ -157,6 +157,7 @@ def run_experiment(
         unique_id, master = generate_samples(config)
     else:
         unique_id, master = generate_samples_with_model(config, model, evaluator)
+    torch.cuda.empty_cache()  # clear GPU memory before evaluation
     if not master:
         return None
     metrics = eval_samples(str(unique_id), config, evaluator, references=references)
