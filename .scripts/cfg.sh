@@ -12,11 +12,15 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 # node 1: for g in {0..3}; do .scripts/cfg.sh $g $((g+4)) & done; wait
 # Or for 4 gpus and 2 sequential (like gpu 0 will do 0 and then 4):
 # for g in {0..3}; do ( .scripts/cfg.sh $g $g && .scripts/cfg.sh $g $((g+4)) ) & done; wait
-gpu_id=$1
-i=$2
+
+i=$1
+
+# reminder for manual sweep
+# 0.5, 0.6292494753209134, 0.7919098043832895, 0.9966176578193441, 1.2542422765567596, 1.5784625888972976, 1.9864935117546305, 2.5
 
 CFG_VAL=$(python -c "import numpy as np; vals = np.logspace(np.log10(0.5), np.log10(2.5), num=8); print(vals[$i])")
-echo "Launching CFG=$CFG_VAL on GPU $gpu_id"
-CUDA_VISIBLE_DEVICES=$gpu_id python exps/cfg_exp.py --config=_default.yaml n_groups=4 group_size=1 method=baseline cfg_scale=$CFG_VAL
+echo "Launching CFG=$CFG_VAL"
+
+python exps/cfg_exp.py --config=_default.yaml n_groups=4 group_size=1 method=baseline cfg_scale=$CFG_VAL
 
 # OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/cfg_exp.py --config=_default.yaml group_size=1 method=baseline "$@"
