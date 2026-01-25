@@ -55,8 +55,8 @@ def main():
 
     dataset = get_qa_dataset(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
-    prompts: list[str] = [row.question for row in dataset][:limit]  # type: ignore
-    references: list[list[str]] = [row.correct_answers for row in dataset][:limit]  # type: ignore
+    prompts: list[str] = [row.question for row in dataset.itertuples()][:limit]  # type: ignore
+    references: list[list[str]] = [row.correct_answers for row in dataset.itertuples()][:limit]  # type: ignore
 
     for i in range(min(config.n_runs, len(prompts))):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")

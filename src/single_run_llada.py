@@ -45,7 +45,7 @@ def main():
 
     dataset = get_qa_dataset(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
-    prompts: list[str] = [row.question for row in dataset][:limit]  # type: ignore
+    prompts: list[str] = [row.question for row in dataset.itertuples()][:limit]  # type: ignore
 
     for i in range(min(config.n_runs, len(prompts))):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
@@ -74,7 +74,7 @@ def main():
     if model.distributed_utils is None or model.distributed_utils.rank == 0:
         print("Running evaluation...")
         # Extract references for the questions we sampled
-        references: list[list[str]] = [row.correct_answers for row in dataset][:limit]  # type: ignore
+        references: list[list[str]] = [row.correct_answers for row in dataset.itertuples()][:limit]  # type: ignore
         metrics = eval_samples(str(unique_id), config, references=references)
         assert metrics is not None and metrics["metrics_summary"] is not None
         print(f"Evaluation complete: {metrics['metrics_summary']}")
