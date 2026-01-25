@@ -3,59 +3,22 @@ Correlation experiment for autoregressive models.
 Compares last token embedding vs mean of all previous embeddings.
 """
 
-import os
-
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 from transformers import AutoModel, AutoModelForCausalLM
 
-from config import RESULTS_DIR, Config
+from config import Config
+from exps.correlation.common import (
+    compute_avg_cosine_similarity,
+    compute_cka,
+    plot_cka_acs,
+    save_results_csv,
+)
 from utils import get_tokenizer, process_model_args, tqdm
 
 
 # Same model as in autoregressive.py
 AR_MODEL_ID = "gpt2-large"
-
-
-@torch.no_grad()
-def compute_cka(ref_embeddings: torch.Tensor, ar_outputs: torch.Tensor) -> float:
-    """Compute CKA between reference embeddings and AR outputs."""
-    ref_embeddings = ref_embeddings.to(torch.float32)
-    ar_outputs = ar_outputs.to(torch.float32)
-
-    ref_embeddings = ref_embeddings - ref_embeddings.mean(0, keepdim=True)
-    ar_outputs = ar_outputs - ar_outputs.mean(0, keepdim=True)
-
-    ref_gram = ref_embeddings @ ref_embeddings.t()
-    ar_gram = ar_outputs @ ar_outputs.t()
-
-    ref_norm = torch.norm(ref_gram, p="fro")
-    ar_norm = torch.norm(ar_gram, p="fro")
-
-    if ref_norm == 0 or ar_norm == 0:
-        print("Warning: Zero norm in CKA computation.")
-        return 0.0
-
-    cka = (ref_gram * ar_gram).sum() / (ref_norm * ar_norm)
-    return cka.item()
-
-
-@torch.no_grad()
-def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
-    """Compute the average pairwise cosine similarity (excluding self-similarity)."""
-    batch_size = embeddings.shape[0]
-    if batch_size <= 1:
-        return 0.0
-
-    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
-    sim_matrix = embeddings_norm @ embeddings_norm.t()
-    sim_matrix.fill_diagonal_(0)
-    sim_sum = sim_matrix.sum()
-    num_pairs = batch_size * (batch_size - 1)
-
-    return (sim_sum / num_pairs).item()
 
 
 def get_ar_embeddings(
@@ -98,7 +61,7 @@ def get_ar_embeddings(
         raise ValueError(f"Unknown strategy: {strategy}")
 
 
-def main():  # noqa: C901, PLR0912, PLR0915
+def main():  # noqa: PLR0915
     config = Config()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -206,64 +169,24 @@ def main():  # noqa: C901, PLR0912, PLR0915
     final_ref_acs_baseline = float(np.mean(all_ref_acs_scores))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_baseline:.4f}")
 
-    # Save results to NPZ
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-
-    save_dict = {
-        "positions": np.array(positions),
-        "ref_acs_baseline": final_ref_acs_baseline,
-    }
-    for strategy in pooling_strategies:
-        save_dict[f"{strategy}_cka"] = np.array(results[strategy]["cka"])
-        save_dict[f"{strategy}_acs"] = np.array(results[strategy]["acs"])
-
-    npz_path = os.path.join(RESULTS_DIR, "embeddings_ar_results.npz")
-    np.savez(npz_path, **save_dict)
-    print(f"Results saved to {npz_path}")
-
-    # Create plots
-    fig, ax = plt.subplots(2, 1, figsize=(14, 16), sharex=True)
-
-    for strategy, scores in results.items():
-        ax[0].plot(positions, scores["cka"], marker="o", linestyle="-", label=strategy)
-    ax[0].set_ylabel("CKA Score")
-    ax[0].set_title(f"AR Representation Quality (CKA) vs. Position (Avg. over {N_TOTAL_SAMPLES} samples)")
-    ax[0].legend()
-    ax[0].grid(True)
-    ax[0].set_ylim(bottom=0)
-
-    for strategy, scores in results.items():
-        ax[1].plot(positions, scores["acs"], marker="o", linestyle="-", label=strategy)
-
-    ax[1].axhline(
-        y=final_ref_acs_baseline,
-        color="r",
-        linestyle="--",
-        label=f"Reference ACS ({final_ref_acs_baseline:.3f})",
+    # Save results to CSV using shared function
+    df = save_results_csv(
+        results=results,
+        x_values=positions,
+        x_name="position",
+        filename="embeddings_ar_results.csv",
+        ref_acs_baseline=final_ref_acs_baseline,
     )
-    ax[1].set_xlabel("Position")
-    ax[1].set_ylabel("Avg. Cosine Similarity (ACS)")
-    ax[1].set_title(f"Average Cosine Similarity (ACS) vs. Position (Avg. over {N_TOTAL_SAMPLES} samples)")
-    ax[1].legend()
-    ax[1].grid(True)
 
-    # Dynamically set y-axis limits
-    all_acs_values: list[float] = []
-    for scores in results.values():
-        for s in scores["acs"]:
-            if not np.isnan(s):
-                all_acs_values.append(s)  # type: ignore
-    if all_acs_values:
-        min_acs = min(all_acs_values)
-        max_acs = max(all_acs_values)
-        y_margin = (max_acs - min_acs) * 0.1 if max_acs > min_acs else 0.1
-        ax[1].set_ylim((max(0.0, min_acs - y_margin), min(1.0, max_acs + y_margin)))
-
-    plt.tight_layout()
-
-    plot_filename = os.path.join(RESULTS_DIR, f"cka_acs_results_ar_{N_TOTAL_SAMPLES}_samples.png")
-    plt.savefig(plot_filename)
-    print(f"Plots saved to {plot_filename}")
+    # Plot results
+    plot_cka_acs(
+        df=df,
+        x_name="position",
+        title_suffix="AR Representation Quality",
+        n_samples=N_TOTAL_SAMPLES,
+        ref_acs_baseline=final_ref_acs_baseline,
+        plot_filename=f"cka_acs_results_ar_{N_TOTAL_SAMPLES}_samples.png",
+    )
 
 
 if __name__ == "__main__":
