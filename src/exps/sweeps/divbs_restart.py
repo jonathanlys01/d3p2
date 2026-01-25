@@ -21,7 +21,8 @@ SWEEP_NAME = "LOG_divbs_study"
 
 
 def _objective(trial, og_config: Config, model, evaluator):
-    div_alpha = trial.suggest_float("_diversity_alpha", 1e-1, 1e2, log=True)
+    # div_alpha = trial.suggest_float("_diversity_alpha", 0, 10)
+    div_alpha = trial.suggest_float("_diversity_alpha", 1e-1, 5e3, log=True)
 
     dict_config = asdict(og_config)
     dict_config["_diversity_alpha"] = div_alpha
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     if len(study_new.trials) == 0:
         print("Migrating trials from old study...")
         # Create trials with the correct log-scale distribution
-        log_dist = FloatDistribution(1e-1, 1e2, log=True)
+        log_dist = FloatDistribution(1e-1, 5e3, log=True)
 
         migrated_count = 0
         for old_trial in study_old.trials:
@@ -85,7 +86,7 @@ if __name__ == "__main__":
         print(f"Successfully migrated {migrated_count} trials.")
 
         print("Enqueueing initial trials...")
-        init_trials = [{"_diversity_alpha": alpha} for alpha in np.logspace(-1, 2, 5).tolist()]
+        init_trials = [{"_diversity_alpha": alpha} for alpha in np.logspace(-1, 3, 5).tolist()]
         for trial in init_trials:
             study_new.enqueue_trial(trial)
     else:
