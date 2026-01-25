@@ -39,7 +39,7 @@ mdlm_steps: 1024
 cat_temperature: 1.0
 
 # Llada parameters
-cfg_scale: 0.5
+cfg_scale: 1.5
 llada_steps: 128
 gen_length: 128
 block_length: 128
