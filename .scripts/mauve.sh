@@ -18,7 +18,7 @@ export OMP_NUM_THREADS=1
 # Configuration
 N_RUNS=${1:-100}
 shift
-INTERACTION_VALUES=(0 1 10 100)
+INTERACTION_VALUES=(0 1 10 100 1000)
 
 echo "========================================"
 echo "Step 1: Generating baseline samples ($N_RUNS runs)"
@@ -27,7 +27,7 @@ MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); pri
 BASELINE_LOG="$LOG_DIR/${JOB_NAME}-${RUN_TAG}-baseline.out"
 
 set -ex
-torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=4 group_size=1 "$@" 2>&1 | tee "$BASELINE_LOG"
+torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=16 group_size=1 subsample_k=4 "$@" 2>&1 | tee "$BASELINE_LOG"
 set +ex
 
 BASELINE_OUTPUT=$(rg "OUTPUT_PATH:" "$BASELINE_LOG" | tail -1 | cut -d: -f2-)
@@ -51,7 +51,7 @@ for w_int in "${INTERACTION_VALUES[@]}"; do
     INTERACTION_LOG="$LOG_DIR/${JOB_NAME}-${RUN_TAG}-w${w_int}.out"
     
     set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml _w_interaction=$w_int n_runs=$N_RUNS n_groups=2 group_size=4 "$@" 2>&1 | tee "$INTERACTION_LOG"
+    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml method=greedy_map _w_interaction=$w_int n_runs=$N_RUNS n_groups=4 group_size=4 "$@" 2>&1 | tee "$INTERACTION_LOG"
     set +ex
     
     OUTPUT=$(rg "OUTPUT_PATH:" "$INTERACTION_LOG" | tail -1 | cut -d: -f2-)

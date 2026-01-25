@@ -15,9 +15,6 @@ from eval_core import Evaluator
 from utils import compile_model, print, seed_all
 
 
-K_MATCH = 8  # match number of output sequences from main exp
-
-
 def save(text, config, uid, rank=0):
     samples = {
         "text_samples": text,  # list of lists of strings
@@ -59,10 +56,17 @@ def main():
         samples = model.sample()
         decoded = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
 
-        # Baseline-specific: select k best sequences from this batch
-        print(f"Selecting {K_MATCH} best sequences from {len(decoded)} candidates (metric: ppl)...")
-        selected_groups = evaluator.evaluate_baseline([decoded], metric="ppl", k=K_MATCH)
-        selected = selected_groups[0]
+        # Baseline-specific: select k best sequences from this batch (if subsample_k > 0)
+        k = config.subsample_k
+        if model.distributed_utils:
+            k *= model.distributed_utils.world_size
+
+        if k > 0 and k < len(decoded):
+            print(f"Selecting {k} best sequences from {len(decoded)} candidates (metric: ppl)...")
+            selected_groups = evaluator.evaluate_baseline([decoded], metric="ppl", k=k)
+            selected = selected_groups[0]
+        else:
+            selected = decoded
 
         texts.append(selected)
         save(texts, config, unique_id, rank=offset)
