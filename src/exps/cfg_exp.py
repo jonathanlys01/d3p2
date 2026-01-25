@@ -12,7 +12,7 @@ This script sweeps CFG values and measures all available metrics:
 
 import json
 import os
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import datetime
 
 import numpy as np
@@ -69,9 +69,10 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         u_print(f"Testing CFG scale: {cfg_value}")
         u_print(f"{'=' * 60}")
 
-        # Create new config with updated CFG value
-        # Set disable_sys_args=True to prevent __post_init__ from re-reading CLI args
-        iter_cfg = replace(cfg, cfg_scale=cfg_value, disable_sys_args=True)
+        iter_dict = asdict(cfg)
+        iter_dict["cfg_scale"] = cfg_value
+        iter_dict["disable_sys_args"] = True
+        iter_cfg = Config(**iter_dict)
         sampler.update_config(iter_cfg)
 
         all_generations: list[list[str]] = []
