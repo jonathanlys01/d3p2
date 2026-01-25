@@ -18,16 +18,21 @@ mkdir -p "$LOG_DIR"
 
 echo "Launching ${#CFG_VALUES[@]} CFG runs across ${#GPUS[@]} GPU(s)..."
 
-for i in "${!CFG_VALUES[@]}"; do
-  gpu="${GPUS[$((i % ${#GPUS[@]}))]}"
-  cfg_val="${CFG_VALUES[$i]}"
+num_gpus=${#GPUS[@]}
+for gpu_idx in "${!GPUS[@]}"; do
+  gpu="${GPUS[$gpu_idx]}"
+  (
+    for ((i = gpu_idx; i < ${#CFG_VALUES[@]}; i += num_gpus)); do
+      cfg_val="${CFG_VALUES[$i]}"
 
-  echo "GPU ${gpu}: cfg_scale=${cfg_val}"
-  cfg_name="${cfg_val//./-}"
-  log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}-gpu${gpu}-cfg${cfg_name}"
-  CUDA_VISIBLE_DEVICES="${gpu}" \
-    python exps/cfg_exp.py --config=_default.yaml cfg_scale="${cfg_val}" "$@" \
-    >"${log_prefix}.out" 2>"${log_prefix}.err" &
+      echo "GPU ${gpu}: cfg_scale=${cfg_val}"
+      cfg_name="${cfg_val//./-}"
+      log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}-gpu${gpu}-cfg${cfg_name}"
+      CUDA_VISIBLE_DEVICES="${gpu}" \
+        python exps/cfg_exp.py --config=_default.yaml cfg_scale="${cfg_val}" "$@" \
+        >"${log_prefix}.out" 2>"${log_prefix}.err"
+    done
+  ) &
 done
 
 wait
