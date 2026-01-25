@@ -11,7 +11,7 @@ This script sweeps _w_interaction values and measures all available metrics:
 
 import json
 import os
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import datetime
 
 import numpy as np
@@ -73,8 +73,10 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
         u_print(f"Testing _w_interaction: {interaction_value}")
         u_print(f"{'=' * 60}")
 
-        # Create new config with updated interaction value
-        iter_cfg = replace(cfg, _w_interaction=interaction_value, disable_sys_args=True)
+        iter_dict = asdict(cfg)
+        iter_dict["_w_interaction"] = interaction_value
+        iter_dict["disable_sys_args"] = True
+        iter_cfg = Config(**iter_dict)
         sampler.update_config(iter_cfg)
 
         all_generations: list[list[str]] = []
