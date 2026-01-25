@@ -44,6 +44,11 @@ class AutoregressiveSampler(nn.Module):
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
+    def update_config(self, config: Config):
+        """Update model and selector config (for reusing model across sweep trials)."""
+        self.config = config
+        self.selector.config = config
+
     def _prepend_bos(self, tokens: torch.Tensor) -> torch.Tensor:
         """Prepend BOS token if not already present."""
         if tokens[0, 0] == self.tokenizer.bos_token_id:
