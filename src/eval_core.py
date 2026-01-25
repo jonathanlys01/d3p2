@@ -589,40 +589,81 @@ class Evaluator:
 
         return metrics
 
-    def evaluate_baseline(self, full_sequences: list[list[str]], metric: str, k: int) -> list[list[str]]:
+    def evaluate_baseline(  # noqa: C901
+        self,
+        full_sequences: list[list[str]],
+        metric: str,
+        k: int,
+        references: list[list[str]] | None = None,
+    ) -> list[list[str]]:
         """
         Evaluate and select the k best sequences across different groups based on a metric.
-        Initially implemented for PPL (lower is better).
-        Returns the subset that minimizes NLL (lower NLL = lower PPL).
+        Supported metrics:
+        - "ppl": Lower is better.
+        - "f1": Higher is better. Requires references.
         """
-        if metric.lower() != "ppl":
-            raise ValueError(f"Metric {metric} not implemented for evaluate_baseline. Only 'ppl' is supported.")
-
         flattened_texts = [text for sublist in full_sequences for text in sublist]
         group_sizes = [len(sublist) for sublist in full_sequences]
 
-        batch_size = self.batch_size or len(flattened_texts)
-        nlls = []
-        for start in range(0, len(flattened_texts), batch_size):
-            batch = flattened_texts[start : start + batch_size]
-            result = self.perplexity_model._forward(batch)
-            if result is not None:
-                nlls.extend(result)
-            else:
-                u_print("Skipping batch of empty texts", batch)
+        # Unflatten helper
+        def unflatten(flat_list):
+            unflattened = []
+            cursor = 0
+            for size in group_sizes:
+                unflattened.append(flat_list[cursor : cursor + size])
+                cursor += size
+            return unflattened
 
-        # Unflatten scores to match group structure
-        unflattened_nlls = []
-        cursor = 0
-        for size in group_sizes:
-            unflattened_nlls.append(nlls[cursor : cursor + size])
-            cursor += size
+        if metric.lower() == "ppl":
+            batch_size = self.batch_size or len(flattened_texts)
+            nlls = []
+            for start in range(0, len(flattened_texts), batch_size):
+                batch = flattened_texts[start : start + batch_size]
+                result = self.perplexity_model._forward(batch)
+                if result is not None:
+                    nlls.extend(result)
+                else:
+                    u_print("Skipping batch of empty texts", batch)
 
-        # Select k best (lowest NLL) from each group
+            unflattened_scores = unflatten(nlls)
+            reverse_sort = False  # Lower is better
+
+        elif metric.lower() == "f1":
+            if references is None:
+                raise ValueError("References must be provided for f1 metric.")
+
+            # references are [group1_refs, group2_refs, ...]
+            # full_sequences are [group1_cands, group2_cands, ...]
+            # We compute F1 for each candidate in group i against group i refs
+
+            unflattened_scores = []
+            for group_cands, group_refs in zip(full_sequences, references):
+                group_f1 = []
+                for cand in group_cands:
+                    # Max F1 against any reference for this question
+                    best_f1 = (
+                        max([self.string_metrics._compute_f1(cand, ref) for ref in group_refs]) if group_refs else 0.0
+                    )
+                    group_f1.append(best_f1)
+                unflattened_scores.append(group_f1)
+
+            reverse_sort = True  # Higher is better
+
+        else:
+            raise ValueError(
+                f"Metric {metric} not implemented for evaluate_baseline. Only 'ppl' and 'f1' are supported.",
+            )
+
+        # Select k best from each group
         selected_sequences = []
-        for group_texts, group_nlls in zip(full_sequences, unflattened_nlls):
-            indexed_nlls = sorted(enumerate(group_nlls), key=lambda x: x[1])
-            top_k_indices = [idx for idx, _ in indexed_nlls[:k]]
+        for group_texts, group_scores in zip(full_sequences, unflattened_scores):
+            # Sort by score
+            indexed_scores = sorted(enumerate(group_scores), key=lambda x: x[1], reverse=reverse_sort)
+            top_k_indices = [idx for idx, _ in indexed_scores[:k]]
+
+            # Preserve original order for selected items (optional, but cleaner)
+            top_k_indices.sort()
+
             selected_sequences.append([group_texts[idx] for idx in top_k_indices])
 
         return selected_sequences
