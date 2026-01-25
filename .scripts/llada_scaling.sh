@@ -74,6 +74,7 @@ for config_str in "${CONFIGS[@]}"; do
         n_groups=$baseline_n_groups \
         group_size=1 \
         subsample_k=$baseline_subsample_k \
+        method=baseline \
         "$@"
     set +ex
 
