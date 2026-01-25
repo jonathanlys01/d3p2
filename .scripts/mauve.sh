@@ -21,10 +21,10 @@ echo "========================================"
 MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
 
 set -ex
-torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=4 group_size=1 "$@"
+torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=4 group_size=1 "$@" 2>&1 | tee /tmp/baseline_output.log
 set +ex
 
-BASELINE_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
+BASELINE_OUTPUT=$(grep "OUTPUT_PATH:" /tmp/baseline_output.log | tail -1 | cut -d: -f2-)
 echo "Baseline output: $BASELINE_OUTPUT"
 
 echo ""
@@ -44,10 +44,10 @@ for w_int in "${INTERACTION_VALUES[@]}"; do
     MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
     
     set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml _w_interaction=$w_int n_runs=$N_RUNS n_groups=2 group_size=4 "$@"
+    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml _w_interaction=$w_int n_runs=$N_RUNS n_groups=2 group_size=4 "$@" 2>&1 | tee /tmp/interaction_output.log
     set +ex
     
-    OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
+    OUTPUT=$(grep "OUTPUT_PATH:" /tmp/interaction_output.log | tail -1 | cut -d: -f2-)
     INTERACTION_OUTPUTS+=("$OUTPUT")
     echo "Output for _w_interaction=$w_int: $OUTPUT"
 done

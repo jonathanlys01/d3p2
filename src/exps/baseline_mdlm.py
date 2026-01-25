@@ -76,8 +76,10 @@ def main():
     if model.distributed_utils is None or model.distributed_utils.rank == 0:  # save on master only (or non-distributed)
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
         os.makedirs(RESULTS_DIR, exist_ok=True)
-        with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
+        output_path = f"{RESULTS_DIR}/exp-{name}.json"
+        with open(output_path, "w") as f:
             json.dump(samples, f, indent=4)
+        print(f"OUTPUT_PATH:{output_path}")
 
     for file in os.listdir(RESULTS_DIR):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
