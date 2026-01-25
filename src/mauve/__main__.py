@@ -65,12 +65,18 @@ def load_reference_texts(
 def load_samples_from_json(json_path: str) -> list[str]:
     """
     Load generated samples from a JSON file (MDLM experiment format).
-    Expected structure: {"text_samples": [[str, ...], ...], ...}
+    Expected structure: {"text_samples": [[str, ...], ...], "config": {...}, ...}
+
+    When group_size > 1, the text_samples contain duplicated groups where each group
+    of `group_size` samples are variants from the same base sequence. This function
+    deduplicates by keeping only the first sample from each group.
     """
     with open(json_path, "r") as f:
         data = json.load(f)
 
     text_samples = data.get("text_samples", [])
+    config = data.get("config", {})
+    group_size = config.get("group_size", 1)
 
     # Flatten nested lists - text_samples is typically a list of lists
     flattened = []
@@ -82,7 +88,25 @@ def load_samples_from_json(json_path: str) -> list[str]:
         elif isinstance(item, str) and item.strip():
             flattened.append(item.strip())
 
-    print(f"Loaded {len(flattened)} samples from {json_path}")
+    original_count = len(flattened)
+
+    # Deduplicate if group_size > 1 AND model is MDLM
+    # In MDLM, samples are organized as [g0_s0, g0_s1, ..., g0_s(gs-1), g1_s0, g1_s1, ...] per batch
+    # where each group of group_size samples are variants from the same initial sequence.
+    # In LLaDA, samples are generated independently (expansion happens mid-generation, not at output).
+    model_type = config.get("model", "mdlm")
+    if group_size > 1 and model_type == "mdlm" and flattened:
+        deduplicated = []
+        for i, text in enumerate(flattened):
+            if i % group_size == 0:
+                deduplicated.append(text)
+        flattened = deduplicated
+        print(
+            f"Loaded {original_count} samples from {json_path}, deduplicated to {len(flattened)} (group_size={group_size}, model={model_type})"
+        )
+    else:
+        print(f"Loaded {len(flattened)} samples from {json_path}")
+
     return flattened
 
 
@@ -153,7 +177,7 @@ def main():
         models=(model, tokenizer),
         device_id=device_id,
         batch_size=args.batch_size,
-        verbose=True,
+        verbose=False,
     )
 
     print("\n" + "=" * 50)

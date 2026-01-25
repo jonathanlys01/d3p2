@@ -186,13 +186,13 @@ class LLADASampler(nn.Module):
                     un_x[prompt_index] = self.mask_index
                     x_ = torch.cat([x, un_x], dim=0)
 
-                    logits, out_all = self._forward_model(x_)
+                    logits_all, out_all = self._forward_model(x_)
                     embeddings_all = out_all[-1]
 
-                    logits, un_logits = torch.chunk(logits, 2, dim=0)
-                    embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)
+                    cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
+                    embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)  # cond logits
 
-                    logits = un_logits + self.config.cfg_scale * (logits - un_logits)
+                    logits = uncond_logits + self.config.cfg_scale * (cond_logits - uncond_logits)
                 else:
                     logits, out = self._forward_model(x)
                     embeddings = out[-1]
