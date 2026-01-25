@@ -27,5 +27,5 @@ CUDA_VISIBLE_DEVICES=$gpu_id python exps/interaction_exp.py \
     model=llada \
     n_groups=4 \
     group_size=2 \
-    method=dpp \
+    method=greedy_map \
     _w_interaction=$INT_VAL
