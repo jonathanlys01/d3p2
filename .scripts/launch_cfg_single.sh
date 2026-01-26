@@ -11,15 +11,15 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 
 # Configuration
 N_RUNS=${1:-10}
-echo "Running $N_RUNS runs with $CFG_VALUES cfg values"
 shift # ignore the first argument
+
+echo "Running $N_RUNS runs with $CFG_VALUES cfg values"
 
 LOG_DIR="slurm-logs"
 JOB_NAME="cfg_exp"
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
 
 mkdir -p "$LOG_DIR"
-
 
 for cfg_val in "${CFG_VALUES[@]}"; do
     cfg_name="${cfg_val//./-}"
