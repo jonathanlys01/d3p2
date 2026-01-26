@@ -46,7 +46,8 @@ for config_str in "${CONFIGS[@]}"; do
         n_runs=$N_RUNS \
         n_groups=$n_groups \
         group_size=$group_size \
-        "$@"
+        method=greedy_map \
+        _w_interaction=2.5
     set +ex
     
     OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
@@ -56,31 +57,31 @@ for config_str in "${CONFIGS[@]}"; do
     # 2. Matching Baseline Run
     # Baseline generates same total candidates (n_groups * group_size)
     # And selects same number of outputs (n_groups) via subsample_k
-    baseline_n_groups=$((n_groups * group_size))
-    baseline_subsample_k=$n_groups
+    # TODO: uncomment when baseline is required
+    # baseline_n_groups=$((n_groups * group_size))
+    # baseline_subsample_k=$n_groups
     
-    echo ""
-    echo "----------------------------------------"
-    echo "Running Baseline for ($n_groups, $group_size): gen=$baseline_n_groups, k=$baseline_subsample_k"
-    echo "----------------------------------------"
+    # echo ""
+    # echo "----------------------------------------"
+    # echo "Running Baseline for ($n_groups, $group_size): gen=$baseline_n_groups, k=$baseline_subsample_k"
+    # echo "----------------------------------------"
     
-    MASTER_PORT_BASE=$((MASTER_PORT + 1))
+    # MASTER_PORT_BASE=$((MASTER_PORT + 1))
     
-    set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT_BASE exps/baseline_llada.py \
-        --config=_default.yaml \
-        model=llada \
-        n_runs=$N_RUNS \
-        n_groups=$baseline_n_groups \
-        group_size=1 \
-        subsample_k=$baseline_subsample_k \
-        method=baseline \
-        "$@"
-    set +ex
+    # set -ex
+    # torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT_BASE exps/baseline_llada.py \
+    #     --config=_default.yaml \
+    #     model=llada \
+    #     n_runs=$N_RUNS \
+    #     n_groups=$baseline_n_groups \
+    #     group_size=1 \
+    #     subsample_k=$baseline_subsample_k \
+    #     method=baseline
+    # set +ex
 
-    OUTPUT_BASE=$(ls -t $ROOT/results/exp-*.json | head -n 1)
-    CONFIG_OUTPUTS+=("Baseline ($n_groups, $group_size): $OUTPUT_BASE")
-    echo "Baseline Output: $OUTPUT_BASE"
+    # OUTPUT_BASE=$(ls -t $ROOT/results/exp-*.json | head -n 1)
+    # CONFIG_OUTPUTS+=("Baseline ($n_groups, $group_size): $OUTPUT_BASE")
+    # echo "Baseline Output: $OUTPUT_BASE"
 done
 
 echo ""
@@ -91,3 +92,6 @@ for output in "${CONFIG_OUTPUTS[@]}"; do
     echo "$output"
 done
 echo "========================================"
+
+
+scancel $SLURM_JOB_ID
