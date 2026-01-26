@@ -19,6 +19,9 @@ LOG_DIR="slurm-logs"
 JOB_NAME="cfg_exp"
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
 
+#debug
+export CUDA_LAUNCH_BLOCKING=1
+
 mkdir -p "$LOG_DIR"
 
 for cfg_val in "${CFG_VALUES[@]}"; do
