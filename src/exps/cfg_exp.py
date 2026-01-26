@@ -15,6 +15,7 @@ import os
 from dataclasses import asdict
 from datetime import datetime
 
+import idr_torch
 import numpy as np
 import torch
 
@@ -39,7 +40,11 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
 
-    # Initialize evaluator for all metrics
+    # Create sampler first to initialize DistributedUtils (and thus the process group/device)
+    sampler = LLADASampler(cfg)
+    sampler.model = compile_model(sampler.model, cfg, dynamic=True)
+
+    # Initialize evaluator for all metrics (now safe to load extra models on the correct device)
     evaluator = Evaluator(
         batch_size=cfg.eval_batch_size,
         ppl_model_id=cfg.ppl_model_id,
@@ -59,10 +64,6 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         "metrics_by_cfg": {},
         "samples_by_cfg": {},
     }
-
-    # Create sampler once and reuse across all CFG values
-    sampler = LLADASampler(cfg)
-    sampler.model = compile_model(sampler.model, cfg, dynamic=True)
 
     for idx, cfg_value in enumerate(cfg_values):
         u_print(f"\n{'=' * 60}")
@@ -114,42 +115,49 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
             wd_good_scores.append(wd_good)
             wd_bad_scores.append(wd_bad)
 
-        # Compute all metrics for this CFG value
-        metrics = evaluator.evaluate(all_generations, references=all_good_refs)
+        # Only Rank 0 computes and prints metrics
+        if idr_torch.rank == 0:
+            # Compute all metrics for this CFG value
+            metrics = evaluator.evaluate(all_generations, references=all_good_refs)
 
-        # Add string metrics (like cos_at_k)
-        string_metrics = evaluator.compute_string_metrics(all_generations, all_good_refs)
-        metrics.update(string_metrics)
+            # Add string metrics (like cos_at_k)
+            string_metrics = evaluator.compute_string_metrics(all_generations, all_good_refs)
+            metrics.update(string_metrics)
 
-        # Wasserstein Distance metrics
-        metrics.update(
-            {
-                "avg_wd_good": sum(wd_good_scores) / len(wd_good_scores),
-                "avg_wd_bad": sum(wd_bad_scores) / len(wd_bad_scores),
-            },
-        )
-
-        # Extract core metrics (filter out CI and summary stats for display)
-        core_metrics = {
-            k: v
-            for k, v in metrics.items()
-            if not any(
-                suffix in k for suffix in ["_ci95", "_std", "_lower", "_upper", "_median", "_min", "_max", "_summary"]
+            # Wasserstein Distance metrics
+            metrics.update(
+                {
+                    "avg_wd_good": sum(wd_good_scores) / len(wd_good_scores),
+                    "avg_wd_bad": sum(wd_bad_scores) / len(wd_bad_scores),
+                },
             )
-            and k != "metrics_summary"
-        }
 
-        print(f"\nResults for CFG={cfg_value}:")
-        for k, v in core_metrics.items():
-            if isinstance(v, float):
-                print(f"  {k:25}: {v:.4f}")
-            else:
-                print(f"  {k:25}: {v}")
-        if "metrics_summary" in metrics:
-            print(f"  Summary: {metrics['metrics_summary']}")
+            # Extract core metrics (filter out CI and summary stats for display)
+            core_metrics = {
+                k: v
+                for k, v in metrics.items()
+                if not any(
+                    suffix in k
+                    for suffix in ["_ci95", "_std", "_lower", "_upper", "_median", "_min", "_max", "_summary"]
+                )
+                and k != "metrics_summary"
+            }
 
-        all_results["metrics_by_cfg"][str(cfg_value)] = metrics
-        all_results["samples_by_cfg"][str(cfg_value)] = all_generations
+            u_print(f"\nResults for CFG={cfg_value}:")
+            for k, v in core_metrics.items():
+                if isinstance(v, float):
+                    u_print(f"  {k:25}: {v:.4f}")
+                else:
+                    u_print(f"  {k:25}: {v}")
+            if "metrics_summary" in metrics:
+                u_print(f"  Summary: {metrics['metrics_summary']}")
+
+            all_results["metrics_by_cfg"][str(cfg_value)] = metrics
+            all_results["samples_by_cfg"][str(cfg_value)] = all_generations
+
+    # Synchronize all ranks before cleanup
+    if sampler.distributed_utils:
+        torch.distributed.barrier()
 
     # Cleanup after all iterations
     if sampler.distributed_utils:
@@ -157,8 +165,8 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     del sampler
     torch.cuda.empty_cache()
 
-    # Summary table
-    if len(cfg_values) > 1:
+    # Summary table (Rank 0 only)
+    if idr_torch.rank == 0 and len(cfg_values) > 1:
         u_print(f"\n{'=' * 105}")
         u_print("SUMMARY: CFG vs All Metrics")
         u_print(f"{'=' * 105}")
@@ -184,24 +192,25 @@ def main():
     cfg = Config()
     results = run_cfg_experiment(cfg)
 
-    # Save results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cfg_suffix = f"_cfg{cfg.cfg_scale:.2f}" if cfg.cfg_scale != 0.0 else "_sweep"
-    save_path = f"{RESULTS_DIR}/cfg_exp_{timestamp}{cfg_suffix}.json"
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Save results (Rank 0 only)
+    if idr_torch.rank == 0:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cfg_suffix = f"_cfg{cfg.cfg_scale:.2f}" if cfg.cfg_scale != 0.0 else "_sweep"
+        save_path = f"{RESULTS_DIR}/cfg_exp_{timestamp}{cfg_suffix}.json"
+        os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    with open(save_path, "w") as f:
-        json.dump(
-            {
-                "config": asdict(cfg),
-                "results": results["metrics_by_cfg"],
-                "cfg_values": results["cfg_values"],
-                "text_samples": results["samples_by_cfg"],
-            },
-            f,
-            indent=4,
-        )
-    u_print(f"\nResults saved to {save_path}")
+        with open(save_path, "w") as f:
+            json.dump(
+                {
+                    "config": asdict(cfg),
+                    "results": results["metrics_by_cfg"],
+                    "cfg_values": results["cfg_values"],
+                    "text_samples": results["samples_by_cfg"],
+                },
+                f,
+                indent=4,
+            )
+        u_print(f"\nResults saved to {save_path}")
 
 
 if __name__ == "__main__":
