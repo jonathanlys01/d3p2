@@ -76,10 +76,16 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         sampler.update_config(iter_cfg)
 
         all_generations: list[list[str]] = []
+        all_good_refs: list[list[str]] = []
+        all_bad_refs: list[list[str]] = []
+        wd_good_scores: list[float] = []
+        wd_bad_scores: list[float] = []
 
         # Sampling loop
         for i, row in enumerate(dataset.itertuples()):
             prompt: str = row.question  # type: ignore
+            correct_answers: list[str] = row.correct_answers  # type: ignore
+            incorrect_answers: list[str] = row.incorrect_answers  # type: ignore
 
             u_print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...", verbose=True)
 
@@ -96,9 +102,32 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
                 batch_gen.append(gen_text)
 
             all_generations.append(batch_gen)
+            all_good_refs.append(correct_answers)
+            all_bad_refs.append(incorrect_answers)
+
+            # Wasserstein Distance for this sample
+            wd_good, wd_bad = evaluator.compute_wasserstein_distance(
+                batch_gen,
+                correct_answers,
+                incorrect_answers,
+            )
+            wd_good_scores.append(wd_good)
+            wd_bad_scores.append(wd_bad)
 
         # Compute all metrics for this CFG value
-        metrics = evaluator.evaluate(all_generations)
+        metrics = evaluator.evaluate(all_generations, references=all_good_refs)
+
+        # Add string metrics (like cos_at_k)
+        string_metrics = evaluator.compute_string_metrics(all_generations, all_good_refs)
+        metrics.update(string_metrics)
+
+        # Wasserstein Distance metrics
+        metrics.update(
+            {
+                "avg_wd_good": sum(wd_good_scores) / len(wd_good_scores),
+                "avg_wd_bad": sum(wd_bad_scores) / len(wd_bad_scores),
+            },
+        )
 
         # Extract core metrics (filter out CI and summary stats for display)
         core_metrics = {
@@ -130,20 +159,23 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
 
     # Summary table
     if len(cfg_values) > 1:
-        u_print(f"\n{'=' * 80}")
+        u_print(f"\n{'=' * 105}")
         u_print("SUMMARY: CFG vs All Metrics")
-        u_print(f"{'=' * 80}")
-        u_print(f"{'CFG':>8} | {'PPL':>10} | {'Cos-Sim':>10} | {'Dist-2':>10} | {'S-BLEU':>10}")
-        u_print("-" * 80)
+        u_print(f"{'=' * 105}")
+        u_print(
+            f"{'CFG':>8} | {'PPL':>10} | {'F1':>10} | {'BLEU':>10} | {'Cos-Sim':>10} | {'Dist-2':>10} | {'S-BLEU':>10}",
+        )
+        u_print("-" * 105)
 
         for cfg_val in cfg_values:
             m = all_results["metrics_by_cfg"][str(cfg_val)]
             u_print(
-                f"{cfg_val:>8.2f} | {m.get('perplexity', 0):>10.2f} | {m.get('cosine_similarity', 0):>10.4f} |"
+                f"{cfg_val:>8.2f} | {m.get('perplexity', 0):>10.2f} | {m.get('f1', 0):>10.4f} |"
+                f" {m.get('bleu', 0):>10.2f} | {m.get('cosine_similarity', 0):>10.4f} |"
                 f" {m.get('distinct_2', 0):>10.4f} | {m.get('self_bleu', 0):>10.4f}",
             )
 
-        u_print("-" * 80)
+        u_print("-" * 105)
 
     return all_results
 
