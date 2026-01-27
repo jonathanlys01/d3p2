@@ -19,9 +19,9 @@ CONFIGS=(
     "8 4"
     "4 8"
     "8 8"
-    "15 8"
-    "8 15"
-    "10 10"
+    # "15 8"
+    # "8 15"
+    # "10 10"
 )
 
 # Array to store output paths
@@ -50,6 +50,7 @@ for config_str in "${CONFIGS[@]}"; do
         n_groups=$n_groups \
         group_size=$group_size \
         method=greedy_map \
+        guidance_end=64 \
         _w_interaction=10
     set +ex
     
