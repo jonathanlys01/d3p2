@@ -29,7 +29,7 @@ for gpu_idx in "${!GPUS[@]}"; do
       cfg_name="${cfg_val//./-}"
       log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}-gpu${gpu}-cfg${cfg_name}"
       CUDA_VISIBLE_DEVICES="${gpu}" \
-        python exps/cfg_exp.py --config=_default.yaml cfg_scale="${cfg_val}" "$@" \
+        python exps/cfg_exp.py --config=_default.yaml model=llada cfg_scale="${cfg_val}" "$@" \
         >"${log_prefix}.out" 2>"${log_prefix}.err"
     done
   ) &
