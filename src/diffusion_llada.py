@@ -21,6 +21,9 @@ from subsample import get_subsample_selector
 from utils import get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
+MASK_TOKEN_ID = 126336
+
+
 class LLADASampler(nn.Module):
     """Discrete Diffusion Model base class. (LLaDA version)"""
 
@@ -121,12 +124,19 @@ class LLADASampler(nn.Module):
             x0 = sample_categorical(probs, expand=expand)
         return x0
 
-    def _get_confidence(self, logits: torch.Tensor, x0: torch.Tensor, num_block: int, prompt_len: int) -> torch.Tensor:
+    def _get_confidence(
+        self,
+        logits: torch.Tensor,
+        x0: torch.Tensor,
+        num_block: int,
+        prompt_len: int,
+        is_log_probs: bool = False,
+    ) -> torch.Tensor:
         if self.config.confidence_eos_eot_inf:
             logits[:, :, 126348] = -torch.inf
 
         if self.config.remasking == "low_confidence":
-            p = F.softmax(logits, dim=-1)
+            p = torch.exp(logits) if is_log_probs else F.softmax(logits, dim=-1)
             x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
         elif self.config.remasking == "random":
             x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
@@ -200,8 +210,10 @@ class LLADASampler(nn.Module):
                 if self.config.logits_eos_inf:
                     logits[:, :, 126081] = -torch.inf
 
+                log_p_x0 = F.log_softmax(logits, dim=-1)
+
                 cache = Cache(
-                    log_p_x0=logits[:, start:end],
+                    log_p_x0=log_p_x0[:, start:end],
                     embeddings=embeddings[:, start:end],
                     x=x[:, start:end],
                 )
@@ -209,8 +221,11 @@ class LLADASampler(nn.Module):
 
                 assert slice_idx is not None
 
-                x0 = self._block_sample(torch.index_select(logits, 0, slice_idx), subsample_step)
-                x0_p = self._get_confidence(logits, x0, num_block, prompt_len)
+                # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
+                x0 = self._block_sample(torch.index_select(log_p_x0, 0, slice_idx), subsample_step)
+
+                # Pass log_probs to _get_confidence
+                x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
 
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(mask_index, x0_p, -torch.inf)

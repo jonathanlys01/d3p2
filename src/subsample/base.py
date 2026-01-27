@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from config import Cache, Config
+from diffusion_llada import MASK_TOKEN_ID
 from utils import DistributedUtils
 
 
@@ -107,7 +108,7 @@ class BaseSelector(nn.Module):
         """Compute scores based on entropy or self-certainty of predicted distribution."""
         assert cache.log_p_x0 is not None
 
-        scores = _compute_scores(cache, self.config._score_method)
+        scores = _compute_scores(cache, self.config._score_method, model=self.config.model)
 
         if self.distributed_utils:
             scores = self.distributed_utils.all_gather_scores(scores)
@@ -126,13 +127,14 @@ class BaseSelector(nn.Module):
 # General subsample utils
 
 
-def _compute_scores(cache: Cache, score_method: str = "entropy") -> torch.Tensor:
+def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | None = None) -> torch.Tensor:
     """Compute scores based on entropy or self-certainty of predicted distribution.
 
     Args:
         cache: Cache containing log_p_x0 predictions [B, L, V]
         score_method: "entropy" (1 - normalized entropy) or
                       "self-certainty" (negative CE between prediction and uniform)
+        model: Model name to mask already decoded llada tokens
 
     Returns:
         Normalized scores in [0, 1] where higher = better quality
@@ -140,6 +142,21 @@ def _compute_scores(cache: Cache, score_method: str = "entropy") -> torch.Tensor
     assert cache.log_p_x0 is not None
 
     logZ = cache.log_p_x0.float()  # [B, L, V]
+
+    if model == "llada":
+        assert cache.x is not None
+        is_unmasked = cache.x != MASK_TOKEN_ID  # [B, L]
+
+        logZ = logZ.clone()
+        mask_expanded = is_unmasked.unsqueeze(-1).expand_as(logZ)  # [B, L, V]
+        inf = 1e9
+        logZ = logZ.masked_fill(mask_expanded, -inf)
+        x_indices = cache.x.unsqueeze(-1)
+        perfect_logits = torch.full_like(logZ, -inf)
+        perfect_logits.scatter_(2, x_indices, 0.0)
+        # resulting logits has 0 for the correct token and -inf elsewhere
+        logZ = torch.where(mask_expanded, perfect_logits, logZ)
+
     p = torch.exp(logZ)  # [B, L, V]
 
     if score_method == "self-certainty":
