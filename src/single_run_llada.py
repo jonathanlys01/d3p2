@@ -50,7 +50,13 @@ def main():
     for i in range(min(config.n_runs, len(prompts))):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
         samples = model.sample(prompt=prompts[i])
-        texts_ = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
+        texts_ = []
+        for sample in samples:
+            prompt_tokens = model._preprocess_prompt(prompts[i])
+            prompt_len = prompt_tokens.shape[1]
+            completion_tokens = sample[prompt_len:]
+            gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
+            texts_.append(gen_text)
         texts.append(texts_)
         save(texts, config, unique_id, rank=offset)
 

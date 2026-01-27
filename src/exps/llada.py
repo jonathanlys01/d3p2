@@ -17,6 +17,7 @@ def main():  # noqa: PLR0915
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
 
+    # 1. Setup
     sampler = LLADASampler(cfg)
     sampler.model = compile_model(sampler.model, cfg, dynamic=True)
     evaluator = Evaluator(

@@ -28,12 +28,8 @@ def save(text, config, uid, rank=0):
         json.dump(samples, f, indent=4)
 
 
-def main():
+def main():  # noqa: C901, PLR0915
     config = Config()
-
-    # Ensure method is baseline if we want to follow MDLM pattern, or just enforce transversal
-    # LLaDA doesn't really have a "method" arg in the same way MDLMSampler uses it (it's in config)
-    # But usually baseline runs with default transversal sampling (independent)
 
     model = LLADASampler(config)
     model.model = compile_model(model.model, config)
@@ -60,34 +56,23 @@ def main():
 
     for i in range(min(config.n_runs, len(prompts))):
         print(f"Sampling batch {i + 1}/{config.n_runs}...")
-
-        # Sampling returns [batch_size, seq_len] tensor
-        # batch_size should be the expanded pool (e.g. 32 if 4 groups * 8 size)
         samples = model.sample(prompt=prompts[i])
-        decoded = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
+        # Decode with prompt stripping
+        decoded = []
+        for sample in samples:
+            prompt_tokens = model._preprocess_prompt(prompts[i])
+            prompt_len = prompt_tokens.shape[1]
+            completion_tokens = sample[prompt_len:]
+            gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
+            decoded.append(gen_text)
 
-        # Baseline-specific: select k best sequences from this pool (if subsample_k > 0)
-        # Note: decoded contains ALL sequences from ALL ranks if distributed (because model.sample gathers)
         k = config.subsample_k
         if model.distributed_utils:
-            # Scale k by world_size to maintain per-GPU output count parity
-            # if subsample_k is defined as "sequences to keep PER GPU"
             k *= model.distributed_utils.world_size
 
-        # In LLaDA single run, we generate for ONE prompt at a time (batch contains multiple candidates for SAME prompt)
-        # So evaluate_baseline expects list[list[str]] (groups).
-        # Here we have 1 group (the current prompt) with many candidates.
-        # But evaluate_baseline takes [ [cand1, cand2], [cand3, cand4] ]
-        # where inner list is candidates for ONE question.
-        # So we wrap [decoded] as one group.
-
-        # Also need references for this specific prompt
-        # current_refs is a list of strings (answers)
-        # evaluate_baseline expects references as list[list[str]] where each inner list serves a group
         current_refs = [references[i]]
 
         if k > 0 and k < len(decoded):
-            print(f"Selecting {k} best sequences from {len(decoded)} candidates (metric: f1)...")
             selected_groups = evaluator.evaluate_baseline(
                 [decoded],
                 metric="f1",
