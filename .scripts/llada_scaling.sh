@@ -19,6 +19,9 @@ CONFIGS=(
     "8 4"
     "4 8"
     "8 8"
+    "15 8"
+    "8 15"
+    "10 10"
 )
 
 # Array to store output paths
