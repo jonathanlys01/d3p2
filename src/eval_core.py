@@ -700,12 +700,19 @@ def main():
         required=True,
         help="Path to the folder containing text samples.",
     )
+    parser.add_argument("--ppl_model_id", type=str, default="gpt2", help="Model ID for perplexity calculation.")
+    parser.add_argument(
+        "--cos_model_id",
+        type=str,
+        default="jinaai/jina-embeddings-v2-base-en",
+        help="Model ID for cosine similarity calculation.",
+    )
     parser.add_argument("--batch_size", "-b", type=int, default=0, help="Batch size for evaluation.")
     parser.add_argument("--force", action="store_true", help="Force re-evaluation even if metrics exist.")
     args = parser.parse_args()
 
     files = [f for f in os.listdir(args.folder_path) if f.endswith(".json") and not f.startswith("temp")]
-    evaluator = Evaluator(args.batch_size, args.force)
+    evaluator = Evaluator(args.batch_size, args.force, args.ppl_model_id, args.cos_model_id)
     pbar = tqdm(files, desc="Evaluating files")
 
     for file_name in pbar:
