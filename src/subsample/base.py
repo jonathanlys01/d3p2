@@ -146,7 +146,7 @@ def _compute_scores(cache: Cache, score_method: str = "entropy") -> torch.Tensor
         # Self-certainty: CE(uniform, p) = -sum(uniform * log(p)) = -mean(log(p))
         # Higher log-prob under uniform sampling = more certain predictions
         uniform_ce = -logZ.mean(dim=-1)  # [B, L] CE with uniform reference
-        scores = -uniform_ce.mean(dim=-1)  # [B] higher = more certain = better
+        scores = uniform_ce.mean(dim=-1)  # [B] higher = more certain = better
     else:  # entropy (default)
         H = -torch.sum(p * logZ, dim=-1)  # [B, L] entropy per position
         scores = -H.mean(dim=-1)  # [B] negative entropy (higher = more certain = better)
