@@ -32,7 +32,7 @@ def main():  # noqa: C901, PLR0915
     config = Config()
 
     model = LLADASampler(config)
-    model.model = compile_model(model.model, config)
+    model.model = compile_model(model.model, config, dynamic=True)
 
     offset = 0
     if model.distributed_utils:
