@@ -235,21 +235,30 @@ def main():  # noqa: PLR0915
             config.llada_model_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
+            cache_dir=config.cache_dir,
         )
         .to(device)
         .eval()
     )
-    llada_tokenizer = AutoTokenizer.from_pretrained(config.llada_model_path, trust_remote_code=True)
+    llada_tokenizer = AutoTokenizer.from_pretrained(
+        config.llada_model_path,
+        trust_remote_code=True,
+        cache_dir=config.cache_dir,
+    )
     mask_id = 126336  # Standard MASK ID for LLaDA
 
     # 2. Load AR Reference (Llama-3)
     print(f"Loading AR Reference from {config.ar_model_path}...")
-    ar_model = AutoModelForCausalLM.from_pretrained(
-        config.ar_model_path,
-        torch_dtype=torch.bfloat16,
-        device_map=device,
-    ).eval()
-    ar_tokenizer = AutoTokenizer.from_pretrained(config.ar_model_path)
+    ar_model = (
+        AutoModelForCausalLM.from_pretrained(
+            config.ar_model_path,
+            cache_dir=config.cache_dir,
+            torch_dtype=torch.bfloat16,
+        )
+        .to(device)
+        .eval()
+    )
+    ar_tokenizer = AutoTokenizer.from_pretrained(config.ar_model_path, cache_dir=config.cache_dir)
 
     # 3. Load QA Dataset
     print(f"Loading QA Dataset: {config.qa_dataset}...")
