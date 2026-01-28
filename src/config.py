@@ -105,6 +105,7 @@ class Config:
 
     qa_dataset: str = "truthful_qa"  # "truthful_qa" or "commonsense_qa"
     qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
+    qa_n_shots: int = 0  # number of few-shot examples for QA
     truthful_qa_path: str = "truthfulqa/truthful_qa"
     commonsense_qa_path: str = "tau/commonsense_qa"
 
