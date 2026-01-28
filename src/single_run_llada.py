@@ -57,6 +57,10 @@ def main():
             completion_tokens = sample[prompt_len:]
             gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
             texts_.append(gen_text)
+
+        # Deduplicate to handle potential duplicates from group expansion
+        if config.group_size > 1 and len(texts_) != config.n_groups:
+            texts_ = texts_[:: config.group_size]
         texts.append(texts_)
         save(texts, config, unique_id, rank=offset)
 

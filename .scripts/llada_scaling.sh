@@ -50,9 +50,10 @@ for config_str in "${CONFIGS[@]}"; do
         n_groups=$n_groups \
         group_size=$group_size \
         method=greedy_map \
-        guidance_end=64 \
-        subsample_start=96 \
-        _w_interaction=5.0
+        _w_interaction=2.5
+        # guidance_end=64 \
+        # subsample_start=96 \
+        # _w_interaction=5.0
     set +ex
     
     OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
