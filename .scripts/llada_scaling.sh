@@ -98,4 +98,4 @@ done
 echo "========================================"
 
 
-# scancel $SLURM_JOB_ID
+scancel $SLURM_JOB_ID
