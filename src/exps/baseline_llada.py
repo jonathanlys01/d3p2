@@ -47,6 +47,8 @@ def main():  # noqa: C901, PLR0915
     # Initialize evaluator for selection
     evaluator = Evaluator(
         batch_size=config.eval_batch_size,
+        ppl_model_id=config.ppl_model_id,
+        cos_model_id=config.cos_model_id,
     )
 
     dataset = get_qa_dataset(config)
