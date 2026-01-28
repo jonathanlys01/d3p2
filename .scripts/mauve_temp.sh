@@ -15,6 +15,8 @@ PATHS=(
     "/Brain/private/j21lys/d3p2/src/results/exp-20260128_050144_de301bdc-a761-43ab-bbee-d68a49dc6f9c.json"
 )
 
+REFERENCE_BIN="/Brain/private/j21lys/nanoGPT-but-looped/src/data/fineweb-edu/val.bin"
+
 LOG_DIR="$ROOT/../slurm-logs"
 JOB_NAME="mauve_temp"
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
