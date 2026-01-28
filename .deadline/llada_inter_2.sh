@@ -11,7 +11,7 @@ N_RUNS=${1:-10}
 shift
 
 # Interaction values to sweep
-INTERACTIONS=($(python -c "import numpy as np; print(*(np.logspace(0, 2, 10)))"))
+INTERACTIONS=($(uv run --no-sync python -c "import numpy as np; print(*(np.logspace(0, 2, 10)[::2]))"))
 
 # Array to store output paths
 declare -a CONFIG_OUTPUTS
