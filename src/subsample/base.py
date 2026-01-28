@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch import nn
 
 from config import Cache, Config
-from diffusion_llada import MASK_TOKEN_ID
 from utils import DistributedUtils
 
 
@@ -127,7 +126,7 @@ class BaseSelector(nn.Module):
 # General subsample utils
 
 
-def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | None = None) -> torch.Tensor:
+def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | None = None) -> torch.Tensor:  # noqa: ARG001
     """Compute scores based on entropy or self-certainty of predicted distribution.
 
     Args:
@@ -143,19 +142,19 @@ def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | No
 
     logZ = cache.log_p_x0.float()  # [B, L, V]
 
-    if model == "llada":
-        assert cache.x is not None
-        is_unmasked = cache.x != MASK_TOKEN_ID  # [B, L]
+    # if model == "llada":
+    #     assert cache.x is not None
+    #     is_unmasked = cache.x != MASK_TOKEN_ID  # [B, L]
 
-        logZ = logZ.clone()
-        mask_expanded = is_unmasked.unsqueeze(-1).expand_as(logZ)  # [B, L, V]
-        inf = 1e9
-        logZ = logZ.masked_fill(mask_expanded, -inf)
-        x_indices = cache.x.unsqueeze(-1)
-        perfect_logits = torch.full_like(logZ, -inf)
-        perfect_logits.scatter_(2, x_indices, 0.0)
-        # resulting logits has 0 for the correct token and -inf elsewhere
-        logZ = torch.where(mask_expanded, perfect_logits, logZ)
+    #     logZ = logZ.clone()
+    #     mask_expanded = is_unmasked.unsqueeze(-1).expand_as(logZ)  # [B, L, V]
+    #     inf = 1e9
+    #     logZ = logZ.masked_fill(mask_expanded, -inf)
+    #     x_indices = cache.x.unsqueeze(-1)
+    #     perfect_logits = torch.full_like(logZ, -inf)
+    #     perfect_logits.scatter_(2, x_indices, 0.0)
+    #     # resulting logits has 0 for the correct token and -inf elsewhere
+    #     logZ = torch.where(mask_expanded, perfect_logits, logZ)
 
     p = torch.exp(logZ)  # [B, L, V]
 
