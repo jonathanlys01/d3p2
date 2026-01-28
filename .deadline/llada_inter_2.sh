@@ -35,7 +35,7 @@ for w_inter in "${INTERACTIONS[@]}"; do
         model=llada \
         n_runs=$N_RUNS \
         _w_interaction=$w_inter \
-        "$@"
+        method=greedy_map
     set +ex
     
     OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
