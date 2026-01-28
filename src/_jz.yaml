@@ -20,12 +20,17 @@ initial_mask_ratio: 1.0
 single_init: true
 
 
+# Datasets
+truthful_qa_path: ${oc.env:WORK}/datasets/truthfulqa/truthful_qa
+commonsense_qa_path: ${oc.env:WORK}/datasets/tau/commonsense_qa
+
+
 # JZ-specific experiment settings (differ from defaults)
 seed: 42
 n_groups: 2
-group_size: 8
+group_size: 2
 
-cfg_scale: 0.5
+cfg_scale: 2.5
 block_length: 128
 
 _kernel_type: cosine

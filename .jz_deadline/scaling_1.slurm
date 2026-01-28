@@ -1,7 +1,32 @@
 #!/bin/bash
 
-ROOT=$(pwd)/src
+#SBATCH --account=sxq@h100
+#SBATCH --constraint=h100
 
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=8
+#SBATCH --hint=nomultithread
+
+#SBATCH --job-name=scaling_1
+#SBATCH --output=slurm-logs/%j-%x.out
+#SBATCH --error=slurm-logs/%j-%x.err
+#SBATCH --time=10:00:00
+#SBATCH --qos=qos_gpu_h100-t3
+
+
+mkdir -p slurm-logs
+echo "Job started at $(date)"
+
+# Load the modules
+module purge
+module load arch/h100
+
+cd $WORK/projects/d3p2
+source .venv/bin/activate
+
+ROOT=$(pwd)/src
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 export OMP_NUM_THREADS=1
@@ -12,17 +37,17 @@ shift
 
 # Scaling parameters (n_groups group_size)
 CONFIGS=(
+    "1 2"
     "2 2"
-    "4 2"
+    "1 4"
     "2 4"
-    "4 4"
 )
 
 # Array to store output paths
 declare -a CONFIG_OUTPUTS
 
 echo "========================================"
-echo "Starting LLaDA Scaling Study ($N_RUNS runs per config)"
+echo "Starting LLaDA Scaling Study ($N_RUNS runs per config) on JZ Hopper"
 echo "========================================"
 
 for config_str in "${CONFIGS[@]}"; do
@@ -33,21 +58,16 @@ for config_str in "${CONFIGS[@]}"; do
     echo "Running config: n_groups=$n_groups, group_size=$group_size"
     echo "----------------------------------------"
     
-    MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-    
     # 1. Standard Run
     set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_llada.py \
-        --config=_default.yaml \
+    srun python single_run_llada.py \
+        --config=_jz.yaml \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$n_groups \
         group_size=$group_size \
         method=greedy_map \
-        _w_interaction=5
-        # guidance_end=64 \
-        # subsample_start=96 \
-        # _w_interaction=5.0
+        _w_interaction=5.0
     set +ex
     
     OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
@@ -55,8 +75,6 @@ for config_str in "${CONFIGS[@]}"; do
     echo "Output for ($n_groups, $group_size): $OUTPUT"
 
     # 2. Matching Baseline Run
-    # Baseline generates same total candidates (n_groups * group_size)
-    # And selects same number of outputs (n_groups) via subsample_k
     baseline_n_groups=$((n_groups * group_size))
     baseline_subsample_k=$n_groups
     
@@ -65,11 +83,9 @@ for config_str in "${CONFIGS[@]}"; do
     echo "Running Baseline for ($n_groups, $group_size): gen=$baseline_n_groups, k=$baseline_subsample_k"
     echo "----------------------------------------"
     
-    MASTER_PORT_BASE=$((MASTER_PORT + 1))
-    
     set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT_BASE exps/baseline_llada.py \
-        --config=_default.yaml \
+    srun python exps/baseline_llada.py \
+        --config=_jz.yaml \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$baseline_n_groups \
@@ -92,5 +108,4 @@ for output in "${CONFIG_OUTPUTS[@]}"; do
 done
 echo "========================================"
 
-
-scancel $SLURM_JOB_ID
+echo "Job ended at $(date)"
