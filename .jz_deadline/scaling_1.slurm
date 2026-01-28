@@ -41,6 +41,7 @@ CONFIGS=(
     "2 2"
     "1 4"
     "2 4"
+    "4 2"
 )
 
 # Array to store output paths
