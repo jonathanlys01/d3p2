@@ -15,6 +15,11 @@ PATHS=(
 "/Brain/private/j21lys/d3p2/src/results/exp-20260128_050144_de301bdc-a761-43ab-bbee-d68a49dc6f9c.json"
 )
 
+LOG_DIR="$ROOT/../slurm-logs"
+JOB_NAME="mauve_temp"
+RUN_TAG=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$LOG_DIR"
+
 for path in "${PATHS[@]}"; do
     python -m mauve "$REFERENCE_BIN" "$path" --batch_size=8 \
       2>&1 | tee "$LOG_DIR/${JOB_NAME}-${RUN_TAG}-eval-w${w_int}.out"
