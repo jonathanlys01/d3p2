@@ -147,7 +147,7 @@ class LLADASampler(nn.Module):
         return x0_p
 
     @torch.no_grad()
-    def sample(self, prompt: str):
+    def sample(self, prompt: str):  # noqa: PLR0915
         num_blocks = self.config.gen_length // self.config.block_length
         steps = self.config.llada_steps // num_blocks
         batch_size = self.config.batch_size
@@ -221,8 +221,21 @@ class LLADASampler(nn.Module):
 
                 assert slice_idx is not None
 
+                # Capture logits for sampling BEFORE expansion
+                logits_to_sample = torch.index_select(log_p_x0, 0, slice_idx)
+
+                if subsample_step:
+                    # Expand indices
+                    expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
+
+                    # Expand state
+                    x = x[expanded_idx]
+                    log_p_x0 = log_p_x0[expanded_idx]
+                    mask_index = mask_index[expanded_idx]
+                    num_transfer_tokens = num_transfer_tokens[expanded_idx]
+
                 # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
-                x0 = self._block_sample(torch.index_select(log_p_x0, 0, slice_idx), subsample_step)
+                x0 = self._block_sample(logits_to_sample, subsample_step)
 
                 # Pass log_probs to _get_confidence
                 x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
@@ -231,7 +244,7 @@ class LLADASampler(nn.Module):
                 confidence = torch.where(mask_index, x0_p, -torch.inf)
 
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                for j in range(batch_size):
+                for j in range(x.shape[0]):
                     _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, step])
                     transfer_index[j, select_index] = True
                 x[transfer_index] = x0[transfer_index]
