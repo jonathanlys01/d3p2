@@ -18,4 +18,4 @@ python exps/cfg_exp.py --config=_default.yaml model=llada method=greedy_map _w_i
 set +ex
 
 echo "Job ended at $(date)"
-scancel $SLURM_JOB_ID
+# scancel $SLURM_JOB_ID
