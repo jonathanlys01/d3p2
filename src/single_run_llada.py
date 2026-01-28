@@ -47,8 +47,8 @@ def main():
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     prompts: list[str] = [row.question for row in dataset.itertuples()][:limit]  # type: ignore
 
-    for i in range(min(config.n_runs, len(prompts))):
-        print(f"Sampling batch {i + 1}/{config.n_runs}...")
+    for i in range(len(prompts)):
+        print(f"Sampling batch {i + 1}/{len(prompts)}...")
         samples = model.sample(prompt=prompts[i])
         texts_ = []
         for sample in samples:
