@@ -37,10 +37,7 @@ shift
 
 # Scaling parameters (n_groups group_size)
 CONFIGS=(
-    "1 2"
     "2 2"
-    "1 4"
-    "2 4"
     "4 2"
 )
 
