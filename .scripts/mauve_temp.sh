@@ -7,12 +7,12 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 
 
 PATHS=(
-"/Brain/private/j21lys/d3p2/src/results/exp-20260128_024056_e241bebb-dc9f-474c-8626-68338fb0a16f.json"
-"/Brain/private/j21lys/d3p2/src/results/exp-20260128_030846_5ef41809-059a-4ec6-b64d-fb3f6bed9607.json"
-"/Brain/private/j21lys/d3p2/src/results/exp-20260128_033646_791e51a9-fde3-490c-86b9-e4dc50978d57.json"
-"/Brain/private/j21lys/d3p2/src/results/exp-20260128_040511_72764470-60c0-41d9-bc92-55406aafef5b.json"
-"/Brain/private/j21lys/d3p2/src/results/exp-20260128_043312_1e7c7352-4d0a-411c-8578-faf244f4daed.json"
-"/Brain/private/j21lys/d3p2/src/results/exp-20260128_050144_de301bdc-a761-43ab-bbee-d68a49dc6f9c.json"
+    "/Brain/private/j21lys/d3p2/src/results/exp-20260128_024056_e241bebb-dc9f-474c-8626-68338fb0a16f.json"
+    "/Brain/private/j21lys/d3p2/src/results/exp-20260128_030846_5ef41809-059a-4ec6-b64d-fb3f6bed9607.json"
+    "/Brain/private/j21lys/d3p2/src/results/exp-20260128_033646_791e51a9-fde3-490c-86b9-e4dc50978d57.json"
+    "/Brain/private/j21lys/d3p2/src/results/exp-20260128_040511_72764470-60c0-41d9-bc92-55406aafef5b.json"
+    "/Brain/private/j21lys/d3p2/src/results/exp-20260128_043312_1e7c7352-4d0a-411c-8578-faf244f4daed.json"
+    "/Brain/private/j21lys/d3p2/src/results/exp-20260128_050144_de301bdc-a761-43ab-bbee-d68a49dc6f9c.json"
 )
 
 LOG_DIR="$ROOT/../slurm-logs"
