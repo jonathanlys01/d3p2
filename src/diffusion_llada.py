@@ -233,6 +233,7 @@ class LLADASampler(nn.Module):
                     log_p_x0 = log_p_x0[expanded_idx]
                     mask_index = mask_index[expanded_idx]
                     num_transfer_tokens = num_transfer_tokens[expanded_idx]
+                    prompt_index = prompt_index[expanded_idx]
 
                 # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
                 x0 = self._block_sample(logits_to_sample, subsample_step)
