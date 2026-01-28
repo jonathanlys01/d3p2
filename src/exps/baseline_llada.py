@@ -56,8 +56,8 @@ def main():  # noqa: C901, PLR0915
     prompts: list[str] = [row.question for row in dataset.itertuples()][:limit]  # type: ignore
     references: list[list[str]] = [row.correct_answers for row in dataset.itertuples()][:limit]  # type: ignore
 
-    for i in range(min(config.n_runs, len(prompts))):
-        print(f"Sampling batch {i + 1}/{config.n_runs}...")
+    for i in range(len(prompts)):
+        print(f"Sampling batch {i + 1}/{len(prompts)}...")
         samples = model.sample(prompt=prompts[i])
         # Decode with prompt stripping
         decoded = []
