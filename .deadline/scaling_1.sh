@@ -46,7 +46,7 @@ for config_str in "${CONFIGS[@]}"; do
         n_groups=$n_groups \
         group_size=$group_size \
         method=greedy_map \
-        _w_interaction=2.5
+        _w_interaction=5
         # guidance_end=64 \
         # subsample_start=96 \
         # _w_interaction=5.0
