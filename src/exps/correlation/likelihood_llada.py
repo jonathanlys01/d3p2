@@ -103,7 +103,7 @@ def get_llada_log_likelihood(model, prompt, answer, mc_num=128, batch_size=16, m
         flat_targets = seq_batch[mask_index]
         flat_ratios = p_mask[mask_index]
 
-        ce_loss = F.cross_entropy(flat_logits, flat_targets, reduction="none")
+        ce_loss = F.cross_entropy(flat_logits, flat_targets, reduction="mean")
 
         # Weighted log prob: -CE / ratio
         weighted_log_p = -ce_loss / flat_ratios
