@@ -75,6 +75,7 @@ def main():
         os.makedirs(RESULTS_DIR, exist_ok=True)
         with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
             json.dump(samples, f, indent=4)
+        print(f"Saved in {RESULTS_DIR}/exp-{name}.json")
 
     for file in os.listdir(RESULTS_DIR):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
