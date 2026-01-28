@@ -16,9 +16,9 @@ CONFIGS=(
     "4 2"
     "2 4"
     "4 4"
-    # "8 4"
-    # "4 8"
-    # "8 8"
+    "8 4"
+    "4 8"
+    "8 8"
     # "15 8"
     # "8 15"
     # "10 10"
@@ -50,9 +50,9 @@ for config_str in "${CONFIGS[@]}"; do
         n_groups=$n_groups \
         group_size=$group_size \
         method=greedy_map \
-        guidance_end=85 \
-        subsample_start=85 \
-        _w_interaction=2.5
+        guidance_end=64 \
+        subsample_start=96 \
+        _w_interaction=5.0
     set +ex
     
     OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)

@@ -35,7 +35,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         if cfg.cfg_scale != 0.0:
             cfg_values = [cfg.cfg_scale]
         else:
-            cfg_values = np.logspace(np.log10(0.5), np.log10(2.5), num=8).tolist()
+            cfg_values = np.logspace(np.log10(0.5), np.log10(2.5), num=5).tolist()
 
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
