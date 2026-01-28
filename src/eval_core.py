@@ -308,31 +308,40 @@ class WassersteinDistance(torch.nn.Module):
 
     def forward(
         self,
-        good_references: list[str],
-        bad_references: list[str],
         generations: list[str],
+        good_references: list[str],
+        bad_references: list[str] | None = None,
     ) -> tuple[float, float]:
         n_good = len(good_references)
-        n_bad = len(bad_references)
         n_gen = len(generations)
-        all_texts = generations + good_references + bad_references
+
+        all_texts = generations + good_references
+        if bad_references:
+            n_bad = len(bad_references)
+            all_texts += bad_references
+        else:
+            n_bad = 0
+
         embeddings = self._forward(all_texts).numpy()
 
         gen_embeddings = embeddings[0:n_gen]
         good_embeddings = embeddings[n_gen : n_gen + n_good]
-        bad_embeddings = embeddings[n_gen + n_good :]
 
         # Compute cost matrices
         cost_good = ot.dist(gen_embeddings, good_embeddings, metric="euclidean")
-        cost_bad = ot.dist(gen_embeddings, bad_embeddings, metric="euclidean")
 
         # Uniform distributions
         p_gen = np.ones((n_gen,)) / n_gen
         p_good = np.ones((n_good,)) / n_good
-        p_bad = np.ones((n_bad,)) / n_bad
 
         wasserstein_good: float = ot.emd2(p_gen, p_good, cost_good)  # type: ignore
-        wasserstein_bad: float = ot.emd2(p_gen, p_bad, cost_bad)  # type: ignore
+
+        wasserstein_bad = float("nan")
+        if bad_references and n_bad > 0:
+            bad_embeddings = embeddings[n_gen + n_good :]
+            cost_bad = ot.dist(gen_embeddings, bad_embeddings, metric="euclidean")
+            p_bad = np.ones((n_bad,)) / n_bad
+            wasserstein_bad: float = ot.emd2(p_gen, p_bad, cost_bad)  # type: ignore
 
         return wasserstein_good, wasserstein_bad
 
@@ -529,10 +538,22 @@ class Evaluator:
         # Compute all metrics
         ppl_stats = self.perplexity_model(texts, batch_size=self.batch_size)
         cos_stats = self.cosine_model(texts)
-        string_stats = self.string_metrics(texts, references=references)
+        string_stats = self.compute_string_metrics(texts, references=references)
+
+        # Compute Wasserstein Distance if references are provided
+        wd_stats = {}
+        if references and any(refs for refs in references):
+            wd_scores = []
+            for group_gen, group_ref in zip(texts, references):
+                if not group_gen or not group_ref:
+                    continue
+                # We only have "good" references in this context usually
+                wd_good, _ = self.wasserstein_model(group_gen, group_ref, bad_references=None)
+                wd_scores.append(wd_good)
+            wd_stats = compute_statistics(wd_scores, "wasserstein_distance")
 
         # Merge all metrics
-        metrics = {**ppl_stats, **cos_stats, **string_stats}
+        metrics = {**ppl_stats, **cos_stats, **string_stats, **wd_stats}
 
         # create a summary string
         summary_parts = []
@@ -541,8 +562,10 @@ class Evaluator:
         summary_targets = [
             ("perplexity", "PPL"),
             ("cosine_similarity", "CosSim"),
+            ("wasserstein_distance", "WD"),
             ("distinct_2", "Dist-2"),
             ("self_bleu", "S-BLEU"),
+            ("cos_at_k", "Cos@k"),
         ]
 
         for key, display_name in summary_targets:
@@ -571,14 +594,14 @@ class Evaluator:
         self,
         generations: list[str],
         good_references: list[str],
-        bad_references: list[str],
+        bad_references: list[str] | None = None,
     ) -> tuple[float, float]:
-        return self.wasserstein_model(good_references, bad_references, generations)
+        return self.wasserstein_model(generations, good_references, bad_references)
 
     def compute_string_metrics(
         self,
         predictions: list[list[str]],
-        references: list[list[str]],
+        references: list[list[str]] | None = None,
     ) -> dict[str, float]:
         metrics = self.string_metrics(predictions, references)
 
