@@ -32,10 +32,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     """Run the CFG experiment across multiple CFG values, measuring all metrics."""
 
     if cfg_values is None:
-        if cfg.cfg_scale != 0.0:
-            cfg_values = [cfg.cfg_scale]
-        else:
-            cfg_values = np.logspace(np.log10(0.5), np.log10(2.5), num=5).tolist()
+        cfg_values = [cfg.cfg_scale] if cfg.cfg_scale != 0.0 else np.logspace(np.log10(1), np.log10(3), num=6).tolist()
 
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
