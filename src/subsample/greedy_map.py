@@ -40,7 +40,7 @@ class GreedyMAP(BaseSelector):
         return ret
 
 
-@torch.jit.script
+# @torch.jit.script
 def _greedy_map_full_explore(
     kernel: torch.Tensor,
     num_groups: int,
