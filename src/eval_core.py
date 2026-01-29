@@ -14,6 +14,7 @@ import ot
 import sacrebleu
 import torch
 import torch.nn.functional as F
+from nltk.util import ngrams
 from scipy.stats._continuous_distns import t
 from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -356,6 +357,7 @@ class WassersteinDistance(torch.nn.Module):
 class StringMetrics(torch.nn.Module):
     def __init__(self):
         super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
 
     def _compute_f1(self, prediction: str, ground_truth: str) -> float:
         prediction_tokens = prediction.lower().split()
@@ -369,28 +371,65 @@ class StringMetrics(torch.nn.Module):
         f1 = (2 * precision * recall) / (precision + recall)
         return f1
 
-    def compute_distinct_n(self, texts: list[str], n: int = 2) -> float:
+    def compute_distinct_metrics(
+        self,
+        texts: list[str],
+        vocab_size: int | None = None,
+        references_for_vocab: list[str] | None = None,
+    ) -> dict[str, float]:
         """
-        Calculate the ratio of unique n-grams to total n-grams across a list of strings.
-        Uses simple whitespace tokenization.
+        Calculate robust distinct metrics including EAD, Dist-1, Dist-2, Dist-3.
         """
         if not texts:
-            return 0.0
+            return {}
 
-        all_ngrams = []
-        for text in texts:
-            tokens = text.lower().split()
-            if len(tokens) < n:
-                continue
-            ngrams = [tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
-            all_ngrams.extend(ngrams)
+        # Determine vocab size if EAD is needed
+        if vocab_size is None and references_for_vocab is not None:
+            vocab = set()
+            for sentence in references_for_vocab:
+                vocab.update(self.tokenizer.tokenize(sentence))
+            vocab_size = len(vocab)
 
-        if not all_ngrams:
-            return 0.0
+        # If vocab_size is still None, we can't compute EAD, but we can compute others.
+        # But for now let's assume if it is None we just skip EAD or use a default?
+        # The user code raises error if dataForVocabCal is None.
+        # But we want to be robust. If no refs, maybe skip EAD?
 
-        unique_ngrams = len(set(all_ngrams))
-        total_ngrams = len(all_ngrams)
-        return unique_ngrams / total_ngrams
+        distinct_tokens = set()
+        distinct_tokens_2grams = set()
+        distinct_tokens_3grams = set()
+        total_tokens = []
+        total_tokens_2grams = []
+        total_tokens_3grams = []
+
+        for prediction in texts:
+            tokens = self.tokenizer.tokenize(prediction)
+
+            # NLTK ngrams yields generator, convert to list
+            tokens_2grams = list(ngrams(tokens, 2, pad_left=True, left_pad_symbol="<s>"))
+            tokens_3grams = list(ngrams(tokens, 3, pad_left=True, left_pad_symbol="<s>"))
+
+            distinct_tokens.update(tokens)
+            distinct_tokens_2grams.update(tokens_2grams)
+            distinct_tokens_3grams.update(tokens_3grams)
+
+            total_tokens.extend(tokens)
+            total_tokens_2grams.extend(tokens_2grams)
+            total_tokens_3grams.extend(tokens_3grams)
+
+        metrics = {}
+        metrics["distinct_1"] = len(distinct_tokens) / len(total_tokens) if total_tokens else 0.0
+        metrics["distinct_2"] = len(distinct_tokens_2grams) / len(total_tokens_2grams) if total_tokens_2grams else 0.0
+        metrics["distinct_3"] = len(distinct_tokens_3grams) / len(total_tokens_3grams) if total_tokens_3grams else 0.0
+
+        if vocab_size is not None and len(total_tokens) > 0:
+            try:
+                ead = len(distinct_tokens) / (vocab_size * (1 - ((vocab_size - 1) / vocab_size) ** len(total_tokens)))
+                metrics["expectation_adjusted_distinct"] = ead
+            except ZeroDivisionError:
+                metrics["expectation_adjusted_distinct"] = 0.0
+
+        return metrics
 
     def compute_self_bleu(self, texts: list[str]) -> float:
         """
@@ -416,7 +455,7 @@ class StringMetrics(torch.nn.Module):
 
         return sum(bleu_scores) / len(bleu_scores)
 
-    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912
+    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
         """
         Compute F1, BLEU, Distinct-2, and Self-BLEU scores.
         predictions is a list of lists of strings (multiple generations per question).
@@ -493,15 +532,36 @@ class StringMetrics(torch.nn.Module):
 
                 all_metrics.update(compute_statistics(bleu_at_k_scores, "bleu_at_k"))
 
-        # Compute Distinct-2 and Self-BLEU per group
-        distinct_2_scores = []
+        # Compute Distinct-N and EAD per group
+        # Prepare vocab (using all references if clear, or maybe just group refs?
+        # Usually EAD is about the 'language' vocab, so all refs is better)
+        vocab_ref_tokens = []
+        if references and any(refs for refs in references):
+            for sublist in references:
+                vocab_ref_tokens.extend(sublist)
+
+        distinct_metrics_list = []
         self_bleu_scores = []
         for group in predictions:
-            if group:  # Handle empty groups gracefully
-                distinct_2_scores.append(self.compute_distinct_n(group, n=2))
-                self_bleu_scores.append(self.compute_self_bleu(group))
+            if group:
+                # We can calculate vocab size purely from references if available
+                # Passing all references as a proxy for 'language vocabulary'
+                d_metrics = self.compute_distinct_metrics(
+                    group,
+                    references_for_vocab=vocab_ref_tokens if vocab_ref_tokens else None,
+                )
+                distinct_metrics_list.append(d_metrics)
 
-        all_metrics.update(compute_statistics(distinct_2_scores, "distinct_2"))
+                # Compute Self-BLEU for the group
+                sb_score = self.compute_self_bleu(group)
+                self_bleu_scores.append(sb_score)
+
+        # Aggregate dicts
+        if distinct_metrics_list:
+            keys = distinct_metrics_list[0].keys()
+            for key in keys:
+                values = [m[key] for m in distinct_metrics_list if key in m]
+                all_metrics.update(compute_statistics(values, key))
         all_metrics.update(compute_statistics(self_bleu_scores, "self_bleu"))
 
         return all_metrics
