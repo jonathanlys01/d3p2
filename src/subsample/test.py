@@ -20,7 +20,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 KWARGS = {
     "_w_interaction": 10.0,
     "_temperature": 1e-4,
-    "_diversity_alpha": 1.0,
+    "_diversity_alpha": 10.0,
     "_kernel_type": "cosine",
 }
 
