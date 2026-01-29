@@ -35,7 +35,29 @@ def process_file(file_path: str, evaluator: Evaluator, metric: str, k: int):  # 
         dataset = dataset.head(cfg.qa_dataset_len)
 
     correct_answers = dataset["correct_answers"].tolist()
-    text_samples_map = data.get("text_samples", {})
+    # Get text samples
+    # Support both dict (cfg_map/ref style) and list (normal/baseline style)
+    text_samples_data = data.get("text_samples", {})
+
+    # Normalize to a dict-like structure for processing
+    # If list: {"default": samples}
+    # If dict: samples
+    if isinstance(text_samples_data, list):
+        # Verify length matches references
+        if len(text_samples_data) != len(correct_answers):
+            print(f"Warning: len samples ({len(text_samples_data)}) != len refs ({len(correct_answers)})")
+            # Proceed anyway for robust handling if possible, or just slice?
+            # Let's rely on the loop below to zip safely or handle index error if accessed by index
+            pass
+
+        # Determine unique key for this single entry
+        # Use filename or just "default"
+        text_samples_map = {"default": text_samples_data}
+    elif isinstance(text_samples_data, dict):
+        text_samples_map = text_samples_data
+    else:
+        print(f"Unknown text_samples format in {file_path}")
+        return
 
     results_subsampled = {}
 
