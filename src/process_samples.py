@@ -58,9 +58,8 @@ def process_file(file_path: str, evaluator: Evaluator):  # noqa: C901
             # Use evaluator.evaluate_baseline
             selected = evaluator.evaluate_baseline(
                 full_sequences=samples,
-                metric="f1",
+                metric="ppl",
                 k=K,
-                references=correct_answers,
             )
             # evaluate_baseline returns list of list of selected strings
             subsampled_texts = selected
@@ -88,7 +87,7 @@ if __name__ == "__main__":
 
     # Initialize evaluator
     evaluator = Evaluator(
-        batch_size=0,  # Auto
+        batch_size=8,  # Auto
         force=args.force,
         ppl_model_id=args.ppl_model_id,
         cos_model_id=args.cos_model_id,
