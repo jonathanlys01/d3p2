@@ -16,7 +16,7 @@ from eval_core import Evaluator
 K = 4  # hardcoded
 
 
-def process_file(file_path: str, evaluator: Evaluator):  # noqa: C901
+def process_file(file_path: str, evaluator: Evaluator, metric: str):  # noqa: C901
     print(f"Processing {file_path}...")
     with open(file_path, "r") as f:
         data = json.load(f)
@@ -58,7 +58,7 @@ def process_file(file_path: str, evaluator: Evaluator):  # noqa: C901
             # Use evaluator.evaluate_baseline
             selected = evaluator.evaluate_baseline(
                 full_sequences=samples,
-                metric="ppl",
+                metric=metric,
                 k=K,
             )
             # evaluate_baseline returns list of list of selected strings
@@ -79,9 +79,11 @@ def process_file(file_path: str, evaluator: Evaluator):  # noqa: C901
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # Syntax: --folders /path1 /path2 ... (nargs='+' gathers all following args into a list)
     parser.add_argument("--folders", nargs="+", required=True, help="Folders to process")
     parser.add_argument("--ppl_model_id", type=str, default="gpt2")
     parser.add_argument("--cos_model_id", type=str, default="jinaai/jina-embeddings-v2-base-en")
+    parser.add_argument("--metric", type=str, default="f1")
     parser.add_argument("--force", action="store_true", help="Force re-processing")
     args = parser.parse_args()
 
@@ -96,4 +98,4 @@ if __name__ == "__main__":
     for folder in args.folders:
         files = glob.glob(os.path.join(folder, "*.json"))
         for f in files:
-            process_file(f, evaluator)
+            process_file(f, evaluator, args.metric)
