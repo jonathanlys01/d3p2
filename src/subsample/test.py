@@ -11,7 +11,7 @@ from utils import tqdm
 
 
 # Configuration
-N_TRIALS = 100
+N_TRIALS = 1000
 N_GROUPS = 8
 GROUP_SIZE = 8
 TOTAL_ITEMS = N_GROUPS * GROUP_SIZE
