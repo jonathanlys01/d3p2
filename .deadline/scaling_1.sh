@@ -18,5 +18,5 @@ torchrun --nproc_per_node=4 --master_port=$MASTER_PORT single_run_llada.py \
     group_size=2 \
     method=greedy_map \
     _w_interaction=8 \
-    cfg_scale=2.5
+    cfg_scale=2.5 "$@"
 set +ex

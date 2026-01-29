@@ -1,0 +1,100 @@
+"""
+Script to subsample text generations and re-compute metrics.
+Deduplicates beams for map samples and selects best-F1 for independent samples.
+"""
+
+import argparse
+import glob
+import json
+import os
+
+from config import Config
+from data.qa import get_qa_dataset
+from eval_core import Evaluator
+
+
+K = 4  # hardcoded
+
+
+def process_file(file_path: str, evaluator: Evaluator):  # noqa: C901
+    print(f"Processing {file_path}...")
+    with open(file_path, "r") as f:
+        data = json.load(f)
+
+    # Check if already processed
+    if "results_subsampled" in data and not args.force:
+        print(f"Skipping {file_path} (already processed)")
+        return
+
+    cfg_dict = data.get("config", None)
+    assert cfg_dict is not None
+
+    cfg_dict["disable_sys_args"] = True
+
+    cfg = Config(**cfg_dict)
+
+    dataset = get_qa_dataset(cfg)
+    if cfg.qa_dataset_len > 0:
+        dataset = dataset.head(cfg.qa_dataset_len)
+
+    correct_answers = dataset["correct_answers"].tolist()
+    text_samples_map = data.get("text_samples", {})
+
+    results_subsampled = {}
+
+    for cfg_val, samples in text_samples_map.items():
+        if len(samples) != len(correct_answers):
+            print(f"Warning: mismatch len samples ({len(samples)}) vs refs ({len(correct_answers)}) for {cfg_val}")
+            continue
+
+        subsampled_texts = []
+        is_map = "cfg_map" in file_path
+
+        if is_map:
+            for beam_list in samples:
+                unique_beams = sorted(set(beam_list))
+                subsampled_texts.append(unique_beams)
+        else:
+            # Use evaluator.evaluate_baseline
+            selected = evaluator.evaluate_baseline(
+                full_sequences=samples,
+                metric="f1",
+                k=K,
+                references=correct_answers,
+            )
+            # evaluate_baseline returns list of list of selected strings
+            subsampled_texts = selected
+
+        # Evaluate the subsampled texts
+        metrics = evaluator.evaluate(subsampled_texts, references=correct_answers)
+        results_subsampled[cfg_val] = metrics
+
+    # Save results
+    data["results_subsampled"] = results_subsampled
+
+    with open(file_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+    print(f"Finished {file_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--folders", nargs="+", required=True, help="Folders to process")
+    parser.add_argument("--ppl_model_id", type=str, default="gpt2")
+    parser.add_argument("--cos_model_id", type=str, default="jinaai/jina-embeddings-v2-base-en")
+    parser.add_argument("--force", action="store_true", help="Force re-processing")
+    args = parser.parse_args()
+
+    # Initialize evaluator
+    evaluator = Evaluator(
+        batch_size=0,  # Auto
+        force=args.force,
+        ppl_model_id=args.ppl_model_id,
+        cos_model_id=args.cos_model_id,
+    )
+
+    for folder in args.folders:
+        files = glob.glob(os.path.join(folder, "*.json"))
+        for f in files:
+            process_file(f, evaluator)
