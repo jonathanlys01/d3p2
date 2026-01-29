@@ -60,6 +60,7 @@ def process_file(file_path: str, evaluator: Evaluator, metric: str):  # noqa: C9
                 full_sequences=samples,
                 metric=metric,
                 k=K,
+                references=correct_answers,
             )
             # evaluate_baseline returns list of list of selected strings
             subsampled_texts = selected
