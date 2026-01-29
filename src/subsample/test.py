@@ -61,14 +61,16 @@ def compute_log_det(kernel_np: np.ndarray, indices: list) -> float:
         return -np.inf
 
 
-def main():
+def main():  # noqa: PLR0915
     """Run benchmark comparing partition samplers."""
     print("Partition Sampler Benchmark")
     print(f"Parameters: k={N_GROUPS} groups, n={GROUP_SIZE} items/group, B={TOTAL_ITEMS} total")
     print(f"Running {N_TRIALS} trials on device: {DEVICE}")
     print("-" * 60)
 
-    results = {f"{m} (Transv: {t})": {"log_dets": [], "valid": [], "times": []} for m, t in IMPLEMENTED_METHODS}
+    results = {
+        f"{m} (Transv: {t})": {"log_dets": [], "valid": [], "times": [], "maes": []} for m, t in IMPLEMENTED_METHODS
+    }
 
     base_config = Config(method="dpp", transversal=False, group_size=GROUP_SIZE, n_groups=N_GROUPS, **KWARGS)
     base_selector = get_subsample_selector(config=base_config)
@@ -89,6 +91,8 @@ def main():
         assert kernel is not None
         kernel_np = kernel.detach().cpu().numpy()
 
+        trial_log_dets = {}
+
         for method, transversal in IMPLEMENTED_METHODS:
             name = f"{method} (Transv: {transversal})"
             selector = all_selectors[(method, transversal)]
@@ -99,28 +103,46 @@ def main():
                 indices = indices.detach().cpu().tolist()
             elapsed = perf_counter() - start
 
+            assert indices is not None
+            log_det = compute_log_det(kernel_np, indices)
+            trial_log_dets[name] = log_det
+
             results[name]["times"].append(elapsed)
-            results[name]["log_dets"].append(compute_log_det(kernel_np, indices))
+            results[name]["log_dets"].append(log_det)
             results[name]["valid"].append(is_valid_partition(indices, N_GROUPS, GROUP_SIZE))
 
+        oracle_key = "exhaustive (Transv: True)"
+        oracle_val = trial_log_dets.get(oracle_key, -np.inf)
+
+        for name, val in trial_log_dets.items():
+            if oracle_val > -np.inf and val > -np.inf:
+                results[name]["maes"].append(abs(val - oracle_val))
+            else:
+                results[name]["maes"].append(np.nan)
+
     # Report
-    print("\n" + "=" * 85)
+    print("\n" + "=" * 115)
     print("           --- Comparison Results ---")
-    print("=" * 85)
+    print("=" * 115)
     print(
-        f"{'Method':<35} | {'Avg. Log-Det':>15} | {'Std. Log-Det':>15} | {'Validity (%)':>13} | {'Avg. Time (s)':>15}",
+        f"{'Method':<35} | {'Avg. Log-Det':>15} | {'Std. Log-Det':>15} | "
+        f"{'MAE (Oracle)':>15} | {'Validity (%)':>13} | {'Avg. Time (s)':>15}",
     )
-    print("-" * 100)
+    print("-" * 130)
 
     for name, res in results.items():
         avg = np.mean(res["log_dets"])
         std = np.std(res["log_dets"])
+        try:
+            mae = np.nanmean(res["maes"])
+        except Exception:
+            mae = np.nan
         valid = np.mean(res["valid"]) * 100
         time = np.mean(res["times"])
-        print(f"{name:<35} | {avg:>15.4f} | {std:>15.4f} | {valid:>12.1f}% | {time:>15.6f}")
+        print(f"{name:<35} | {avg:>15.4f} | {std:>15.4f} | {mae:>15.6f} | {valid:>12.1f}% | {time:>15.6f}")
 
-    print("-" * 100)
-    print("\n'Avg. Log-Det': Higher is better (excludes invalid/singular results).")
+    print("-" * 130)
+    print("\n'Avg. Log-Det': Higher is better (excludes invalid/singular results). 'MAE': Lower is better.")
 
 
 if __name__ == "__main__":
