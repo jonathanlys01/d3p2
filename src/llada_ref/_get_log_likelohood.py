@@ -83,7 +83,7 @@ def main():
 
     device = "cuda"
 
-    MODEL_ID = "/Brain/public/models/GSAI-ML/LLaDA-8B-Base/"
+    MODEL_ID = "GSAI-ML/LLaDA-8B-Base/"
 
     model = LLaDAModelLM.from_pretrained(MODEL_ID, trust_remote_code=True, dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
