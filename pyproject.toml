@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "transformers>=4.57.0",
-    "flash-attn>=2.8.3",
     "torch>=2.7.0",
     "omegaconf>=2.3.0",
     "dppy>=0.3.3",
@@ -21,8 +20,11 @@ dependencies = [
     "nltk>=3.9.2",
 ]
 
+[dependency-groups]
+dev = ["flash-attn>=2.8.3"]
+
 [tool.uv.extra-build-dependencies]
-flash-attn = [{requirement = "torch", match-runtime = true }]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
@@ -51,7 +53,7 @@ extend-select = [
 ]
 ignore = [
     "PLR2004", # magic number
-    ]
+]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
@@ -83,7 +85,12 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.pyrefly]
-project-excludes = ["src/jina_ref", "src/llada_ref", "src/mdlm_ref", "src/mauve"] # external sources
+project-excludes = [
+    "src/jina_ref",
+    "src/llada_ref",
+    "src/mdlm_ref",
+    "src/mauve",
+] # external sources
 
 [tool.pyrefly.errors]
 untyped-import = false
