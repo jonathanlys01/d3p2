@@ -380,7 +380,7 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev-only = [
+dev = [
     { name = "flash-attn" },
 ]
 
@@ -402,7 +402,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev-only = [{ name = "flash-attn", specifier = ">=2.8.3" }]
+dev = [{ name = "flash-attn", specifier = ">=2.8.3" }]
 
 [[package]]
 name = "datasets"
