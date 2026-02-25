@@ -4,13 +4,18 @@ import csv
 import time
 from collections import defaultdict
 from time import perf_counter
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from d5p4.config import Cache, Config
-from d5p4.subsample import BaseSelector, get_subsample_selector
+from d5p4.subsample import get_subsample_selector
+
+
+if TYPE_CHECKING:
+    from d5p4.subsample import BaseSelector
 
 
 # Configuration
