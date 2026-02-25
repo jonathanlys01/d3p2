@@ -117,7 +117,7 @@ def main():  # noqa: C901, PLR0915
                         _w_interaction=w,
                         _kernel_type="cosine",
                         _temperature=1e-4,
-                        _diversity_alpha=10.0,
+                        _diversity_alpha=5.0,
                         _kernel_power=3,
                     )
                     selector_ = get_subsample_selector(config)
