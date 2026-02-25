@@ -27,6 +27,13 @@ IMPLEMENTED_METHODS = [
     ("random", True),
 ]
 
+# ANSI colors
+C_GM = "\033[96m"  # Cyan
+C_GB = "\033[93m"  # Yellow
+C_DB = "\033[92m"  # Green
+C_R = "\033[95m"  # Magenta
+C_RST = "\033[0m"  # Reset
+
 
 def compute_log_det(kernel: torch.Tensor, indices: list) -> float:
     """Compute log-determinant of kernel submatrix."""
@@ -70,9 +77,9 @@ def main():
 
     print(
         f"{'N_G':>4} | {'N_I':>4} | {'w_int':>5} | "
-        f"{'Raw GM':>8} | {'Raw GB':>8} | {'Raw DB':>8} | {'Raw R':>8} | "
-        f"{'Rnk GM':>6} | {'Rnk GB':>6} | {'Rnk DB':>6} | {'Rnk R':>6} | "
-        f"{'T GM(s)':>7} | {'T GB(s)':>7} | {'T DB(s)':>7} | {'T R(s)':>7}",
+        f"{C_GM}{'Raw GM':>8}{C_RST} | {C_GB}{'Raw GB':>8}{C_RST} | {C_DB}{'Raw DB':>8}{C_RST} | {C_R}{'Raw R':>8}{C_RST} | "  # noqa: E501
+        f"{C_GM}{'Rnk GM':>6}{C_RST} | {C_GB}{'Rnk GB':>6}{C_RST} | {C_DB}{'Rnk DB':>6}{C_RST} | {C_R}{'Rnk R':>6}{C_RST} | "  # noqa: E501
+        f"{C_GM}{'T GM(s)':>7}{C_RST} | {C_GB}{'T GB(s)':>7}{C_RST} | {C_DB}{'T DB(s)':>7}{C_RST} | {C_R}{'T R(s)':>7}{C_RST}",  # noqa: E501
     )
     print("-" * 135)
 
@@ -143,12 +150,12 @@ def main():
 
                 print(
                     f"{n_groups:>4} | {group_size:>4} | {w:>5.2f} | "
-                    f"{avg_raw[0]:>8.2f} | {avg_raw[1]:>8.2f} | "
-                    f"{avg_raw[2]:>8.2f} | {avg_raw[3]:>8.2f} | "
-                    f"{avg_rnk[0]:>6.2f} | {avg_rnk[1]:>6.2f} | "
-                    f"{avg_rnk[2]:>6.2f} | {avg_rnk[3]:>6.2f} | "
-                    f"{avg_times[0]:>7.4f} | {avg_times[1]:>7.4f} | "
-                    f"{avg_times[2]:>7.4f} | {avg_times[3]:>7.4f}",
+                    f"{C_GM}{avg_raw[0]:>8.2f}{C_RST} | {C_GB}{avg_raw[1]:>8.2f}{C_RST} | "
+                    f"{C_DB}{avg_raw[2]:>8.2f}{C_RST} | {C_R}{avg_raw[3]:>8.2f}{C_RST} | "
+                    f"{C_GM}{avg_rnk[0]:>6.2f}{C_RST} | {C_GB}{avg_rnk[1]:>6.2f}{C_RST} | "
+                    f"{C_DB}{avg_rnk[2]:>6.2f}{C_RST} | {C_R}{avg_rnk[3]:>6.2f}{C_RST} | "
+                    f"{C_GM}{avg_times[0]:>7.4f}{C_RST} | {C_GB}{avg_times[1]:>7.4f}{C_RST} | "
+                    f"{C_DB}{avg_times[2]:>7.4f}{C_RST} | {C_R}{avg_times[3]:>7.4f}{C_RST}",
                 )
 
                 all_results.append(
@@ -171,7 +178,10 @@ def main():
                     },
                 )
 
-    print("NB: GM (Greedy Map), GB (Greedy Beam), DB (Diverse Beam), R (Random)")
+    print(
+        f"\nNB: {C_GM}GM (Greedy Map){C_RST}, {C_GB}GB (Greedy Beam){C_RST}, "
+        f"{C_DB}DB (Diverse Beam){C_RST}, {C_R}R (Random){C_RST}",
+    )
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     csv_file = f"subsample_benchmark_{timestamp}.csv"
