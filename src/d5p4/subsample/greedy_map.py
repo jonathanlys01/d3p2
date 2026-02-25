@@ -56,30 +56,32 @@ def _greedy_map_full_explore(
     dtype = kernel.dtype
     n_items = kernel.size(0)
 
-    # State tensors
-    di2s = kernel.diag().unsqueeze(0).expand(n_items, -1).clone()  # (N, N)
-    selected = torch.empty((n_items, num_groups), dtype=torch.long, device=device)
-    log_dets = torch.zeros(n_items, dtype=dtype, device=device)
-
     epsilon = 1e-10  # Local constant for JIT compatibility
 
+    # State tensors
+    diag = kernel.diag()
+    di2s = diag.unsqueeze(0).expand(n_items, -1).clone()  # (N, N)
+    selected = torch.empty((n_items, num_groups), dtype=torch.long, device=device)
+
     # Step 0: each trajectory b starts with item b
-    start_items = torch.arange(n_items, device=device)
-    selected[:, 0] = start_items
-    di_sq = kernel.diag().clamp(min=epsilon)
-    log_dets = torch.log(di_sq)
+    selected[:, 0] = torch.arange(n_items, device=device)
+    di_sq = diag.clamp(min=epsilon)
+    log_dets = torch.log(di_sq)  # (N,)
 
     # First orthogonal vectors: e0[b, j] = kernel[b, j] / sqrt(kernel[b, b])
-    e_prev = kernel / torch.sqrt(di_sq).unsqueeze(1)  # (N, N)
-    di2s = di2s - e_prev**2
+    inv_sqrt_di = torch.rsqrt(di_sq)  # 1/sqrt(di_sq), faster than sqrt+div
+    e_prev = kernel * inv_sqrt_di.unsqueeze(1)  # (N, N)
+    di2s.sub_(e_prev.square())
 
     # Mask starting groups
-    start_groups = item_to_group[start_items]
+    start_groups = item_to_group  # item_to_group[arange(n)] == item_to_group
     group_mask = item_to_group.unsqueeze(0) == start_groups.unsqueeze(1)
     di2s[group_mask] = -float("inf")
 
-    # Stack of orthogonal vectors: e_all[b, k, j]
-    e_all = e_prev.unsqueeze(1)  # (N, 1, N)
+    # Pre-allocate orthogonal vectors stack: e_all[b, k, j]
+    max_vecs = num_groups - 1  # Maximum number of orthogonal vectors needed
+    e_all = torch.empty((n_items, max_vecs, n_items), dtype=dtype, device=device)
+    e_all[:, 0, :] = e_prev
 
     for k in range(num_groups - 1):
         # Select next item for each trajectory
@@ -97,19 +99,21 @@ def _greedy_map_full_explore(
 
         if k < num_groups - 2:  # No need to compute for last iteration
             # Compute new orthogonal vector
-            elements = kernel[next_items, :]  # (N, N)
+            elements = kernel[next_items]  # (N, N)
 
-            # Get coefficients at selected items
+            # Get coefficients at selected items: e_all[b, :k+1, next_items[b]]
+            e_active = e_all[:, : k + 1, :]  # (N, k+1, N) — view, no copy
             idx = next_items.view(n_items, 1, 1).expand(-1, k + 1, 1)
-            coeffs = torch.gather(e_all, 2, idx).squeeze(2)  # (N, k+1)
+            coeffs = torch.gather(e_active, 2, idx).squeeze(2)  # (N, k+1)
 
-            # Compute dot product
-            dot_prod = torch.bmm(coeffs.unsqueeze(1), e_all).squeeze(1)  # (N, N)
+            # Compute dot product: coeffs @ e_active
+            dot_prod = torch.bmm(coeffs.unsqueeze(1), e_active).squeeze(1)  # (N, N)
 
-            e_new = (elements - dot_prod) / torch.sqrt(di_sq).unsqueeze(1)
-            e_all = torch.cat([e_all, e_new.unsqueeze(1)], dim=1)  # (N, k+2, N)
+            inv_sqrt_di = torch.rsqrt(di_sq)
+            e_new = (elements - dot_prod) * inv_sqrt_di.unsqueeze(1)
+            e_all[:, k + 1, :] = e_new  # Write in-place, no cat
 
-            di2s = di2s - e_new**2
+            di2s.sub_(e_new.square())
 
     return selected[torch.argmax(log_dets), :]
 
