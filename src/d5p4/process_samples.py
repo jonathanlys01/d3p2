@@ -8,9 +8,8 @@ import glob
 import json
 import os
 
-from data.qa import get_qa_dataset
-
 from d5p4.config import Config
+from d5p4.data.qa import get_qa_dataset
 from d5p4.eval_core import Evaluator
 
 

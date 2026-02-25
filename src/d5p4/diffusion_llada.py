@@ -12,12 +12,12 @@ python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.5
 
 import torch
 import torch.nn.functional as F
-from data import get_qa_dataset
-from llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
-from subsample import get_subsample_selector
 from torch import nn
 
 from d5p4.config import Cache, Config
+from d5p4.data import get_qa_dataset
+from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
+from d5p4.subsample import get_subsample_selector
 from d5p4.utils import get_tokenizer, process_model_args, sample_categorical, tqdm
 
 

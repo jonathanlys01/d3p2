@@ -19,13 +19,13 @@ if TYPE_CHECKING:
 
 
 # Configuration
-N_TRIALS = 50
+N_TRIALS = 200
 WARMUP_TRIALS = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
 GROUP_SIZE_LIST = [4, 8, 16, 32]
-W_VALUES = [0.1, 0.5, 1.0, 2.0, 5.0]
+W_VALUES = np.logspace(-1, 2, num=10).tolist()  # 0.1 to 100 log scale
 
 IMPLEMENTED_METHODS = [
     ("greedy_map", True),
@@ -115,9 +115,9 @@ def main():  # noqa: C901, PLR0915
                         group_size=group_size,
                         n_groups=n_groups,
                         _w_interaction=w,
+                        _diversity_alpha=w,  # 1-1 mapping for simplicity in this benchmark
                         _kernel_type="cosine",
                         _temperature=1e-4,
-                        _diversity_alpha=5.0,
                         _kernel_power=3,
                     )
                     selector_ = get_subsample_selector(config)

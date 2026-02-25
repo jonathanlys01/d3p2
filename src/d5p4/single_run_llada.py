@@ -8,10 +8,9 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-from data import get_qa_dataset
-
 from d5p4.common_exps import eval_samples
 from d5p4.config import RESULTS_DIR, Config
+from d5p4.data import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.utils import compile_model, print, seed_all
 

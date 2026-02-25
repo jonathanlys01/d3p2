@@ -5,12 +5,12 @@ Mimics the behavior of diffusion samplers but uses standard left-to-right genera
 
 import torch
 import torch.nn.functional as F
-from subsample import get_subsample_selector
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.cache_utils import DynamicCache
 
 from d5p4.config import Cache, Config
+from d5p4.subsample import get_subsample_selector
 from d5p4.utils import get_tokenizer, print, process_model_args, sample_categorical, tqdm
 
 

@@ -9,19 +9,19 @@ import json
 import os
 from collections import Counter
 
-import mauve
 import numpy as np
 import ot
 import sacrebleu
 import torch
 import torch.nn.functional as F
-from jina_ref.modeling_bert import JinaBertModel
 from nltk.util import ngrams
 from scipy.stats._continuous_distns import t
 from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+from d5p4 import mauve
 from d5p4.config import CACHE_DIR
+from d5p4.jina_ref.modeling_bert import JinaBertModel
 from d5p4.utils import print as u_print
 from d5p4.utils import process_model_args, tqdm
 
