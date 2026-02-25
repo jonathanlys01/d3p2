@@ -3,17 +3,19 @@
 import csv
 import time
 from collections import defaultdict
+from time import perf_counter
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from d5p4.config import Cache, Config
-from d5p4.subsample import get_subsample_selector
+from d5p4.subsample import BaseSelector, get_subsample_selector
 
 
 # Configuration
 N_TRIALS = 50
+WARMUP_TRIALS = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
@@ -33,6 +35,11 @@ C_GB = "\033[93m"  # Yellow
 C_DB = "\033[92m"  # Green
 C_R = "\033[95m"  # Magenta
 C_RST = "\033[0m"  # Reset
+
+
+def _sync_if_cuda() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 
 def compute_log_det(kernel: torch.Tensor, indices: list) -> float:
@@ -69,17 +76,18 @@ def compute_ranks_1_to_N(scores: list[float]) -> list[float]:
     return ranks
 
 
-def main():
+def main():  # noqa: C901, PLR0915
     """Benchmark scaling performance of subsampling methods."""
     print("Subsampling Methods Scaling Benchmark")
     print(f"Trials per setting: {N_TRIALS}")
+    print(f"Warmup trials per setting: {WARMUP_TRIALS}")
     print("Metrics: Raw average log-det on reference kernel, and average rank (1=best)\n")
 
     print(
         f"{'N_G':>4} | {'N_I':>4} | {'w_int':>5} | "
         f"{C_GM}{'Raw GM':>8}{C_RST} | {C_GB}{'Raw GB':>8}{C_RST} | {C_DB}{'Raw DB':>8}{C_RST} | {C_R}{'Raw R':>8}{C_RST} | "  # noqa: E501
         f"{C_GM}{'Rnk GM':>6}{C_RST} | {C_GB}{'Rnk GB':>6}{C_RST} | {C_DB}{'Rnk DB':>6}{C_RST} | {C_R}{'Rnk R':>6}{C_RST} | "  # noqa: E501
-        f"{C_GM}{'T GM(s)':>7}{C_RST} | {C_GB}{'T GB(s)':>7}{C_RST} | {C_DB}{'T DB(s)':>7}{C_RST} | {C_R}{'T R(s)':>7}{C_RST}",  # noqa: E501
+        f"{C_GM}{'T50 GM':>7}{C_RST} | {C_GB}{'T50 GB':>7}{C_RST} | {C_DB}{'T50 DB':>7}{C_RST} | {C_R}{'T50 R':>7}{C_RST}",  # noqa: E501
     )
     print("-" * 135)
 
@@ -93,6 +101,35 @@ def main():
                 raw_scores = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 ranks = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 times = {m[0]: [] for m in IMPLEMENTED_METHODS}
+                selectors: dict[str, BaseSelector] = {}
+
+                for method, transversal in IMPLEMENTED_METHODS:
+                    config = Config(
+                        method=method,
+                        transversal=transversal,
+                        group_size=group_size,
+                        n_groups=n_groups,
+                        _w_interaction=w,
+                        _kernel_type="cosine",
+                        _temperature=1e-4,
+                        _diversity_alpha=10.0,
+                        _kernel_power=3,
+                    )
+                    selector_ = get_subsample_selector(config)
+                    selectors[method] = selector_
+
+                # Warmup: exclude first-call/setup effects from timed measurements.
+                for warmup_idx in range(WARMUP_TRIALS):
+                    torch.manual_seed(100_000 + warmup_idx)
+                    embeddings = torch.randn(total_items, 8, 32, device=DEVICE)
+                    lpx = torch.randn(total_items, 8, 50, device=DEVICE)
+                    seq = torch.arange(total_items, device=DEVICE)
+                    cache = Cache(embeddings=embeddings, log_p_x0=lpx, x=seq)
+
+                    for method, _ in IMPLEMENTED_METHODS:
+                        _sync_if_cuda()
+                        _ = selectors[method].subsample(cache)
+                        _sync_if_cuda()
 
                 for trial in range(N_TRIALS):
                     torch.manual_seed(trial)
@@ -106,22 +143,13 @@ def main():
                     trial_raw = []
 
                     for method, transversal in IMPLEMENTED_METHODS:
-                        config = Config(
-                            method=method,
-                            transversal=transversal,
-                            group_size=group_size,
-                            n_groups=n_groups,
-                            _w_interaction=w,
-                            _kernel_type="cosine",
-                            _temperature=1e-4,
-                            _diversity_alpha=10.0,
-                            _kernel_power=3,
-                        )
-                        selector = get_subsample_selector(config)
+                        selector = selectors[method]
 
-                        start_time = time.time()
+                        _sync_if_cuda()
+                        start_time = perf_counter()
                         indices = selector.subsample(cache)
-                        end_time = time.time()
+                        _sync_if_cuda()
+                        elapsed = perf_counter() - start_time
 
                         if isinstance(indices, torch.Tensor):
                             indices = indices.detach().cpu().tolist()
@@ -132,7 +160,7 @@ def main():
                         trial_raw.append(score)
 
                         raw_scores[method].append(score)
-                        times[method].append(end_time - start_time)
+                        times[method].append(elapsed)
 
                     # Compute rank for this trial (higher raw score is better)
                     trial_r = compute_ranks_1_to_N(trial_raw)
@@ -146,7 +174,9 @@ def main():
                     for m in IMPLEMENTED_METHODS
                 ]
                 avg_rnk = [float(np.mean(ranks[m[0]])) for m in IMPLEMENTED_METHODS]
-                avg_times = [float(np.mean(times[m[0]])) for m in IMPLEMENTED_METHODS]
+                med_times = [float(np.median(times[m[0]])) for m in IMPLEMENTED_METHODS]
+                p95_times = [float(np.percentile(times[m[0]], 95)) for m in IMPLEMENTED_METHODS]
+                std_times = [float(np.std(times[m[0]])) for m in IMPLEMENTED_METHODS]
 
                 print(
                     f"{n_groups:>4} | {group_size:>4} | {w:>5.2f} | "
@@ -154,8 +184,8 @@ def main():
                     f"{C_DB}{avg_raw[2]:>8.2f}{C_RST} | {C_R}{avg_raw[3]:>8.2f}{C_RST} | "
                     f"{C_GM}{avg_rnk[0]:>6.2f}{C_RST} | {C_GB}{avg_rnk[1]:>6.2f}{C_RST} | "
                     f"{C_DB}{avg_rnk[2]:>6.2f}{C_RST} | {C_R}{avg_rnk[3]:>6.2f}{C_RST} | "
-                    f"{C_GM}{avg_times[0]:>7.4f}{C_RST} | {C_GB}{avg_times[1]:>7.4f}{C_RST} | "
-                    f"{C_DB}{avg_times[2]:>7.4f}{C_RST} | {C_R}{avg_times[3]:>7.4f}{C_RST}",
+                    f"{C_GM}{med_times[0]:>7.4f}{C_RST} | {C_GB}{med_times[1]:>7.4f}{C_RST} | "
+                    f"{C_DB}{med_times[2]:>7.4f}{C_RST} | {C_R}{med_times[3]:>7.4f}{C_RST}",
                 )
 
                 all_results.append(
@@ -171,10 +201,18 @@ def main():
                         "rnk_gb": avg_rnk[1],
                         "rnk_db": avg_rnk[2],
                         "rnk_r": avg_rnk[3],
-                        "time_gm": avg_times[0],
-                        "time_gb": avg_times[1],
-                        "time_db": avg_times[2],
-                        "time_r": avg_times[3],
+                        "time50_gm": med_times[0],
+                        "time50_gb": med_times[1],
+                        "time50_db": med_times[2],
+                        "time50_r": med_times[3],
+                        "time95_gm": p95_times[0],
+                        "time95_gb": p95_times[1],
+                        "time95_db": p95_times[2],
+                        "time95_r": p95_times[3],
+                        "time_std_gm": std_times[0],
+                        "time_std_gb": std_times[1],
+                        "time_std_db": std_times[2],
+                        "time_std_r": std_times[3],
                     },
                 )
 
@@ -182,6 +220,7 @@ def main():
         f"\nNB: {C_GM}GM (Greedy Map){C_RST}, {C_GB}GB (Greedy Beam){C_RST}, "
         f"{C_DB}DB (Diverse Beam){C_RST}, {C_R}R (Random){C_RST}",
     )
+    print("Timing columns in table use median latency (T50, seconds). CSV also includes T95 and std.")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     csv_file = f"subsample_benchmark_{timestamp}.csv"
