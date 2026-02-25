@@ -4,14 +4,14 @@ from typing import List
 
 import torch
 
-from d5p4.config import Cache
+from d5p4.config import Cache, Config
 from d5p4.subsample.base import BaseSelector, fallback_greedy, fallback_greedy_block
 
 
 class GreedyMAP(BaseSelector):
     """Greedy MAP-DPP selector maximizing log-determinant of the kernel submatrix."""
 
-    def __init__(self, config):
+    def __init__(self, config: Config):
         super().__init__(config)
         self._buf_n_items: int = 0
         self._precomputed: list[torch.Tensor] = []
