@@ -13,7 +13,7 @@ class GreedyMAP(BaseSelector):
 
     def __init__(self, config: Config):
         super().__init__(config)
-        self._buf_n_items: int = 0
+        self._buf_signature: tuple[int, str, str, bool] | None = None
         self._precomputed: list[torch.Tensor] = []
         self._bufs: list[torch.Tensor] = []
         self._buf_group_size_each: int = 0
@@ -22,31 +22,44 @@ class GreedyMAP(BaseSelector):
         """Check that all selected indices are unique."""
         return torch.unique(ret).size(0) >= self.config.n_groups * self.distributed_mul
 
-    def _ensure_buffers(self, n_items: int, device: torch.device, dtype: torch.dtype, transversal: bool):
-        """Lazily allocate work buffers and pre-computed tensors. Only re-allocates if n_items changes."""
-        if self._buf_n_items == n_items:
-            return
-
+    def _build_precomputed(
+        self,
+        n_items: int,
+        device: torch.device,
+        transversal: bool,
+    ) -> tuple[list[torch.Tensor], int]:
+        """Build static indexing tensors used by the buffered greedy kernel."""
         n_groups = self.config.n_groups * self.distributed_mul
-        n_traj = n_items  # max_trajectories=0, all items
-
-        # Pre-compute constant tensors (item_to_group, group_member_table, start_items)
         if transversal:
-            item_to_group = torch.arange(n_groups, device=device).repeat_interleave(n_items // n_groups)
+            expected = n_groups * self.config.group_size
+            assert n_items == expected, (
+                "Kernel size must match config in transversal mode: "
+                f"got {n_items}, expected {expected} ({n_groups} groups x {self.config.group_size} items)."
+            )
+            group_size_each = self.config.group_size
+            item_to_group = torch.arange(n_groups, device=device).repeat_interleave(group_size_each)
         else:
+            group_size_each = 1
             item_to_group = torch.arange(n_items, device=device)
 
-        n_unique_groups = int(item_to_group.max().item()) + 1
-        _, sort_perm = item_to_group.sort(stable=True)
-        group_size_each = n_items // n_unique_groups
-        group_member_table = sort_perm.view(n_unique_groups, group_size_each)
+        assert n_items % group_size_each == 0, "Invalid group partition for greedy MAP buffer setup."
+        group_member_table = torch.arange(n_items, device=device).view(-1, group_size_each)
         start_items = torch.arange(n_items, device=device)
+        return [item_to_group, group_member_table, start_items], group_size_each
 
-        self._precomputed = [item_to_group, group_member_table, start_items]
-        self._buf_group_size_each = group_size_each
+    def _ensure_buffers(self, n_items: int, device: torch.device, dtype: torch.dtype, transversal: bool):
+        """Lazily allocate work buffers and precomputed indices for the current mode/shape."""
+        n_groups = self.config.n_groups * self.distributed_mul
+        signature = (n_items, str(device), str(dtype), transversal)
+        if self._buf_signature == signature:
+            return
 
-        # Pre-allocate ALL work buffers — these persist across calls
+        precomputed, group_size_each = self._build_precomputed(n_items, device, transversal)
+        n_traj = n_items  # full exploration: one trajectory per start item
         max_vecs = n_groups - 1
+
+        self._precomputed = precomputed
+        self._buf_group_size_each = group_size_each
         self._bufs = [
             torch.empty(n_items, dtype=dtype, device=device),  # 0: diag_buf
             torch.empty((n_traj, n_items), dtype=dtype, device=device),  # 1: di2s
@@ -61,8 +74,7 @@ class GreedyMAP(BaseSelector):
             torch.empty((n_traj, max_vecs, 1), dtype=dtype, device=device),  # 10: coeffs_buf
             torch.empty((n_traj, 1, n_items), dtype=dtype, device=device),  # 11: bmm_buf
         ]
-
-        self._buf_n_items = n_items
+        self._buf_signature = signature
 
     def _transversal(self, cache: Cache) -> torch.Tensor | None:
         """Transversal selection: one sample per group, maximizing log-determinant."""
@@ -70,6 +82,7 @@ class GreedyMAP(BaseSelector):
             return None
 
         n_groups = self.config.n_groups * self.distributed_mul
+        assert n_groups <= L.size(0), "Number of requested selections cannot exceed kernel size."
         self._ensure_buffers(L.size(0), L.device, L.dtype, transversal=True)
         ret = _greedy_map_buffered(
             L,
@@ -89,6 +102,7 @@ class GreedyMAP(BaseSelector):
             return None
 
         n_groups = self.config.n_groups * self.distributed_mul
+        assert n_groups <= L.size(0), "Number of requested selections cannot exceed kernel size."
         self._ensure_buffers(L.size(0), L.device, L.dtype, transversal=False)
         ret = _greedy_map_buffered(
             L,
@@ -104,10 +118,9 @@ class GreedyMAP(BaseSelector):
 
 
 @torch.jit.script
-def _greedy_map_buffered(
+def _greedy_map_buffered(  # noqa: PLR0915
     kernel: torch.Tensor,
     num_groups: int,
-    group_size_each: int,
     precomputed: List[torch.Tensor],
     bufs: List[torch.Tensor],
 ) -> torch.Tensor:
@@ -217,7 +230,7 @@ def _greedy_map_buffered(
 
 
 @torch.jit.script
-def _greedy_map_full_explore(
+def _greedy_map_full_explore(  # noqa: PLR0915
     kernel: torch.Tensor,
     num_groups: int,
     item_to_group: torch.Tensor,
