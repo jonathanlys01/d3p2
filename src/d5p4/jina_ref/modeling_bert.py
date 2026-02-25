@@ -17,17 +17,15 @@
 """PyTorch BERT model."""
 
 import math
-import os
 import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
-import numpy as np
 
+import numpy as np
 import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
@@ -54,7 +52,9 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
+
 from .configuration_bert import JinaBertConfig
+
 
 # Torch implementation
 try:
@@ -170,7 +170,7 @@ class JinaBertSelfAttention(nn.Module):
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
                 f"The hidden size ({config.hidden_size}) is not a multiple of the number of attention "
-                f"heads ({config.num_attention_heads})"
+                f"heads ({config.num_attention_heads})",
             )
 
         self.attn_implementation = config.attn_implementation
@@ -489,7 +489,7 @@ class JinaBertLayer(nn.Module):
             if not hasattr(self, "crossattention"):
                 raise ValueError(
                     f"If `encoder_hidden_states` are passed, {self} has to be instantiated with cross-attention layers"
-                    " by setting `config.add_cross_attention=True`"
+                    " by setting `config.add_cross_attention=True`",
                 )
 
             # cross_attn cached key/values tuple is at positions 3,4 of past_key_value tuple
@@ -562,11 +562,11 @@ class JinaBertEncoder(nn.Module):
 
             if math.log2(n_heads).is_integer():
                 return get_slopes_power_of_2(
-                    n_heads
+                    n_heads,
                 )  # In the paper, we only train models that have 2^a heads for some a. This function has
             else:  # some good properties that only occur when the input is a power of 2. To maintain that even
                 closest_power_of_2 = 2 ** math.floor(
-                    math.log2(n_heads)
+                    math.log2(n_heads),
                 )  # when the number of heads is not a power of 2, we use this workaround.
                 return (
                     get_slopes_power_of_2(closest_power_of_2)
@@ -622,7 +622,7 @@ class JinaBertEncoder(nn.Module):
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...",
                 )
                 use_cache = False
 
@@ -1056,9 +1056,7 @@ class JinaBertModel(JinaBertPreTrainedModel):
             # Accumulate in fp32 to avoid overflow
             token_embs = token_embs.float()
 
-            if output_value == "token_embeddings":
-                raise NotImplementedError
-            elif output_value is None:
+            if output_value == "token_embeddings" or output_value is None:
                 raise NotImplementedError
             else:
                 embeddings = self.mean_pooling(token_embs, encoded_input["attention_mask"])
@@ -1496,7 +1494,7 @@ class JinaBertForMaskedLM(JinaBertPreTrainedModel):
         if config.is_decoder:
             logger.warning(
                 "If you want to use `JinaBertForMaskedLM` make sure `config.is_decoder=False` for "
-                "bi-directional self-attention."
+                "bi-directional self-attention.",
             )
 
         self.bert = JinaBertModel(config, add_pooling_layer=False)

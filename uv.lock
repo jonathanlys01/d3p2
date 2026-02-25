@@ -362,7 +362,7 @@ wheels = [
 [[package]]
 name = "d3p2"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "datasets" },
     { name = "dppy" },

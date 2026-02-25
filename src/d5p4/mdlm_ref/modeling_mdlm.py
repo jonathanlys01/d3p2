@@ -1,20 +1,21 @@
 """MDLM model for Hugging Face."""
 
-from contextlib import nullcontext
 import math
 import typing
+from contextlib import nullcontext
 
 import flash_attn
 import flash_attn.layers.rotary
 import torch
 import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 import transformers
 from einops import rearrange
 from torch import nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import modeling_outputs
 
 from mdlm_ref.configuration_mdlm import MDLMConfig
+
 
 SUPPORTS_FLASH = torch.cuda.get_device_properties(0).major >= 8 if torch.cuda.is_available() else False
 
@@ -251,7 +252,7 @@ class DDiTBlock(nn.Module):
         if SUPPORTS_FLASH:
             if seqlens is None:
                 cu_seqlens = torch.arange(
-                    0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=qkv.device
+                    0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=qkv.device,
                 )
             else:
                 cu_seqlens = seqlens.cumsum(-1)

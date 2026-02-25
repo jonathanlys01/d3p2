@@ -3,8 +3,7 @@
 import torch
 
 from d5p4.config import Cache, Config
-
-from .base import BaseSelector
+from d5p4.subsample.base import BaseSelector
 
 
 class Exhaustive(BaseSelector):

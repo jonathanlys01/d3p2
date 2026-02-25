@@ -2,16 +2,16 @@
 # License: GPLv3
 
 import math
-import numpy as np
 import time
 from types import SimpleNamespace
 
 import faiss
-from sklearn.preprocessing import normalize
+import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.metrics import auc as compute_area_under_curve
+from sklearn.preprocessing import normalize
 
-from .utils_mauve import get_tokenizer, get_model, featurize_tokens_from_model, get_device_from_arg
+from .utils_mauve import featurize_tokens_from_model, get_device_from_arg, get_model, get_tokenizer
 
 
 MODEL, TOKENIZER, MODEL_NAME = None, None, None
@@ -191,7 +191,7 @@ def get_features_from_input(
             texts = [sen for sen in texts if len(sen) > 0]  # Remove empty strings.
             if len(texts) == 0:
                 raise ValueError(f"Variable `{name}_text` is empty. Please provide non-empty strings.")
-            if TOKENIZER is None or MODEL_NAME != featurize_model_name:
+            if TOKENIZER is None or featurize_model_name != MODEL_NAME:
                 if verbose:
                     print("Loading tokenizer")
                 TOKENIZER = get_tokenizer(featurize_model_name)
@@ -200,17 +200,16 @@ def get_features_from_input(
             tokenized_texts = [
                 TOKENIZER.encode(sen, return_tensors="pt", truncation=True, max_length=max_len) for sen in texts
             ]
-        else:
-            # Make sure tokenized texts are not empty.
-            if len(tokenized_texts) == 0:
-                raise ValueError(f"Variable `{name}_tokens` is empty. Please provide non-empty tokenized texts.")
+        # Make sure tokenized texts are not empty.
+        elif len(tokenized_texts) == 0:
+            raise ValueError(f"Variable `{name}_tokens` is empty. Please provide non-empty tokenized texts.")
 
         # Use tokenized_texts to featurize.
-        if TOKENIZER is None or MODEL_NAME != featurize_model_name:
+        if TOKENIZER is None or featurize_model_name != MODEL_NAME:
             if verbose:
                 print("Loading tokenizer")
             TOKENIZER = get_tokenizer(featurize_model_name)
-        if MODEL is None or MODEL_NAME != featurize_model_name:
+        if MODEL is None or featurize_model_name != MODEL_NAME:
             if verbose:
                 print("Loading model")
             MODEL = get_model(featurize_model_name, TOKENIZER, device_id)
@@ -273,7 +272,7 @@ def cluster_feats(
     data1 = data1.astype(np.float32)  # Faiss requires float32.
     t1 = time.time()
     kmeans = faiss.Kmeans(
-        data1.shape[1], num_clusters, niter=max_iter, verbose=verbose, nredo=num_redo, update_index=True, seed=seed + 2
+        data1.shape[1], num_clusters, niter=max_iter, verbose=verbose, nredo=num_redo, update_index=True, seed=seed + 2,
     )
     kmeans.train(data1)
     _, labels = kmeans.index.search(data1, 1)

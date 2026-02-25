@@ -8,11 +8,11 @@ import json
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
-
 from config import CACHE_DIR, SEQUENCE_LENGTH
-from mauve.compute_mauve import compute_mauve
+from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
 from utils import process_model_args
+
+from mauve.compute_mauve import compute_mauve
 
 
 def load_reference_texts(
@@ -102,7 +102,7 @@ def load_samples_from_json(json_path: str) -> list[str]:
                 deduplicated.append(text)
         flattened = deduplicated
         print(
-            f"Loaded {original_count} samples from {json_path}, deduplicated to {len(flattened)} (group_size={group_size}, model={model_type})"
+            f"Loaded {original_count} samples from {json_path}, deduplicated to {len(flattened)} (group_size={group_size}, model={model_type})",
         )
     else:
         print(f"Loaded {len(flattened)} samples from {json_path}")
@@ -152,7 +152,7 @@ def main():
 
     # Load reference texts from .bin
     ref_texts = load_reference_texts(
-        args.bin_path, tokenizer=ref_tokenizer, max_samples=args.max_ref_samples, seq_len=args.seq_len
+        args.bin_path, tokenizer=ref_tokenizer, max_samples=args.max_ref_samples, seq_len=args.seq_len,
     )
 
     # Load generated samples from JSON

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from config import Config
+    from d5p4.config import Config
 
     from .base import BaseSelector
     from .baseline import BaselineSelection

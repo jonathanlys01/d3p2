@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from d5p4.config import Cache
-from .base import BaseSelector, _compute_scores
+from d5p4.subsample.base import BaseSelector, _compute_scores
 
 
 def _sample_from_logits(scores: torch.Tensor, k: int, temperature: float) -> torch.Tensor:

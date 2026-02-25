@@ -25,7 +25,6 @@ from torch import einsum, nn
 from transformers import PreTrainedModel
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.auto import AutoModel
 
 from .configuration_llada import (
     ActivationCheckpointingStrategy,

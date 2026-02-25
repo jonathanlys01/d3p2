@@ -3,8 +3,7 @@
 import torch
 
 from d5p4.config import Cache
-
-from .base import BaseSelector, fallback_greedy, fallback_greedy_block
+from d5p4.subsample.base import BaseSelector, fallback_greedy, fallback_greedy_block
 
 
 class GreedyMAP(BaseSelector):
@@ -160,7 +159,14 @@ def fast_greedy_map(
 if __name__ == "__main__":
     import timeit
 
-    dummy_kernel = torch.randn(8, 8)
-    dummy_item_to_group = torch.arange(8)
+    dummy_kernel_s = torch.randn(8, 8)
+    dummy_item_to_group_s = torch.arange(8)
+    print("Small kernel:")
+    print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel_s, 8, dummy_item_to_group_s), number=1000))
+    # print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))
+
+    dummy_kernel = torch.randn(128, 128)
+    dummy_item_to_group = torch.arange(128)
+    print("Large kernel:")
     print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group), number=1000))
-    print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))
+    # print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))

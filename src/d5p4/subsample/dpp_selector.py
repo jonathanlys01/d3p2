@@ -5,7 +5,7 @@ import torch
 from dppy.finite_dpps import FiniteDPP
 
 from d5p4.config import Cache
-from .base import BaseSelector
+from d5p4.subsample.base import BaseSelector
 
 
 class DPP(BaseSelector):
