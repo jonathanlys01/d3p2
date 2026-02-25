@@ -163,14 +163,16 @@ def fast_greedy_map(
 if __name__ == "__main__":
     import timeit
 
-    dummy_kernel_s = torch.randn(8, 8)
-    dummy_item_to_group_s = torch.arange(8)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    dummy_kernel_s = torch.randn(8, 8).to(device)
+    dummy_item_to_group_s = torch.arange(8).to(device)
     print("Small kernel:")
     print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel_s, 8, dummy_item_to_group_s), number=1000))
     # print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))
 
-    dummy_kernel = torch.randn(128, 128)
-    dummy_item_to_group = torch.arange(128)
+    dummy_kernel = torch.randn(128, 128).to(device)
+    dummy_item_to_group = torch.arange(128).to(device)
     print("Large kernel:")
     print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group), number=1000))
     # print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))
