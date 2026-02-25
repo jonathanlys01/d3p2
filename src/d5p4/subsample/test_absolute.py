@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from d5p4.config import Cache, Config
+from d5p4.config import HIDDEN_SIZE_MDLM, Cache, Config
 from d5p4.subsample import get_subsample_selector
 
 
@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 N_TRIALS = 200
 WARMUP_TRIALS = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SEQ_LEN = 8
+HIDDEN_SIZE = HIDDEN_SIZE_MDLM
+VOCAB_SIZE = 50
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
 GROUP_SIZE_LIST = [4, 8, 16, 32]
@@ -86,6 +89,7 @@ def main():  # noqa: C901, PLR0915
     print("Subsampling Methods Scaling Benchmark")
     print(f"Trials per setting: {N_TRIALS}")
     print(f"Warmup trials per setting: {WARMUP_TRIALS}")
+    print(f"Synthetic shapes: embeddings=[B,{SEQ_LEN},{HIDDEN_SIZE}], log_p_x0=[B,{SEQ_LEN},{VOCAB_SIZE}]")
     print("Metrics: Raw average log-det on reference kernel, and average rank (1=best)\n")
 
     print(
@@ -126,8 +130,8 @@ def main():  # noqa: C901, PLR0915
                 # Warmup: exclude first-call/setup effects from timed measurements.
                 for warmup_idx in range(WARMUP_TRIALS):
                     torch.manual_seed(100_000 + warmup_idx)
-                    embeddings = torch.randn(total_items, 8, 32, device=DEVICE)
-                    lpx = torch.randn(total_items, 8, 50, device=DEVICE)
+                    embeddings = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE)
+                    lpx = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE)
                     seq = torch.arange(total_items, device=DEVICE)
                     cache = Cache(embeddings=embeddings, log_p_x0=lpx, x=seq)
 
@@ -138,8 +142,8 @@ def main():  # noqa: C901, PLR0915
 
                 for trial in range(N_TRIALS):
                     torch.manual_seed(trial)
-                    embeddings = torch.randn(total_items, 8, 32, device=DEVICE)
-                    lpx = torch.randn(total_items, 8, 50, device=DEVICE)
+                    embeddings = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE)
+                    lpx = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE)
                     seq = torch.arange(total_items, device=DEVICE)
                     cache = Cache(embeddings=embeddings, log_p_x0=lpx, x=seq)
 
