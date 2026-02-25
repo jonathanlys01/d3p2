@@ -1,5 +1,7 @@
 """Greedy MAP-DPP subset selector with full exploration."""
 
+from typing import List
+
 import torch
 
 from d5p4.config import Cache
@@ -9,9 +11,58 @@ from d5p4.subsample.base import BaseSelector, fallback_greedy, fallback_greedy_b
 class GreedyMAP(BaseSelector):
     """Greedy MAP-DPP selector maximizing log-determinant of the kernel submatrix."""
 
+    def __init__(self, config):
+        super().__init__(config)
+        self._buf_n_items: int = 0
+        self._precomputed: list[torch.Tensor] = []
+        self._bufs: list[torch.Tensor] = []
+        self._buf_group_size_each: int = 0
+
     def _guard_unique(self, ret: torch.Tensor) -> bool:
         """Check that all selected indices are unique."""
         return torch.unique(ret).size(0) >= self.config.n_groups * self.distributed_mul
+
+    def _ensure_buffers(self, n_items: int, device: torch.device, dtype: torch.dtype, transversal: bool):
+        """Lazily allocate work buffers and pre-computed tensors. Only re-allocates if n_items changes."""
+        if self._buf_n_items == n_items:
+            return
+
+        n_groups = self.config.n_groups * self.distributed_mul
+        n_traj = n_items  # max_trajectories=0, all items
+
+        # Pre-compute constant tensors (item_to_group, group_member_table, start_items)
+        if transversal:
+            item_to_group = torch.arange(n_groups, device=device).repeat_interleave(n_items // n_groups)
+        else:
+            item_to_group = torch.arange(n_items, device=device)
+
+        n_unique_groups = int(item_to_group.max().item()) + 1
+        _, sort_perm = item_to_group.sort(stable=True)
+        group_size_each = n_items // n_unique_groups
+        group_member_table = sort_perm.view(n_unique_groups, group_size_each)
+        start_items = torch.arange(n_items, device=device)
+
+        self._precomputed = [item_to_group, group_member_table, start_items]
+        self._buf_group_size_each = group_size_each
+
+        # Pre-allocate ALL work buffers — these persist across calls
+        max_vecs = n_groups - 1
+        self._bufs = [
+            torch.empty(n_items, dtype=dtype, device=device),  # 0: diag_buf
+            torch.empty((n_traj, n_items), dtype=dtype, device=device),  # 1: di2s
+            torch.empty((n_traj, n_groups), dtype=torch.long, device=device),  # 2: selected
+            torch.empty(n_traj, dtype=dtype, device=device),  # 3: log_dets
+            torch.empty(n_traj, dtype=dtype, device=device),  # 4: scalar_buf
+            torch.empty((n_traj, n_items), dtype=dtype, device=device),  # 5: elements_buf
+            torch.empty((n_traj, max_vecs, n_items), dtype=dtype, device=device),  # 6: e_all
+            torch.empty(n_traj, dtype=torch.long, device=device),  # 7: groups_buf
+            torch.empty((n_traj, group_size_each), dtype=torch.long, device=device),  # 8: members_buf
+            torch.empty((n_traj, 1), dtype=dtype, device=device),  # 9: gather_buf
+            torch.empty((n_traj, max_vecs, 1), dtype=dtype, device=device),  # 10: coeffs_buf
+            torch.empty((n_traj, 1, n_items), dtype=dtype, device=device),  # 11: bmm_buf
+        ]
+
+        self._buf_n_items = n_items
 
     def _transversal(self, cache: Cache) -> torch.Tensor | None:
         """Transversal selection: one sample per group, maximizing log-determinant."""
@@ -19,8 +70,14 @@ class GreedyMAP(BaseSelector):
             return None
 
         n_groups = self.config.n_groups * self.distributed_mul
-        item_to_group = torch.arange(n_groups, device=L.device).repeat_interleave(L.size(0) // n_groups)
-        ret = _greedy_map_full_explore(L, n_groups, item_to_group)
+        self._ensure_buffers(L.size(0), L.device, L.dtype, transversal=True)
+        ret = _greedy_map_buffered(
+            L,
+            n_groups,
+            self._buf_group_size_each,
+            self._precomputed,
+            self._bufs,
+        )
 
         if not self._guard_unique(ret):
             ret = fallback_greedy_block(L, self.config.group_size, n_groups)
@@ -32,12 +89,131 @@ class GreedyMAP(BaseSelector):
             return None
 
         n_groups = self.config.n_groups * self.distributed_mul
-        item_to_group = torch.arange(L.size(0), device=L.device)
-        ret = _greedy_map_full_explore(L, n_groups, item_to_group)
+        self._ensure_buffers(L.size(0), L.device, L.dtype, transversal=False)
+        ret = _greedy_map_buffered(
+            L,
+            n_groups,
+            self._buf_group_size_each,
+            self._precomputed,
+            self._bufs,
+        )
 
         if not self._guard_unique(ret):
             ret = fallback_greedy(L, n_groups)
         return ret
+
+
+@torch.jit.script
+def _greedy_map_buffered(
+    kernel: torch.Tensor,
+    num_groups: int,
+    group_size_each: int,
+    precomputed: List[torch.Tensor],
+    bufs: List[torch.Tensor],
+) -> torch.Tensor:
+    """
+    Zero-allocation greedy MAP-DPP with pre-allocated buffers.
+
+    All tensor buffers are allocated externally (by GreedyMAP class) and reused
+    across calls, eliminating GPU memory allocation overhead in the hot path.
+    """
+    n_items = kernel.size(0)
+    n_traj = n_items
+    epsilon = 1e-10
+
+    # Unpack pre-computed constants
+    item_to_group = precomputed[0]
+    group_member_table = precomputed[1]
+    start_items = precomputed[2]
+
+    # Unpack pre-allocated work buffers
+    diag_buf = bufs[0]  # (N,)
+    di2s = bufs[1]  # (M, N)
+    selected = bufs[2]  # (M, K)
+    log_dets = bufs[3]  # (M,)
+    scalar_buf = bufs[4]  # (M,) — reused for max_vals, log, inv_sqrt
+    elements_buf = bufs[5]  # (M, N)
+    e_all = bufs[6]  # (M, K-1, N)
+    groups_buf = bufs[7]  # (M,) long
+    members_buf = bufs[8]  # (M, gs) long
+    gather_buf = bufs[9]  # (M, 1)
+    coeffs_buf = bufs[10]  # (M, K-1, 1)
+    bmm_buf = bufs[11]  # (M, 1, N) — also reused as sq_buf via squeeze
+
+    # ---- Setup (all in-place into pre-allocated buffers) ----
+
+    # Extract diagonal
+    diag_buf.copy_(torch.diagonal(kernel))  # diagonal() is a view, copy_ is in-place
+
+    # Initialize di2s from diag
+    di2s.copy_(diag_buf.unsqueeze(0).expand(n_traj, -1))
+
+    # Step 0: start items and initial log-det
+    selected[:, 0] = start_items
+    torch.index_select(diag_buf, 0, start_items, out=scalar_buf)
+    scalar_buf.clamp_(min=epsilon)  # scalar_buf = start_di_sq
+    torch.log(scalar_buf, out=log_dets)
+
+    # First orthogonal vectors → into elements_buf (reused as e_prev)
+    inv_sqrt = gather_buf.squeeze(1)  # (M,) view of (M,1) buffer
+    torch.rsqrt(scalar_buf, out=inv_sqrt)
+    torch.index_select(kernel, 0, start_items, out=elements_buf)
+    elements_buf.mul_(inv_sqrt.unsqueeze(1))
+
+    # di2s -= e_prev²
+    bmm_sq = bmm_buf.squeeze(1)  # (M, N) view of (M, 1, N)
+    torch.mul(elements_buf, elements_buf, out=bmm_sq)
+    di2s.sub_(bmm_sq)
+
+    # Mask starting groups
+    torch.index_select(item_to_group, 0, start_items, out=groups_buf)
+    torch.index_select(group_member_table, 0, groups_buf, out=members_buf)
+    di2s.scatter_(1, members_buf, -float("inf"))
+
+    # Copy e_prev into e_all
+    e_all[:, 0, :] = elements_buf
+
+    # ---- Main loop (zero allocations) ----
+
+    for k in range(num_groups - 1):
+        next_items = torch.argmax(di2s, dim=1)  # only unavoidable alloc
+        selected[:, k + 1] = next_items
+
+        # Gather di_sq
+        next_items_col = next_items.unsqueeze(1)
+        torch.gather(di2s, 1, next_items_col, out=gather_buf)
+        di_sq = gather_buf.squeeze(1)
+        di_sq.clamp_(min=epsilon)
+
+        # Accumulate log-det
+        torch.log(di_sq, out=scalar_buf)
+        log_dets.add_(scalar_buf)
+
+        # Mask selected groups
+        torch.index_select(item_to_group, 0, next_items, out=groups_buf)
+        torch.index_select(group_member_table, 0, groups_buf, out=members_buf)
+        di2s.scatter_(1, members_buf, -float("inf"))
+
+        if k < num_groups - 2:
+            torch.index_select(kernel, 0, next_items, out=elements_buf)
+
+            e_active = e_all[:, : k + 1, :]
+            idx = next_items_col.unsqueeze(1).expand(-1, k + 1, -1)
+            torch.gather(e_active, 2, idx, out=coeffs_buf[:, : k + 1, :])
+            coeffs = coeffs_buf[:, : k + 1, 0]
+
+            torch.bmm(coeffs.unsqueeze(1), e_active, out=bmm_buf)
+
+            elements_buf.sub_(bmm_buf.squeeze(1))
+            torch.rsqrt(di_sq, out=scalar_buf)
+            elements_buf.mul_(scalar_buf.unsqueeze(1))
+
+            e_all[:, k + 1, :] = elements_buf
+
+            torch.mul(elements_buf, elements_buf, out=bmm_sq)
+            di2s.sub_(bmm_sq)
+
+    return selected[torch.argmax(log_dets), :]
 
 
 @torch.jit.script
@@ -48,14 +224,8 @@ def _greedy_map_full_explore(
     max_trajectories: int = 0,
 ) -> torch.Tensor:
     """
-    Run M parallel greedy DPP selections, each starting from a different item.
-
-    Uses Cholesky-like orthogonalization to incrementally compute log-determinant.
-    Returns the trajectory with highest log-determinant.
-
-    Args:
-        max_trajectories: Cap on parallel trajectories (0 = all items).
-            Uses top-M items by diagonal value. Reduces GPU overhead for large N.
+    Standalone version (allocates its own buffers). Use _greedy_map_buffered
+    with GreedyMAP class for zero-allocation GPU performance.
     """
     device = kernel.device
     dtype = kernel.dtype
@@ -64,7 +234,6 @@ def _greedy_map_full_explore(
 
     diag = kernel.diag()
 
-    # --- Trajectory pruning: only explore most promising starting items ---
     if max_trajectories > 0 and max_trajectories < n_items:
         n_traj = max_trajectories
         _, start_items = torch.topk(diag, n_traj)
@@ -72,62 +241,72 @@ def _greedy_map_full_explore(
         n_traj = n_items
         start_items = torch.arange(n_items, device=device)
 
-    # --- Pre-compute group member table for scatter-based masking ---
-    # Replaces N×N boolean mask creation with a compact scatter operation
     n_unique_groups = int(item_to_group.max().item()) + 1
     _, sort_perm = item_to_group.sort(stable=True)
     group_size_each = n_items // n_unique_groups
-    group_member_table = sort_perm.view(n_unique_groups, group_size_each)  # (G, gs)
+    group_member_table = sort_perm.view(n_unique_groups, group_size_each)
 
-    # --- State tensors (M trajectories over N items) ---
-    di2s = diag.unsqueeze(0).expand(n_traj, -1).clone()  # (M, N)
+    di2s = diag.unsqueeze(0).expand(n_traj, -1).clone()
     selected = torch.empty((n_traj, num_groups), dtype=torch.long, device=device)
 
-    # Step 0: each trajectory starts from its designated item
     selected[:, 0] = start_items
-    start_di_sq = diag[start_items].clamp(min=epsilon)  # (M,)
+    start_di_sq = diag[start_items].clamp(min=epsilon)
     log_dets = torch.log(start_di_sq)
 
-    # First orthogonal vectors
-    inv_sqrt_di = torch.rsqrt(start_di_sq)
-    e_prev = kernel[start_items] * inv_sqrt_di.unsqueeze(1)  # (M, N)
+    inv_sqrt_buf = torch.rsqrt(start_di_sq)
+    e_prev = kernel[start_items] * inv_sqrt_buf.unsqueeze(1)
     di2s.sub_(e_prev.square())
 
-    # Mask starting groups via scatter (no boolean mask)
-    start_groups = item_to_group[start_items]  # (M,)
-    members = group_member_table[start_groups]  # (M, gs)
-    di2s.scatter_(1, members, -float("inf"))
+    start_groups = item_to_group[start_items]
+    members_buf = torch.empty((n_traj, group_size_each), dtype=torch.long, device=device)
+    torch.index_select(group_member_table, 0, start_groups, out=members_buf)
+    di2s.scatter_(1, members_buf, -float("inf"))
 
-    # Pre-allocate orthogonal vectors stack
     max_vecs = num_groups - 1
     e_all = torch.empty((n_traj, max_vecs, n_items), dtype=dtype, device=device)
     e_all[:, 0, :] = e_prev
 
+    gather_buf = torch.empty((n_traj, 1), dtype=dtype, device=device)
+    log_buf = torch.empty(n_traj, dtype=dtype, device=device)
+    next_groups_buf = torch.empty(n_traj, dtype=torch.long, device=device)
+    elements_buf = torch.empty((n_traj, n_items), dtype=dtype, device=device)
+    coeffs_buf = torch.empty((n_traj, max_vecs, 1), dtype=dtype, device=device)
+    bmm_buf = torch.empty((n_traj, 1, n_items), dtype=dtype, device=device)
+    sq_buf = torch.empty((n_traj, n_items), dtype=dtype, device=device)
+
     for k in range(num_groups - 1):
-        next_items = torch.argmax(di2s, dim=1)  # (M,)
+        next_items = torch.argmax(di2s, dim=1)
         selected[:, k + 1] = next_items
 
-        di_sq = torch.gather(di2s, 1, next_items.unsqueeze(1)).squeeze(1).clamp(min=epsilon)
-        log_dets = log_dets + torch.log(di_sq)
+        next_items_col = next_items.unsqueeze(1)
+        torch.gather(di2s, 1, next_items_col, out=gather_buf)
+        di_sq = gather_buf.squeeze(1).clamp_(min=epsilon)
 
-        # Mask selected groups via scatter
-        next_groups = item_to_group[next_items]
-        members = group_member_table[next_groups]  # (M, gs)
-        di2s.scatter_(1, members, -float("inf"))
+        torch.log(di_sq, out=log_buf)
+        log_dets.add_(log_buf)
+
+        torch.index_select(item_to_group, 0, next_items, out=next_groups_buf)
+        torch.index_select(group_member_table, 0, next_groups_buf, out=members_buf)
+        di2s.scatter_(1, members_buf, -float("inf"))
 
         if k < num_groups - 2:
-            elements = kernel[next_items]  # (M, N)
+            torch.index_select(kernel, 0, next_items, out=elements_buf)
 
-            e_active = e_all[:, : k + 1, :]  # (M, k+1, N) — view
-            idx = next_items.view(n_traj, 1, 1).expand(-1, k + 1, 1)
-            coeffs = torch.gather(e_active, 2, idx).squeeze(2)  # (M, k+1)
-            dot_prod = torch.bmm(coeffs.unsqueeze(1), e_active).squeeze(1)  # (M, N)
+            e_active = e_all[:, : k + 1, :]
+            idx = next_items_col.unsqueeze(1).expand(-1, k + 1, -1)
+            torch.gather(e_active, 2, idx, out=coeffs_buf[:, : k + 1, :])
+            coeffs = coeffs_buf[:, : k + 1, 0]
 
-            inv_sqrt_di = torch.rsqrt(di_sq)
-            e_new = (elements - dot_prod) * inv_sqrt_di.unsqueeze(1)
-            e_all[:, k + 1, :] = e_new
+            torch.bmm(coeffs.unsqueeze(1), e_active, out=bmm_buf)
 
-            di2s.sub_(e_new.square())
+            elements_buf.sub_(bmm_buf.squeeze(1))
+            torch.rsqrt(di_sq, out=inv_sqrt_buf)
+            elements_buf.mul_(inv_sqrt_buf.unsqueeze(1))
+
+            e_all[:, k + 1, :] = elements_buf
+
+            torch.mul(elements_buf, elements_buf, out=sq_buf)
+            di2s.sub_(sq_buf)
 
     return selected[torch.argmax(log_dets), :]
 
@@ -140,11 +319,6 @@ def fast_greedy_map(
     """
     Reference implementation: single-trajectory greedy MAP-DPP selection.
 
-    This is the original O(N*K) version without full exploration. It selects greedily
-    from a single starting point. The _greedy_map_full_explore function above runs N
-    parallel trajectories and picks the best one, which yields better results at the
-    cost of O(N^2*K) complexity.
-
     Adapted from: https://github.com/laming-chen/fast-map-dpp/blob/master/dpp.py
     """
     device, dtype = kernel.device, kernel.dtype
@@ -153,12 +327,10 @@ def fast_greedy_map(
     di2s = kernel.diag().clone()
     selected = torch.empty((num_groups,), dtype=torch.long, device=device)
 
-    # First selection
     selected_item = torch.argmax(di2s)
     selected[0] = selected_item
     di2s[item_to_group == item_to_group[selected_item]] = -torch.inf
 
-    # Remaining selections
     for k in range(1, num_groups):
         ci_optimal = cis[:k, selected_item]
         di_optimal = torch.sqrt(di2s[selected_item])
@@ -178,17 +350,52 @@ if __name__ == "__main__":
     import timeit
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # device = "mps"
 
+    # --- Standalone function benchmarks ---
     dummy_kernel_s = torch.randn(8, 8, device=device)
     dummy_item_to_group_s = torch.arange(8, device=device)
-    print("Small kernel (all):")
+    print("Standalone small kernel (all):")
     print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel_s, 8, dummy_item_to_group_s), number=1000))
 
     dummy_kernel = torch.randn(128, 128, device=device)
     dummy_item_to_group = torch.arange(128, device=device)
-    print("Large kernel (all):")
+    print("Standalone large kernel (all):")
     print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group), number=1000))
-    print("Large kernel (M=32):")
-    print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group, 32), number=1000))
-    print("Large kernel (M=16):")
-    print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group, 16), number=1000))
+
+    # --- Buffered version benchmarks (simulating class usage) ---
+    # Pre-allocate once
+    n_items, n_groups, dtype_ = 128, 8, dummy_kernel.dtype
+    n_traj = n_items
+    group_size_each = n_items // n_items  # non-transversal: each item = own group
+    itg = torch.arange(n_items, device=device)
+    _, sp = itg.sort(stable=True)
+    gmt = sp.view(n_items, group_size_each)
+    si = torch.arange(n_items, device=device)
+    pre = [itg, gmt, si]
+    max_vecs = n_groups - 1
+    work_bufs: list[torch.Tensor] = [
+        torch.empty(n_items, dtype=dtype_, device=device),
+        torch.empty((n_traj, n_items), dtype=dtype_, device=device),
+        torch.empty((n_traj, n_groups), dtype=torch.long, device=device),
+        torch.empty(n_traj, dtype=dtype_, device=device),
+        torch.empty(n_traj, dtype=dtype_, device=device),
+        torch.empty((n_traj, n_items), dtype=dtype_, device=device),
+        torch.empty((n_traj, max_vecs, n_items), dtype=dtype_, device=device),
+        torch.empty(n_traj, dtype=torch.long, device=device),
+        torch.empty((n_traj, group_size_each), dtype=torch.long, device=device),
+        torch.empty((n_traj, 1), dtype=dtype_, device=device),
+        torch.empty((n_traj, max_vecs, 1), dtype=dtype_, device=device),
+        torch.empty((n_traj, 1, n_items), dtype=dtype_, device=device),
+    ]
+
+    # Warmup JIT
+    _greedy_map_buffered(dummy_kernel, n_groups, group_size_each, pre, work_bufs)
+
+    print("Buffered large kernel (all, zero-alloc):")
+    print(
+        timeit.timeit(
+            lambda: _greedy_map_buffered(dummy_kernel, n_groups, group_size_each, pre, work_bufs),
+            number=1000,
+        ),
+    )
