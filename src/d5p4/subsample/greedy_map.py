@@ -55,22 +55,22 @@ if HAS_TRITON:
 
         log_det_total = 0.0
         current_item = pid  # Step 0: start item is the trajectory ID
+        current_di_sq = tl.load(diag_ptr + current_item)
 
         # Main greedy selection loop
         for k in tl.static_range(num_groups):
             # Record selection
             tl.store(selected_ptr + pid * stride_sel_traj + k * stride_sel_step, current_item)
 
-            # Extract scalar di2s for the current item
-            item_mask = offsets == current_item
-            di_sq = tl.sum(tl.where(item_mask, di2s, 0.0))
+            # Selected score from previous argmax (or initial diagonal at k=0)
+            di_sq = current_di_sq
             di_sq = tl.maximum(di_sq, 1e-10)
 
             # Accumulate log determinant
             log_det_total += tl.math.log(di_sq)
 
             # Mask out the group of the selected item
-            current_group = tl.sum(tl.where(item_mask, item_groups, 0))
+            current_group = tl.load(item_to_group_ptr + current_item)
             is_same_group = item_groups == current_group
             di2s = tl.where(is_same_group, -float("inf"), di2s)
 
@@ -87,8 +87,13 @@ if HAS_TRITON:
                         mask=mask,
                         other=0.0,
                     )
-                    # Get scalar coefficient: c_j = e_j[current_item]
-                    c_j = tl.sum(tl.where(item_mask, e_j, 0.0))
+                    # Get scalar coefficient directly: c_j = e_j[current_item]
+                    c_j = tl.load(
+                        e_all_ptr
+                        + pid * stride_e_traj
+                        + j * stride_e_vec
+                        + current_item * stride_e_item,
+                    )
                     # Project out
                     e_new = e_new - c_j * e_j
 
@@ -104,6 +109,7 @@ if HAS_TRITON:
 
                 # Find the next best item
                 current_item = tl.argmax(di2s, axis=0)
+                current_di_sq = tl.max(di2s, axis=0)
 
         # Store the final score for this trajectory
         tl.store(log_dets_ptr + pid, log_det_total)
