@@ -16,7 +16,6 @@ class GreedyMAP(BaseSelector):
         self._buf_signature: tuple[int, str, str, bool] | None = None
         self._precomputed: list[torch.Tensor] = []
         self._bufs: list[torch.Tensor] = []
-        self._buf_group_size_each: int = 0
 
     def _guard_unique(self, ret: torch.Tensor) -> bool:
         """Check that all selected indices are unique."""
@@ -59,7 +58,6 @@ class GreedyMAP(BaseSelector):
         max_vecs = n_groups - 1
 
         self._precomputed = precomputed
-        self._buf_group_size_each = group_size_each
         self._bufs = [
             torch.empty(n_items, dtype=dtype, device=device),  # 0: diag_buf
             torch.empty((n_traj, n_items), dtype=dtype, device=device),  # 1: di2s
@@ -87,7 +85,6 @@ class GreedyMAP(BaseSelector):
         ret = _greedy_map_buffered(
             L,
             n_groups,
-            self._buf_group_size_each,
             self._precomputed,
             self._bufs,
         )
@@ -107,7 +104,6 @@ class GreedyMAP(BaseSelector):
         ret = _greedy_map_buffered(
             L,
             n_groups,
-            self._buf_group_size_each,
             self._precomputed,
             self._bufs,
         )
