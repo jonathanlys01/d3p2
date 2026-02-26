@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 # Configuration
-N_TRIALS = 200
+N_TRIALS = 500
 WARMUP_TRIALS = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEQ_LEN = 8
