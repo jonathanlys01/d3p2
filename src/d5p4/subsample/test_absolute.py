@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from d5p4.config import HIDDEN_SIZE_MDLM, Cache, Config
 from d5p4.subsample import get_subsample_selector
+from d5p4.subsample.base import _compute_scores
 
 
 if TYPE_CHECKING:
@@ -48,6 +49,49 @@ C_RST = "\033[0m"  # Reset
 def _sync_if_cuda() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+def make_synthetic_cache(total_items: int, seed: int) -> Cache:
+    """
+    Generate realistic synthetic model outputs:
+    - embeddings: random latent representations
+    - log_p_x0: proper log-probabilities from log_softmax
+    - quality: per-item random [0,1] confidence controlling logit sharpness
+    """
+    g = torch.Generator(device=DEVICE)
+    g.manual_seed(seed)
+
+    embeddings = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE, generator=g)
+    quality = torch.rand(total_items, device=DEVICE, generator=g)
+
+    logits = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE, generator=g)
+    top_token = torch.randint(VOCAB_SIZE, (total_items, SEQ_LEN, 1), device=DEVICE, generator=g)
+    boost = (0.5 + 2.0 * quality).view(total_items, 1, 1).expand(-1, SEQ_LEN, 1)
+    logits = logits.scatter_add(2, top_token, boost)
+    log_p_x0 = F.log_softmax(logits, dim=-1)
+
+    seq = torch.arange(total_items, device=DEVICE)
+    return Cache(embeddings=embeddings, log_p_x0=log_p_x0, x=seq)
+
+
+def calibrate_diversity_alpha(cache: Cache) -> float:
+    """
+    Choose alpha so diversity penalty scale matches score scale:
+    adjusted_score = score - alpha * penalty.
+    We estimate alpha ~= std(score) / std(pairwise cosine penalty).
+    """
+    assert cache.embeddings is not None
+    flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
+    flat = F.normalize(flat, dim=-1, eps=1e-12)
+
+    scores = _compute_scores(cache)
+    sim = flat @ flat.T
+    off_diag = sim[~torch.eye(sim.size(0), dtype=torch.bool, device=sim.device)]
+
+    score_scale = float(scores.std().item())
+    penalty_scale = float(off_diag.std().item())
+    alpha = score_scale / (penalty_scale + 1e-12)
+    return float(np.clip(alpha, 1e-2, 100.0))
 
 
 def compute_log_det(kernel: torch.Tensor, indices: list) -> float:
@@ -111,6 +155,8 @@ def main():  # noqa: C901, PLR0915
                 ranks = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 times = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 selectors: dict[str, BaseSelector] = {}
+                pilot_cache = make_synthetic_cache(total_items, seed=900_000 + n_groups * 100 + group_size * 10)
+                calibrated_alpha = calibrate_diversity_alpha(pilot_cache)
 
                 for method, transversal in IMPLEMENTED_METHODS:
                     config = Config(
@@ -119,7 +165,7 @@ def main():  # noqa: C901, PLR0915
                         group_size=group_size,
                         n_groups=n_groups,
                         _w_interaction=w,
-                        _diversity_alpha=w,  # 1-1 mapping for simplicity in this benchmark
+                        _diversity_alpha=calibrated_alpha if method == "diverse_beam" else w,
                         _kernel_type="cosine",
                         _temperature=1e-4,
                         _kernel_power=3,
@@ -129,11 +175,7 @@ def main():  # noqa: C901, PLR0915
 
                 # Warmup: exclude first-call/setup effects from timed measurements.
                 for warmup_idx in range(WARMUP_TRIALS):
-                    torch.manual_seed(100_000 + warmup_idx)
-                    embeddings = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE)
-                    lpx = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE)
-                    seq = torch.arange(total_items, device=DEVICE)
-                    cache = Cache(embeddings=embeddings, log_p_x0=lpx, x=seq)
+                    cache = make_synthetic_cache(total_items, seed=100_000 + warmup_idx)
 
                     for method, _ in IMPLEMENTED_METHODS:
                         _sync_if_cuda()
@@ -141,13 +183,9 @@ def main():  # noqa: C901, PLR0915
                         _sync_if_cuda()
 
                 for trial in range(N_TRIALS):
-                    torch.manual_seed(trial)
-                    embeddings = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE)
-                    lpx = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE)
-                    seq = torch.arange(total_items, device=DEVICE)
-                    cache = Cache(embeddings=embeddings, log_p_x0=lpx, x=seq)
-
-                    ref_kernel = compute_similarity(embeddings)
+                    cache = make_synthetic_cache(total_items, seed=trial)
+                    assert cache.embeddings is not None
+                    ref_kernel = compute_similarity(cache.embeddings)
 
                     trial_raw = []
 
