@@ -14,7 +14,7 @@ from torch import nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import modeling_outputs
 
-from mdlm_ref.configuration_mdlm import MDLMConfig
+from d5p4.mdlm_ref.configuration_mdlm import MDLMConfig
 
 
 SUPPORTS_FLASH = torch.cuda.get_device_properties(0).major >= 8 if torch.cuda.is_available() else False
@@ -252,7 +252,11 @@ class DDiTBlock(nn.Module):
         if SUPPORTS_FLASH:
             if seqlens is None:
                 cu_seqlens = torch.arange(
-                    0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=qkv.device,
+                    0,
+                    (batch_size + 1) * seq_len,
+                    step=seq_len,
+                    dtype=torch.int32,
+                    device=qkv.device,
                 )
             else:
                 cu_seqlens = seqlens.cumsum(-1)

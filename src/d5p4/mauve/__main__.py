@@ -8,11 +8,11 @@ import json
 
 import numpy as np
 import torch
-from config import CACHE_DIR, SEQUENCE_LENGTH
+from d5p4.config import CACHE_DIR, SEQUENCE_LENGTH
 from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
-from utils import process_model_args
+from d5p4.utils import process_model_args
 
-from mauve.compute_mauve import compute_mauve
+from d5p4.mauve.compute_mauve import compute_mauve
 
 
 def load_reference_texts(
@@ -152,7 +152,10 @@ def main():
 
     # Load reference texts from .bin
     ref_texts = load_reference_texts(
-        args.bin_path, tokenizer=ref_tokenizer, max_samples=args.max_ref_samples, seq_len=args.seq_len,
+        args.bin_path,
+        tokenizer=ref_tokenizer,
+        max_samples=args.max_ref_samples,
+        seq_len=args.seq_len,
     )
 
     # Load generated samples from JSON
