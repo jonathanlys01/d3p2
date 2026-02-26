@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from transformers.modeling_outputs import MaskedLMOutput
 
 from d5p4.mdlm_ref.modeling_mdlm import MDLM
 
@@ -30,15 +31,13 @@ def main():  # noqa: PLR0915
     print(f"\nRunning inference on dummy tokens: shape {input_ids.shape}")
     with torch.no_grad():
         # MDLM usually returns logits or a custom output object
-        outputs = model(input_ids, output_hidden_states=True)
+        outputs: MaskedLMOutput = model(input_ids, return_dict=True)
+
+    assert outputs.hidden_states is not None
+    assert outputs.logits is not None
 
     logits = outputs.logits  # [B, L, V]
-    # Fetch last hidden state before output projection
-    if hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
-        embeddings = outputs.hidden_states[-1]
-    else:
-        print("Warning: no hidden_states returned. Using generic random tensor to finish script.")
-        embeddings = torch.randn(B, SEQ_LEN, model.config.hidden_size, device=device)
+    embeddings = outputs.hidden_states[-1]
 
     print("\n--- Shapes ---")
     print(f"Logits shape: {logits.shape}")
