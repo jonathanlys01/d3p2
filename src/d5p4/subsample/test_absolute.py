@@ -27,8 +27,8 @@ HIDDEN_SIZE = HIDDEN_SIZE_MDLM
 VOCAB_SIZE = 50
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
-GROUP_SIZE_LIST = [4, 8, 16, 32]
-W_VALUES = np.logspace(0, 2, num=15).tolist()  # 1 to 100 log scale
+GROUP_SIZE_LIST = [4, 8, 16, 32, 64]
+W_VALUES = np.logspace(np.log10(3), np.log10(99.9), num=15).tolist()  # 3 to 100 log scale
 
 IMPLEMENTED_METHODS = [
     ("greedy_map", True),
@@ -53,24 +53,27 @@ def _sync_if_cuda() -> None:
 def make_synthetic_cache(total_items: int, seed: int) -> Cache:
     """
     Generate realistic synthetic model outputs:
-    - embeddings: random latent representations
-    - log_p_x0: proper log-probabilities from log_softmax
+    - embeddings: heavy-tailed (non-gaussian) latent representations akin to LLMs
+    - log_p_x0: heavily peaked log-probabilities representing a large vocabulary
     - quality: per-item random [0,1] controlling per-item softmax temperature
     """
     g = torch.Generator(device=DEVICE)
     g.manual_seed(seed)
 
-    embeddings = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE, generator=g)
-    quality = torch.rand(total_items, device=DEVICE, generator=g)
+    # Embeddings in practice have heavy tails / outlier dimensions (non-Gaussian).
+    # We simulate this by applying a power transformation, then normalizing
+    # to a hypersphere (simulating RMSNorm/LayerNorm).
+    e_base = torch.randn(total_items, SEQ_LEN, HIDDEN_SIZE, device=DEVICE, generator=g)
+    embeddings = torch.sign(e_base) * (e_base**2)
+    embeddings = F.normalize(embeddings, dim=-1) * (HIDDEN_SIZE**0.5)
 
+    # In practice vocab is huge, leading to sharp log probabilities (Zipfian).
+    # We create a highly peaked distribution without materializing the full vocab
+    # by scaling standard normal (temperature effect) and adding a rank penalty.
     logits = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE, generator=g)
-    # Quality -> confidence via temperature scaling:
-    # low quality => high temperature (flatter probs), high quality => low temperature (sharper probs).
-    tau_min, tau_max = 0.35, 2.5
-    log_tau_min, log_tau_max = float(np.log(tau_min)), float(np.log(tau_max))
-    tau = torch.exp(log_tau_max - quality * (log_tau_max - log_tau_min))
-    scaled_logits = logits / tau.view(total_items, 1, 1)
-    log_p_x0 = F.log_softmax(scaled_logits, dim=-1)
+    zipf_bias = -torch.arange(VOCAB_SIZE, device=DEVICE).float()
+    logits = logits * 5.0 + zipf_bias
+    log_p_x0 = F.log_softmax(logits, dim=-1)
 
     seq = torch.arange(total_items, device=DEVICE)
     return Cache(embeddings=embeddings, log_p_x0=log_p_x0, x=seq)
