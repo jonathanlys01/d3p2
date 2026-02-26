@@ -26,10 +26,11 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEQ_LEN = 8
 HIDDEN_SIZE = HIDDEN_SIZE_MDLM
 VOCAB_SIZE = 50
+OFF_DIAG_WEIGHT = 0.6
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
 GROUP_SIZE_LIST = [4, 8, 16, 32]
-W_VALUES = np.logspace(-1, 2, num=10).tolist()  # 0.1 to 100 log scale
+W_VALUES = np.logspace(0, 2, num=15).tolist()  # 1 to 100 log scale
 
 IMPLEMENTED_METHODS = [
     ("greedy_map", True),
@@ -56,7 +57,7 @@ def make_synthetic_cache(total_items: int, seed: int) -> Cache:
     Generate realistic synthetic model outputs:
     - embeddings: random latent representations
     - log_p_x0: proper log-probabilities from log_softmax
-    - quality: per-item random [0,1] confidence controlling logit sharpness
+    - quality: per-item random [0,1] controlling per-item softmax temperature
     """
     g = torch.Generator(device=DEVICE)
     g.manual_seed(seed)
@@ -65,21 +66,27 @@ def make_synthetic_cache(total_items: int, seed: int) -> Cache:
     quality = torch.rand(total_items, device=DEVICE, generator=g)
 
     logits = torch.randn(total_items, SEQ_LEN, VOCAB_SIZE, device=DEVICE, generator=g)
-    top_token = torch.randint(VOCAB_SIZE, (total_items, SEQ_LEN, 1), device=DEVICE, generator=g)
-    boost = (0.5 + 2.0 * quality).view(total_items, 1, 1).expand(-1, SEQ_LEN, 1)
-    logits = logits.scatter_add(2, top_token, boost)
-    log_p_x0 = F.log_softmax(logits, dim=-1)
+    # Quality -> confidence via temperature scaling:
+    # low quality => high temperature (flatter probs), high quality => low temperature (sharper probs).
+    tau_min, tau_max = 0.35, 2.5
+    log_tau_min, log_tau_max = float(np.log(tau_min)), float(np.log(tau_max))
+    tau = torch.exp(log_tau_max - quality * (log_tau_max - log_tau_min))
+    scaled_logits = logits / tau.view(total_items, 1, 1)
+    log_p_x0 = F.log_softmax(scaled_logits, dim=-1)
 
     seq = torch.arange(total_items, device=DEVICE)
     return Cache(embeddings=embeddings, log_p_x0=log_p_x0, x=seq)
 
 
-def calibrate_diversity_alpha(cache: Cache) -> float:
+def calibrate_diversity_alpha(cache: Cache, off_diag_weight: float) -> float:
     """
-    Choose alpha so diversity penalty scale matches score scale:
-    adjusted_score = score - alpha * penalty.
-    We estimate alpha ~= std(score) / std(pairwise cosine penalty).
+    Choose alpha by standardized tradeoff:
+    adjusted = (1-beta) * z_score - beta * z_penalty, beta in (0,1).
+
+    Mapping to original form adjusted = score - alpha * penalty yields:
+    alpha = (beta / (1 - beta)) * (std(score) / std(penalty)).
     """
+    assert 0.0 < off_diag_weight < 1.0, "off_diag_weight must be in (0, 1)."
     assert cache.embeddings is not None
     flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
     flat = F.normalize(flat, dim=-1, eps=1e-12)
@@ -90,7 +97,8 @@ def calibrate_diversity_alpha(cache: Cache) -> float:
 
     score_scale = float(scores.std().item())
     penalty_scale = float(off_diag.std().item())
-    alpha = score_scale / (penalty_scale + 1e-12)
+    beta = off_diag_weight
+    alpha = (beta / (1.0 - beta)) * (score_scale / (penalty_scale + 1e-12))
     return float(np.clip(alpha, 1e-2, 100.0))
 
 
@@ -133,6 +141,7 @@ def main():  # noqa: C901, PLR0915
     print("Subsampling Methods Scaling Benchmark")
     print(f"Trials per setting: {N_TRIALS}")
     print(f"Warmup trials per setting: {WARMUP_TRIALS}")
+    print(f"Diverse beam off-diagonal weight (beta): {OFF_DIAG_WEIGHT:.2f}")
     print(f"Synthetic shapes: embeddings=[B,{SEQ_LEN},{HIDDEN_SIZE}], log_p_x0=[B,{SEQ_LEN},{VOCAB_SIZE}]")
     print("Metrics: Raw average log-det on reference kernel, and average rank (1=best)\n")
 
@@ -156,7 +165,7 @@ def main():  # noqa: C901, PLR0915
                 times = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 selectors: dict[str, BaseSelector] = {}
                 pilot_cache = make_synthetic_cache(total_items, seed=900_000 + n_groups * 100 + group_size * 10)
-                calibrated_alpha = calibrate_diversity_alpha(pilot_cache)
+                calibrated_alpha = calibrate_diversity_alpha(pilot_cache, off_diag_weight=OFF_DIAG_WEIGHT)
 
                 for method, transversal in IMPLEMENTED_METHODS:
                     config = Config(
