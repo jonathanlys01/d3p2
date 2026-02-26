@@ -146,7 +146,7 @@ def main():  # noqa: C901, PLR0915
                         group_size=group_size,
                         n_groups=n_groups,
                         _w_interaction=w,
-                        _diversity_alpha=10.0 * w if method == "diverse_beam" else w,
+                        _diversity_alpha=w,
                         _temperature=0.0,
                     )
                     selector_ = get_subsample_selector(config)
