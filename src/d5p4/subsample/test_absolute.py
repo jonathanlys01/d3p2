@@ -26,7 +26,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEQ_LEN = 8
 HIDDEN_SIZE = HIDDEN_SIZE_MDLM
 VOCAB_SIZE = 50
-OFF_DIAG_WEIGHT = 1.0
+OFF_DIAG_WEIGHT = 1.0 - 1e-2
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
 GROUP_SIZE_LIST = [4, 8, 16, 32]
