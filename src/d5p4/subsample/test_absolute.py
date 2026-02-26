@@ -12,7 +12,6 @@ import torch.nn.functional as F
 
 from d5p4.config import HIDDEN_SIZE_MDLM, Cache, Config
 from d5p4.subsample import get_subsample_selector
-from d5p4.subsample.base import _compute_scores
 
 
 if TYPE_CHECKING:
@@ -26,7 +25,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEQ_LEN = 8
 HIDDEN_SIZE = HIDDEN_SIZE_MDLM
 VOCAB_SIZE = 50
-OFF_DIAG_WEIGHT = 1.0 - 1e-2
 
 N_GROUPS_LIST = [4, 8, 16, 32, 64]
 GROUP_SIZE_LIST = [4, 8, 16, 32]
@@ -78,30 +76,6 @@ def make_synthetic_cache(total_items: int, seed: int) -> Cache:
     return Cache(embeddings=embeddings, log_p_x0=log_p_x0, x=seq)
 
 
-def calibrate_diversity_alpha(cache: Cache, off_diag_weight: float) -> float:
-    """
-    Choose alpha by standardized tradeoff:
-    adjusted = (1-beta) * z_score - beta * z_penalty, beta in (0,1).
-
-    Mapping to original form adjusted = score - alpha * penalty yields:
-    alpha = (beta / (1 - beta)) * (std(score) / std(penalty)).
-    """
-    assert 0.0 < off_diag_weight < 1.0, "off_diag_weight must be in (0, 1)."
-    assert cache.embeddings is not None
-    flat = cache.embeddings.float().reshape(cache.embeddings.size(0), -1)
-    flat = F.normalize(flat, dim=-1, eps=1e-12)
-
-    scores = _compute_scores(cache)
-    sim = flat @ flat.T
-    off_diag = sim[~torch.eye(sim.size(0), dtype=torch.bool, device=sim.device)]
-
-    score_scale = float(scores.std().item())
-    penalty_scale = float(off_diag.std().item())
-    beta = off_diag_weight
-    alpha = (beta / (1.0 - beta)) * (score_scale / (penalty_scale + 1e-12))
-    return float(np.clip(alpha, 1e-2, 100.0))
-
-
 def compute_log_det(kernel: torch.Tensor, indices: list) -> float:
     """Compute log-determinant of kernel submatrix."""
     if not indices or len(set(indices)) != len(indices):
@@ -141,7 +115,7 @@ def main():  # noqa: C901, PLR0915
     print("Subsampling Methods Scaling Benchmark")
     print(f"Trials per setting: {N_TRIALS}")
     print(f"Warmup trials per setting: {WARMUP_TRIALS}")
-    print(f"Diverse beam off-diagonal weight (beta): {OFF_DIAG_WEIGHT:.2f}")
+    print("Diverse beam uses diversity_alpha = 10 * w_int")
     print(f"Synthetic shapes: embeddings=[B,{SEQ_LEN},{HIDDEN_SIZE}], log_p_x0=[B,{SEQ_LEN},{VOCAB_SIZE}]")
     print("Metrics: Raw average log-det on reference kernel, and average rank (1=best)\n")
 
@@ -164,8 +138,6 @@ def main():  # noqa: C901, PLR0915
                 ranks = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 times = {m[0]: [] for m in IMPLEMENTED_METHODS}
                 selectors: dict[str, BaseSelector] = {}
-                pilot_cache = make_synthetic_cache(total_items, seed=900_000 + n_groups * 100 + group_size * 10)
-                calibrated_alpha = calibrate_diversity_alpha(pilot_cache, off_diag_weight=OFF_DIAG_WEIGHT)
 
                 for method, transversal in IMPLEMENTED_METHODS:
                     config = Config(
@@ -174,10 +146,8 @@ def main():  # noqa: C901, PLR0915
                         group_size=group_size,
                         n_groups=n_groups,
                         _w_interaction=w,
-                        _diversity_alpha=calibrated_alpha if method == "diverse_beam" else w,
-                        _kernel_type="cosine",
-                        _temperature=1e-4,
-                        _kernel_power=3,
+                        _diversity_alpha=10.0 * w if method == "diverse_beam" else w,
+                        _temperature=0.0,
                     )
                     selector_ = get_subsample_selector(config)
                     selectors[method] = selector_
