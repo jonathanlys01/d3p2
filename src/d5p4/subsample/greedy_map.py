@@ -1,7 +1,5 @@
 """Greedy MAP-DPP subset selector with full exploration."""
 
-from typing import List
-
 import torch
 
 
@@ -20,6 +18,21 @@ from d5p4.subsample.base import BaseSelector, fallback_greedy, fallback_greedy_b
 
 if HAS_TRITON:
 
+    @triton.autotune(  # type: ignore[misc]
+        configs=[
+            triton.Config({}, num_warps=4, num_stages=2),  # type: ignore[misc]
+            triton.Config({}, num_warps=8, num_stages=2),  # type: ignore[misc]
+            triton.Config({}, num_warps=16, num_stages=2),  # type: ignore[misc]
+            triton.Config({}, num_warps=4, num_stages=3),  # type: ignore[misc]
+            triton.Config({}, num_warps=8, num_stages=3),  # type: ignore[misc]
+            triton.Config({}, num_warps=16, num_stages=3),  # type: ignore[misc]
+            triton.Config({}, num_warps=4, num_stages=4),  # type: ignore[misc]
+            triton.Config({}, num_warps=8, num_stages=4),  # type: ignore[misc]
+            triton.Config({}, num_warps=16, num_stages=4),  # type: ignore[misc]
+            triton.Config({}, num_warps=32, num_stages=4),  # type: ignore[misc]
+        ],
+        key=["n_items", "num_groups"],
+    )
     @triton.jit  # type: ignore[misc]
     def _triton_greedy_map_kernel(  # noqa: PLR0913
         kernel_ptr,
@@ -35,9 +48,9 @@ if HAS_TRITON:
         stride_sel_traj,
         stride_sel_step,
         log_dets_ptr,
-        n_items: tl.constexpr,
-        num_groups: tl.constexpr,
-        BLOCK_SIZE: tl.constexpr,
+        n_items: int,
+        num_groups: int,
+        BLOCK_SIZE: int,
     ):
         """
         Triton kernel simulating N full trajectories in parallel.
@@ -58,7 +71,7 @@ if HAS_TRITON:
         current_di_sq = tl.load(diag_ptr + current_item)
 
         # Main greedy selection loop
-        for k in tl.static_range(num_groups):
+        for k in range(num_groups):
             # Record selection
             tl.store(selected_ptr + pid * stride_sel_traj + k * stride_sel_step, current_item)
 
@@ -89,10 +102,7 @@ if HAS_TRITON:
                     )
                     # Get scalar coefficient directly: c_j = e_j[current_item]
                     c_j = tl.load(
-                        e_all_ptr
-                        + pid * stride_e_traj
-                        + j * stride_e_vec
-                        + current_item * stride_e_item,
+                        e_all_ptr + pid * stride_e_traj + j * stride_e_vec + current_item * stride_e_item,
                     )
                     # Project out
                     e_new = e_new - c_j * e_j
@@ -134,7 +144,6 @@ def _run_triton_greedy_map(
     diag_buf.copy_(torch.diagonal(kernel))
 
     BLOCK_SIZE = triton.next_power_of_2(n_items)  # type: ignore[union-attr]
-    num_warps = 4 if BLOCK_SIZE <= 512 else 8
 
     _triton_greedy_map_kernel[(n_items,)](
         kernel,
@@ -153,7 +162,6 @@ def _run_triton_greedy_map(
         n_items=n_items,
         num_groups=num_groups,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
     )
 
     # CPU/GPU sync point: pick the best trajectory
@@ -209,10 +217,9 @@ class GreedyMAP(BaseSelector):
         precomputed, group_size_each = self._build_precomputed(n_items, device, transversal)
         self._precomputed = precomputed
 
-        n_traj = n_items
-        max_vecs = n_groups - 1
-
         if HAS_TRITON and device.type == "cuda":
+            n_traj = n_items
+            max_vecs = n_groups - 1
             # Triton only needs a few buffers, handled completely in VRAM
             self._bufs = [
                 torch.empty(n_items, dtype=dtype, device=device),  # diag_buf
@@ -221,21 +228,8 @@ class GreedyMAP(BaseSelector):
                 torch.empty((n_traj, max(1, max_vecs), n_items), dtype=dtype, device=device),  # e_all
             ]
         else:
-            # Fallback CPU buffers
-            self._bufs = [
-                torch.empty(n_items, dtype=dtype, device=device),  # 0: diag_buf
-                torch.empty((n_traj, n_items), dtype=dtype, device=device),  # 1: di2s
-                torch.empty((n_traj, n_groups), dtype=torch.long, device=device),  # 2: selected
-                torch.empty(n_traj, dtype=dtype, device=device),  # 3: log_dets
-                torch.empty(n_traj, dtype=dtype, device=device),  # 4: scalar_buf
-                torch.empty((n_traj, n_items), dtype=dtype, device=device),  # 5: elements_buf
-                torch.empty((n_traj, max(1, max_vecs), n_items), dtype=dtype, device=device),  # 6: e_all
-                torch.empty(n_traj, dtype=torch.long, device=device),  # 7: groups_buf
-                torch.empty((n_traj, group_size_each), dtype=torch.long, device=device),  # 8: members_buf
-                torch.empty((n_traj, 1), dtype=dtype, device=device),  # 9: gather_buf
-                torch.empty((n_traj, max(1, max_vecs), 1), dtype=dtype, device=device),  # 10: coeffs_buf
-                torch.empty((n_traj, 1, n_items), dtype=dtype, device=device),  # 11: bmm_buf
-            ]
+            # Fallback CPU buffers are allocated dynamically in a simpler loop
+            self._bufs = []
 
         self._buf_signature = signature
 
@@ -251,7 +245,7 @@ class GreedyMAP(BaseSelector):
         if HAS_TRITON and L.device.type == "cuda":
             ret = _run_triton_greedy_map(L, n_groups, self._precomputed[0], self._bufs)
         else:
-            ret = _greedy_map_buffered(L, n_groups, self._precomputed, self._bufs)
+            ret = _greedy_map_cpu(L, n_groups, self._precomputed[0], self._precomputed[1], self._precomputed[2])
 
         if not self._guard_unique(ret):
             ret = fallback_greedy_block(L, self.config.group_size, n_groups)
@@ -269,99 +263,68 @@ class GreedyMAP(BaseSelector):
         if HAS_TRITON and L.device.type == "cuda":
             ret = _run_triton_greedy_map(L, n_groups, self._precomputed[0], self._bufs)
         else:
-            ret = _greedy_map_buffered(L, n_groups, self._precomputed, self._bufs)
+            ret = _greedy_map_cpu(L, n_groups, self._precomputed[0], self._precomputed[1], self._precomputed[2])
 
         if not self._guard_unique(ret):
             ret = fallback_greedy(L, n_groups)
         return ret
 
 
-@torch.jit.script
-def _greedy_map_buffered(  # noqa: PLR0915
+def _greedy_map_cpu(
     kernel: torch.Tensor,
     num_groups: int,
-    precomputed: List[torch.Tensor],
-    bufs: List[torch.Tensor],
+    item_to_group: torch.Tensor,
+    group_member_table: torch.Tensor,
+    start_items: torch.Tensor,
 ) -> torch.Tensor:
-    """CPU/MPS fallback logic - exactly as originally written."""
+    """CPU fallback for greedy MAP-DPP."""
     n_items = kernel.size(0)
-    n_traj = n_items
     epsilon = 1e-10
 
-    item_to_group = precomputed[0]
-    group_member_table = precomputed[1]
-    start_items = precomputed[2]
-
-    diag_buf = bufs[0]
-    di2s = bufs[1]
-    selected = bufs[2]
-    log_dets = bufs[3]
-    scalar_buf = bufs[4]
-    elements_buf = bufs[5]
-    e_all = bufs[6]
-    groups_buf = bufs[7]
-    members_buf = bufs[8]
-    gather_buf = bufs[9]
-    coeffs_buf = bufs[10]
-    bmm_buf = bufs[11]
-
-    diag_buf.copy_(torch.diagonal(kernel))
-    di2s.copy_(diag_buf.unsqueeze(0).expand(n_traj, -1))
+    selected = torch.empty((n_items, num_groups), dtype=torch.long, device=kernel.device)
+    log_dets = torch.zeros(n_items, dtype=kernel.dtype, device=kernel.device)
 
     selected[:, 0] = start_items
-    torch.index_select(diag_buf, 0, start_items, out=scalar_buf)
-    scalar_buf.clamp_(min=epsilon)
-    torch.log(scalar_buf, out=log_dets)
 
-    inv_sqrt = gather_buf.squeeze(1)
-    torch.rsqrt(scalar_buf, out=inv_sqrt)
-    torch.index_select(kernel, 0, start_items, out=elements_buf)
-    elements_buf.mul_(inv_sqrt.unsqueeze(1))
+    diag = torch.diagonal(kernel).clamp(min=epsilon)
+    log_dets += torch.log(diag)
 
-    bmm_sq = bmm_buf.squeeze(1)
-    torch.mul(elements_buf, elements_buf, out=bmm_sq)
-    di2s.sub_(bmm_sq)
+    di2s = diag.unsqueeze(0).expand(n_items, -1).clone()
 
-    torch.index_select(item_to_group, 0, start_items, out=groups_buf)
-    torch.index_select(group_member_table, 0, groups_buf, out=members_buf)
-    di2s.scatter_(1, members_buf, -float("inf"))
+    start_groups = item_to_group[start_items]
+    start_members = group_member_table[start_groups]
+    di2s.scatter_(1, start_members, -float("inf"))
 
-    e_all[:, 0, :] = elements_buf
+    # Store Gram-Schmidt basis vectors
+    e_all = torch.zeros((n_items, num_groups, n_items), dtype=kernel.dtype, device=kernel.device)
 
-    for k in range(num_groups - 1):
+    e_0 = kernel[start_items] / torch.sqrt(diag).unsqueeze(1)
+    e_all[:, 0, :] = e_0
+    di2s -= e_0**2
+
+    for k in range(1, num_groups):
         next_items = torch.argmax(di2s, dim=1)
-        selected[:, k + 1] = next_items
+        selected[:, k] = next_items
 
-        next_items_col = next_items.unsqueeze(1)
-        torch.gather(di2s, 1, next_items_col, out=gather_buf)
-        di_sq = gather_buf.squeeze(1)
-        di_sq.clamp_(min=epsilon)
+        di_sq = di2s[torch.arange(n_items), next_items].clamp(min=epsilon)
+        log_dets += torch.log(di_sq)
 
-        torch.log(di_sq, out=scalar_buf)
-        log_dets.add_(scalar_buf)
+        next_groups = item_to_group[next_items]
+        next_members = group_member_table[next_groups]
+        di2s.scatter_(1, next_members, -float("inf"))
 
-        torch.index_select(item_to_group, 0, next_items, out=groups_buf)
-        torch.index_select(group_member_table, 0, groups_buf, out=members_buf)
-        di2s.scatter_(1, members_buf, -float("inf"))
+        if k < num_groups - 1:
+            e_new = kernel[next_items].clone()
+            e_active = e_all[:, :k, :]
 
-        if k < num_groups - 2:
-            torch.index_select(kernel, 0, next_items, out=elements_buf)
+            # Project out active basis using batched gather for coeffs
+            coeffs = e_active[torch.arange(n_items).unsqueeze(1), torch.arange(k).unsqueeze(0), next_items.unsqueeze(1)]
 
-            e_active = e_all[:, : k + 1, :]
-            idx = next_items_col.unsqueeze(1).expand(-1, k + 1, -1)
-            torch.gather(e_active, 2, idx, out=coeffs_buf[:, : k + 1, :])
-            coeffs = coeffs_buf[:, : k + 1, 0]
+            e_new -= torch.bmm(coeffs.unsqueeze(1), e_active).squeeze(1)
+            e_new /= torch.sqrt(di_sq).unsqueeze(1)
+            e_all[:, k, :] = e_new
 
-            torch.bmm(coeffs.unsqueeze(1), e_active, out=bmm_buf)
-
-            elements_buf.sub_(bmm_buf.squeeze(1))
-            torch.rsqrt(di_sq, out=scalar_buf)
-            elements_buf.mul_(scalar_buf.unsqueeze(1))
-
-            e_all[:, k + 1, :] = elements_buf
-
-            torch.mul(elements_buf, elements_buf, out=bmm_sq)
-            di2s.sub_(bmm_sq)
+            di2s -= e_new**2
 
     return selected[torch.argmax(log_dets), :]
 
