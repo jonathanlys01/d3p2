@@ -48,9 +48,9 @@ if HAS_TRITON:
         stride_sel_traj,
         stride_sel_step,
         log_dets_ptr,
-        n_items: int,
-        num_groups: int,
-        BLOCK_SIZE: int,
+        n_items: tl.constexpr,
+        num_groups: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
     ):
         """
         Triton kernel simulating N full trajectories in parallel.
