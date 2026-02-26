@@ -31,7 +31,7 @@ def main():  # noqa: PLR0915
     print(f"\nRunning inference on dummy tokens: shape {input_ids.shape}")
     with torch.no_grad():
         # MDLM usually returns logits or a custom output object
-        outputs: MaskedLMOutput = model(input_ids, return_dict=True)
+        outputs: MaskedLMOutput = model(input_ids, return_dict=True, output_hidden_states=True)
 
     assert outputs.hidden_states is not None
     assert outputs.logits is not None
