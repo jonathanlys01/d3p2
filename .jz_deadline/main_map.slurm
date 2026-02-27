@@ -36,8 +36,8 @@ DS=${1:-"truthful_qa"} # truthful_qa or commonsense_qa
 shift
 
 set -ex
-srun python single_run_llada.py \
-    --config=_jz.yaml \
+srun python d5p4/single_run_llada.py \
+    --config=d5p4/_jz.yaml \
     model=llada \
     n_groups=2 \
     group_size=4 \

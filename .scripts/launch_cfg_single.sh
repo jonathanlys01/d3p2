@@ -22,6 +22,6 @@ mkdir -p "$LOG_DIR"
 
 log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}-cfg"
 
-python exps/cfg_exp.py --config=_default.yaml model=llada qa_dataset_len=$N_RUNS cfg_scale=0 2>&1 | tee "${log_prefix}.log"
+python d5p4/exps/cfg_exp.py --config=d5p4/_default.yaml model=llada qa_dataset_len=$N_RUNS cfg_scale=0 2>&1 | tee "${log_prefix}.log"
 
 echo "All CFG runs finished."

@@ -14,7 +14,7 @@ mkdir -p "$LOG_DIR"
 log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}"
 
 set -ex
-python exps/cfg_exp.py --config=_default.yaml n_groups=4 group_size=1 method=baseline cfg_scale=0 qa_dataset="$DS" 2>&1 | tee "${log_prefix}.log"
+python d5p4/exps/cfg_exp.py --config=d5p4/_default.yaml n_groups=4 group_size=1 method=baseline cfg_scale=0 qa_dataset="$DS" 2>&1 | tee "${log_prefix}.log"
 set +ex
 
 echo "Job ended at $(date)"

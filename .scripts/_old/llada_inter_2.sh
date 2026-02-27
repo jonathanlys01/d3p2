@@ -31,7 +31,7 @@ for w_inter in "${INTERACTIONS[@]}"; do
     # Run the experiment
     set -ex
     torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_llada.py \
-        --config=_default.yaml \
+        --config=d5p4/_default.yaml \
         model=llada \
         n_runs=$N_RUNS \
         _w_interaction=$w_inter \

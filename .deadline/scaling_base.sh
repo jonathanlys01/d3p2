@@ -11,7 +11,7 @@ MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); pri
     
 set -ex
 torchrun --nproc_per_node=4 --master_port=$MASTER_PORT exps/baseline_llada.py \
-    --config=_default.yaml \
+    --config=d5p4/_default.yaml \
     model=llada \
     n_groups=8 \
     group_size=1 \

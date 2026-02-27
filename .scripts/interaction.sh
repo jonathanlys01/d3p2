@@ -22,8 +22,8 @@ i=$2
 INT_VAL=$(python -c "import numpy as np; vals = np.logspace(np.log10(0.1), np.log10(10.0), num=8); print(vals[$i])")
 echo "Launching _w_interaction=$INT_VAL on GPU $gpu_id"
 
-CUDA_VISIBLE_DEVICES=$gpu_id python exps/interaction_exp.py \
-    --config=_default.yaml \
+CUDA_VISIBLE_DEVICES=$gpu_id python d5p4/exps/interaction_exp.py \
+    --config=d5p4/_default.yaml \
     model=llada \
     n_groups=4 \
     group_size=2 \

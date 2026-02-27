@@ -34,7 +34,7 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 # MDLM baseline: generate n_groups independent sequences, select k=8 best by PPL
 # Match effective batch_size with _main: n_groups*group_size = 4*8 = 32
 # Baseline requires group_size=1, post-hoc selection of k=8 done by the script
-srun python exps/baseline_mdlm.py --config=_jz.yaml \
+srun python d5p4/exps/baseline_mdlm.py --config=d5p4/_jz.yaml \
     n_groups=32 \
     group_size=1 \
     method=baseline

@@ -55,8 +55,8 @@ for config_str in "${CONFIGS[@]}"; do
     
     # 1. Standard Run
     set -ex
-    srun python single_run_llada.py \
-        --config=_jz.yaml \
+    srun python d5p4/single_run_llada.py \
+        --config=d5p4/_jz.yaml \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$n_groups \
@@ -80,8 +80,8 @@ for config_str in "${CONFIGS[@]}"; do
     echo "----------------------------------------"
     
     set -ex
-    srun python exps/baseline_llada.py \
-        --config=_jz.yaml \
+    srun python d5p4/exps/baseline_llada.py \
+        --config=d5p4/_jz.yaml \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$baseline_n_groups \

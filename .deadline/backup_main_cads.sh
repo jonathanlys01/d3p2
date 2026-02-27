@@ -10,6 +10,6 @@ shift
 MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
 
 set -ex
-torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_llada.py --config=_default.yaml model=llada method=greedy_map _w_interaction=0 cfg_scale=2.5 n_groups=3 group_size=3 guidance_end=64 qa_dataset=$DS "$@"
+torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_llada.py --config=d5p4/_default.yaml model=llada method=greedy_map _w_interaction=0 cfg_scale=2.5 n_groups=3 group_size=3 guidance_end=64 qa_dataset=$DS "$@"
 
 echo "Job ended at $(date)"

@@ -32,6 +32,6 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/sweeps/rbf.py --config=_jz.yaml
+srun python d5p4/exps/sweeps/rbf.py --config=d5p4/_jz.yaml
 
 echo "Job ended at $(date)"

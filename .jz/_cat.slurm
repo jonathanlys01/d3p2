@@ -31,6 +31,6 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python exps/sweeps/cat.py --config=_jz.yaml cat_temperature=1.0 _w_interaction=0.0 n_trials=200 method=greedy_map
+srun python d5p4/exps/sweeps/cat.py --config=d5p4/_jz.yaml cat_temperature=1.0 _w_interaction=0.0 n_trials=200 method=greedy_map
 
 echo "Job ended at $(date)"
