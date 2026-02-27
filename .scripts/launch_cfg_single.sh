@@ -3,7 +3,7 @@
 set -euo pipefail
 
 
-ROOT=$(pwd)/src
+ROOT=$(pwd)/src/d5p4
 cd "$ROOT"
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
@@ -11,7 +11,7 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 N_RUNS=${1:-10}
 shift # ignore the first argument
 
-LOG_DIR="slurm-logs"
+LOG_DIR="$(pwd)/slurm-logs"
 JOB_NAME="cfg_exp"
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
 
@@ -22,6 +22,6 @@ mkdir -p "$LOG_DIR"
 
 log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}-cfg"
 
-python d5p4/exps/cfg_exp.py --config=d5p4/_default.yaml model=llada qa_dataset_len=$N_RUNS cfg_scale=0 2>&1 | tee "${log_prefix}.log"
+python exps/cfg_exp.py --config=_default.yaml model=llada qa_dataset_len=$N_RUNS cfg_scale=0 2>&1 | tee "${log_prefix}.log"
 
 echo "All CFG runs finished."

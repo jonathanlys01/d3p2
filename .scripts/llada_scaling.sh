@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ROOT=$(pwd)/src
+ROOT=$(pwd)/src/d5p4
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
@@ -44,7 +44,7 @@ for config_str in "${CONFIGS[@]}"; do
     # 1. Standard Run
     set -ex
     torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_llada.py \
-        --config=d5p4/_default.yaml \
+        --config=_default.yaml \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$n_groups \
@@ -75,7 +75,7 @@ for config_str in "${CONFIGS[@]}"; do
     
     set -ex
     torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT_BASE exps/baseline_llada.py \
-        --config=d5p4/_default.yaml \
+        --config=_default.yaml \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$baseline_n_groups \

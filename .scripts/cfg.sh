@@ -2,7 +2,7 @@
 
 # source $JOME/d3p2/.venv/bin/activate
 
-ROOT=$JOME/d3p2/src
+ROOT=$(pwd)/src/d5p4
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
@@ -21,6 +21,6 @@ i=$1
 CFG_VAL=$(python -c "import numpy as np; vals = np.logspace(np.log10(0.5), np.log10(2.5), num=8); print(vals[$i])")
 echo "Launching CFG=$CFG_VAL"
 
-python d5p4/exps/cfg_exp.py --config=d5p4/_default.yaml model=llada n_groups=4 group_size=1 method=baseline cfg_scale=$CFG_VAL
+python exps/cfg_exp.py --config=_default.yaml model=llada n_groups=4 group_size=1 method=baseline cfg_scale=$CFG_VAL
 
 # OMP_NUM_THREADS=1 torchrun --nproc_per_node=gpu exps/cfg_exp.py --config=d5p4/_default.yaml group_size=1 method=baseline "$@"

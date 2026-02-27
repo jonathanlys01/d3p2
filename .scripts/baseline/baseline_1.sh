@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ROOT=$JOME/d3p2/src
+ROOT=$(pwd)/src/d5p4
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
@@ -21,7 +21,7 @@ echo "========================================"
 MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
 
 set -ex
-torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=d5p4/_default.yaml method=baseline n_runs=$N_RUNS n_groups=4 group_size=1 "$@"
+torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT exps/baseline_mdlm.py --config=_default.yaml method=baseline n_runs=$N_RUNS n_groups=4 group_size=1 "$@"
 set +ex
 
 BASELINE_OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
@@ -44,7 +44,7 @@ for w_int in "${INTERACTION_VALUES[@]}"; do
     MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
     
     set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=d5p4/_default.yaml _w_interaction=$w_int n_runs=$N_RUNS n_groups=2 group_size=4 "$@"
+    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml _w_interaction=$w_int n_runs=$N_RUNS n_groups=2 group_size=4 "$@"
     set +ex
     
     OUTPUT=$(ls -t $ROOT/results/exp-*.json | head -n 1)
@@ -59,14 +59,14 @@ echo "========================================"
 
 echo ""
 echo "Evaluating baseline..."
-python -m d5p4.mauve "$REFERENCE_BIN" "$BASELINE_OUTPUT" --batch_size=8
+python -m mauve "$REFERENCE_BIN" "$BASELINE_OUTPUT" --batch_size=8
 
 for i in "${!INTERACTION_VALUES[@]}"; do
     w_int="${INTERACTION_VALUES[$i]}"
     output="${INTERACTION_OUTPUTS[$i]}"
     echo ""
     echo "Evaluating _w_interaction=$w_int..."
-    python -m d5p4.mauve "$REFERENCE_BIN" "$output" --batch_size=8
+    python -m mauve "$REFERENCE_BIN" "$output" --batch_size=8
 done
 
 echo ""

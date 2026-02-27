@@ -4,7 +4,7 @@
 # Usage: .scripts/interaction.sh <gpu_id> <sweep_index>
 # Example: .scripts/interaction.sh 0 0 && .scripts/interaction.sh 1 1 && ...
 
-ROOT=$JOME/d3p2/src
+ROOT=$(pwd)/src/d5p4
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
@@ -22,8 +22,8 @@ i=$2
 INT_VAL=$(python -c "import numpy as np; vals = np.logspace(np.log10(0.1), np.log10(10.0), num=8); print(vals[$i])")
 echo "Launching _w_interaction=$INT_VAL on GPU $gpu_id"
 
-CUDA_VISIBLE_DEVICES=$gpu_id python d5p4/exps/interaction_exp.py \
-    --config=d5p4/_default.yaml \
+CUDA_VISIBLE_DEVICES=$gpu_id python exps/interaction_exp.py \
+    --config=_default.yaml \
     model=llada \
     n_groups=4 \
     group_size=2 \

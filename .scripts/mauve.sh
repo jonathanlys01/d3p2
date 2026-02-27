@@ -1,11 +1,11 @@
 #!/bin/bash
 
-ROOT=$JOME/d3p2/src
+ROOT=$(pwd)/src/d5p4
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-LOG_DIR="$ROOT/../slurm-logs"
+LOG_DIR="$(pwd)/slurm-logs"
 mkdir -p "$LOG_DIR"
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
 JOB_NAME="mauve"
@@ -34,7 +34,7 @@ for w_int in "${INTERACTION_VALUES[@]}"; do
     INTERACTION_LOG="$LOG_DIR/${JOB_NAME}-${RUN_TAG}-w${w_int}.out"
     
     set -ex
-    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=d5p4/_default.yaml method=greedy_map _w_interaction=$w_int n_runs=$N_RUNS n_groups=4 group_size=4 "$@" 2>&1 | tee "$INTERACTION_LOG"
+    torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT single_run_mdlm.py --config=_default.yaml method=greedy_map _w_interaction=$w_int n_runs=$N_RUNS n_groups=4 group_size=4 "$@" 2>&1 | tee "$INTERACTION_LOG"
     set +ex
     
     OUTPUT=$(rg "OUTPUT_PATH:" "$INTERACTION_LOG" | tail -1 | cut -d: -f2-)
@@ -52,7 +52,7 @@ for i in "${!INTERACTION_VALUES[@]}"; do
     output="${INTERACTION_OUTPUTS[$i]}"
     echo ""
     echo "Evaluating _w_interaction=$w_int..."
-    python -m d5p4.mauve "$REFERENCE_BIN" "$output" --batch_size=8 \
+    python -m mauve "$REFERENCE_BIN" "$output" --batch_size=8 \
       2>&1 | tee "$LOG_DIR/${JOB_NAME}-${RUN_TAG}-eval-w${w_int}.out"
 done
 

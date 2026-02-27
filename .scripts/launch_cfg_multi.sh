@@ -6,11 +6,11 @@ GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 GPUS=($(seq 0 $((GPU_COUNT - 1))))
 CFG_VALUES=(0.5 0.6292494753209134 0.7919098043832895 0.9966176578193441 1.2542422765567596 1.5784625888972976 1.9864935117546305 2.5)
 
-ROOT=${JOME:-"$HOME"}/d3p2/src
+ROOT=$(pwd)/src/d5p4
 cd "$ROOT"
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-LOG_DIR="slurm-logs"
+LOG_DIR="$(pwd)/slurm-logs"
 JOB_NAME="cfg_exp"
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
 
@@ -29,7 +29,7 @@ for gpu_idx in "${!GPUS[@]}"; do
       cfg_name="${cfg_val//./-}"
       log_prefix="${LOG_DIR}/${JOB_NAME}-${RUN_TAG}-gpu${gpu}-cfg${cfg_name}"
       CUDA_VISIBLE_DEVICES="${gpu}" \
-        python d5p4/exps/cfg_exp.py --config=d5p4/_default.yaml model=llada cfg_scale="${cfg_val}" "$@" \
+        python exps/cfg_exp.py --config=_default.yaml model=llada cfg_scale="${cfg_val}" "$@" \
         >"${log_prefix}.out" 2>"${log_prefix}.err"
     done
   ) &
