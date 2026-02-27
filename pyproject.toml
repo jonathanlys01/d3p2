@@ -18,6 +18,7 @@ dependencies = [
     "pot>=0.9.6.post1",
     "sacrebleu>=2.5.1",
     "nltk>=3.9.2",
+    "latex2sympy2>=1.5.4",
 ]
 
 [dependency-groups]
