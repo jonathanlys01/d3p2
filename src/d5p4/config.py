@@ -103,11 +103,12 @@ class Config:
     ppl_model_id: str = "gpt2"
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
 
-    qa_dataset: str = "truthful_qa"  # "truthful_qa" or "commonsense_qa"
+    qa_dataset: str = "truthful_qa"  # "truthful_qa", "commonsense_qa", or "gsm8k"
     qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
     qa_n_shots: int = 0  # number of few-shot examples for QA
     truthful_qa_path: str = "truthfulqa/truthful_qa"
     commonsense_qa_path: str = "tau/commonsense_qa"
+    gsm8k_path: str = "openai/gsm8k"
 
     # cache
     cache_dir: str = CACHE_DIR

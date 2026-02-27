@@ -22,6 +22,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from d5p4 import mauve
 from d5p4.config import CACHE_DIR
 from d5p4.jina_ref.modeling_bert import JinaBertModel
+from d5p4.text_postprocessors import MathParser, gsm8k_postprocess
 from d5p4.utils import print as u_print
 from d5p4.utils import process_model_args, tqdm
 
@@ -772,6 +773,63 @@ class Evaluator:
             json.dump(data, f, indent=4)
 
         return metrics
+
+
+class MathEvaluator:
+    """Checks model generations against a known numeric answer.
+
+    Uses ``gsm8k_postprocess`` to extract a number from the raw generation,
+    then compares it (as a string) to ``answer_number``.  Returns 1 if they
+    match, 0 otherwise.
+
+    Example
+    -------
+    >>> ev = MathEvaluator()
+    >>> ev.check("Step by step: 3 + 4 = 7", "7")
+    1
+    >>> ev.check("The answer is 42.", "7")
+    0
+    """
+
+    def __init__(self, use_math_parser: bool = False):
+        """Parameters
+        ----------
+        use_math_parser:
+            If *True*, use the richer :class:`MathParser` instead of
+            :func:`gsm8k_postprocess`.  Useful for LaTeX-heavy outputs;
+            the default False keeps the lightweight regex extractor.
+        """
+        self._use_math_parser = use_math_parser
+        if use_math_parser:
+            self._parser = MathParser()
+
+    def _extract(self, text: str) -> str:
+        """Extract a normalised numeric string from *text*."""
+        if self._use_math_parser:
+            return self._parser.extract_final_number(text)
+        return gsm8k_postprocess(text)
+
+    def check(self, generation: str, answer_number: str) -> int:
+        """Return 1 if *generation* contains *answer_number*, else 0.
+
+        Parameters
+        ----------
+        generation:
+            Raw text produced by the model.
+        answer_number:
+            The expected numeric answer (string, commas already stripped).
+        """
+        extracted = self._extract(generation)
+        return int(extracted == answer_number)
+
+    def score_group(self, generations: list[str], answer_number: str) -> list[int]:
+        """Check a list of generations and return a list of 0/1 scores."""
+        return [self.check(g, answer_number) for g in generations]
+
+    def accuracy(self, generations: list[str], answer_number: str) -> float:
+        """Fraction of *generations* that contain the correct answer."""
+        scores = self.score_group(generations, answer_number)
+        return sum(scores) / len(scores) if scores else 0.0
 
 
 def main():
