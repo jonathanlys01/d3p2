@@ -54,7 +54,7 @@ def main() -> None:  # noqa: PLR0912
     answer_numbers: list[str] = [row.answer_number for row in rows]  # type: ignore[union-attr]
 
     # ── evaluator ────────────────────────────────────────────────────────────
-    evaluator = MathEvaluator(use_math_parser=False)
+    evaluator = MathEvaluator()
 
     # ── generation + evaluation loop ─────────────────────────────────────────
     results: list[dict] = []  # one entry per question

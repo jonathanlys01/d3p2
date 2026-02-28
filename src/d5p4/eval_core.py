@@ -22,7 +22,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from d5p4 import mauve
 from d5p4.config import CACHE_DIR
 from d5p4.jina_ref.modeling_bert import JinaBertModel
-from d5p4.text_postprocessors import MathParser, gsm8k_postprocess
+from d5p4.text_postprocessors import MathParser, universal_math_postprocess
 from d5p4.utils import print as u_print
 from d5p4.utils import process_model_args, tqdm
 
@@ -778,9 +778,9 @@ class Evaluator:
 class MathEvaluator:
     """Checks model generations against a known numeric answer.
 
-    Uses ``gsm8k_postprocess`` to extract a number from the raw generation,
-    then compares it (as a string) to ``answer_number``.  Returns 1 if they
-    match, 0 otherwise.
+    Uses a robust math/LaTeX post-processor to extract and canonicalize
+    numeric answers from raw generations, then compares them against the
+    expected answer.
 
     Example
     -------
@@ -791,13 +791,12 @@ class MathEvaluator:
     0
     """
 
-    def __init__(self, use_math_parser: bool = False):
+    def __init__(self, use_math_parser: bool = True):
         """Parameters
         ----------
         use_math_parser:
-            If *True*, use the richer :class:`MathParser` instead of
-            :func:`gsm8k_postprocess`.  Useful for LaTeX-heavy outputs;
-            the default False keeps the lightweight regex extractor.
+            If *True*, use the class-based universal parser. When *False*,
+            fall back to the module-level universal helper.
         """
         self._use_math_parser = use_math_parser
         if use_math_parser:
@@ -806,8 +805,8 @@ class MathEvaluator:
     def _extract(self, text: str) -> str:
         """Extract a normalised numeric string from *text*."""
         if self._use_math_parser:
-            return self._parser.extract_final_number(text)
-        return gsm8k_postprocess(text)
+            return self._parser.extract_universal_numeric(text)
+        return universal_math_postprocess(text)
 
     def check(self, generation: str, answer_number: str) -> int:
         """Return 1 if *generation* contains *answer_number*, else 0.
@@ -820,7 +819,10 @@ class MathEvaluator:
             The expected numeric answer (string, commas already stripped).
         """
         extracted = self._extract(generation)
-        return int(extracted == answer_number)
+        expected = self._extract(answer_number)
+        if expected == "NULL":
+            expected = answer_number.replace(",", "").strip()
+        return int(extracted == expected)
 
     def score_group(self, generations: list[str], answer_number: str) -> list[int]:
         """Check a list of generations and return a list of 0/1 scores."""

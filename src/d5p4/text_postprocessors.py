@@ -151,7 +151,10 @@ class MathParser:
 
     # Pre-compiled regexes ───────────────────────────────────────────────────
     _BOXED_RE = re.compile(r"\\boxed{((?:[^{}]|{[^{}]*})*)}")
+    _INLINE_MATH_RE = re.compile(r"\$(.*?)\$|\\\((.*?)\\\)|\\\[(.*?)\\\]", re.DOTALL)
+    _ANSWER_LINE_RE = re.compile(r"(?:^|\b)(?:final answer|answer)\s*[:=]\s*(.+)$", re.IGNORECASE)
     _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:/-?\d+)?")
+    _SCIENTIFIC_NUMBER_RE = re.compile(r"-?(?:\d+(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?")
     _FINAL_NUMBER_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
     _MATH_EXPR_RE = re.compile(r"[-+*/%\.\(\)\d]+")
     _LATEX_TEXT_RE = re.compile(r"\\text{.*?}")
@@ -206,6 +209,94 @@ class MathParser:
             return matches[-1].lstrip(")").strip()
         return ""
 
+    def _extract_numeric_candidates(self, text: str) -> list[str]:
+        """Return candidates ordered from most to least likely."""
+        candidates: list[str] = []
+
+        boxed = self._BOXED_RE.findall(text)
+        if boxed:
+            candidates.extend(reversed(boxed))
+
+        for line in reversed(text.splitlines()):
+            match = self._ANSWER_LINE_RE.search(line)
+            if match:
+                candidates.append(match.group(1).strip())
+
+        for math_match in self._INLINE_MATH_RE.findall(text):
+            expr = next((m for m in math_match if m), "")
+            if expr:
+                candidates.append(expr.strip())
+
+        sci_numbers = self._SCIENTIFIC_NUMBER_RE.findall(text)
+        if sci_numbers:
+            candidates.append(sci_numbers[-1].replace(",", ""))
+
+        candidates.append(text)
+        return candidates
+
+    def _canonicalize_numeric(self, value: str) -> str | None:  # noqa: C901, PLR0911, PLR0912
+        """Convert input into a canonical numeric string, if possible."""
+        if not value:
+            return None
+
+        candidate = self.normalize(value).replace(",", "")
+        if not candidate:
+            return None
+
+        percent = False
+        if candidate.endswith("%"):
+            percent = True
+            candidate = candidate[:-1]
+            if not candidate:
+                return None
+
+        expr = None
+        if "\\" in candidate:
+            expr = self.parse_latex(candidate)
+        if expr is None:
+            try:
+                expr = simplify(candidate)
+            except Exception:
+                return None
+
+        if expr is None or getattr(expr, "free_symbols", None):
+            return None
+        if not getattr(expr, "is_number", False):
+            return None
+
+        if percent:
+            expr = simplify(expr / 100)
+
+        expr = simplify(expr)
+        if getattr(expr, "is_Integer", False):
+            return str(int(expr))
+        if getattr(expr, "is_Rational", False):
+            p = getattr(expr, "p", None)
+            q = getattr(expr, "q", None)
+            if q == 1:
+                return str(int(p))
+            return f"{p}/{q}"
+
+        try:
+            as_float = float(expr.evalf())
+        except Exception:
+            return None
+
+        if as_float.is_integer():
+            return str(int(as_float))
+        return format(as_float, ".12g")
+
+    def extract_universal_numeric(self, text: str) -> str:
+        """Best-effort universal extractor for math/LaTeX numeric answers."""
+        if not text:
+            return "NULL"
+
+        for candidate in self._extract_numeric_candidates(text):
+            parsed = self._canonicalize_numeric(candidate)
+            if parsed is not None:
+                return parsed
+        return "NULL"
+
     # ── symbolic parsing ───────────────────────────────────────────────────
 
     def parse_latex(self, latex_str: str, *, evaluate: bool = False):
@@ -236,6 +327,14 @@ class MathParser:
             return expr
         except Exception:
             return None
+
+
+_DEFAULT_MATH_PARSER = MathParser()
+
+
+def universal_math_postprocess(text: str) -> str:
+    """Extract a canonical numeric answer from mixed text/LaTeX output."""
+    return _DEFAULT_MATH_PARSER.extract_universal_numeric(text)
 
 
 if __name__ == "__main__":
