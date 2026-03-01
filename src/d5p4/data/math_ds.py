@@ -40,6 +40,11 @@ def _format_gsm8k_few_shot_prefix(examples: list[dict]) -> str:
     return prefix
 
 
+def _format_gsm8k_query(question: str) -> str:
+    """Format a GSM8K question using benchmark-style QA scaffolding."""
+    return f"Question: {question}\nAnswer:"
+
+
 def gsm8k(cfg: Config) -> pd.DataFrame:
     """Load the GSM8K test split as a DataFrame.
 
@@ -73,9 +78,9 @@ def gsm8k(cfg: Config) -> pd.DataFrame:
             end_idx = (i + 1) * cfg.qa_n_shots
             examples: list[dict] = [train_dataset[idx % len(train_dataset)] for idx in range(start_idx, end_idx)]  # type: ignore
             prefix = _format_gsm8k_few_shot_prefix(examples)
-            questions.append(f"{prefix}Question: {q}\nAnswer:")
+            questions.append(f"{prefix}{_format_gsm8k_query(q)}")
         else:
-            questions.append(q)
+            questions.append(_format_gsm8k_query(q))
 
         answer_strs.append(raw_answer)
         answer_numbers.append(_parse_gsm8k_answer(raw_answer))
@@ -95,7 +100,7 @@ def gsm8k(cfg: Config) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    cfg = Config(disable_sys_args=True)
+    cfg = Config()
     print("Loading GSM8K dataset...")
     df = gsm8k(cfg)
     print(df.head())
