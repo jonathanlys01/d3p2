@@ -35,101 +35,55 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(MathParser.normalize(" 1 + 2 "), "1+2")
 
 
-class TestExtractBoxedOrLastNumber(unittest.TestCase):
-    """MathParser.extract_boxed_or_last_number — main extraction pipeline."""
+class TestUniversalNumeric(unittest.TestCase):
+    """MathParser.extract_universal_numeric — robust extraction pipeline."""
 
     def setUp(self):
         self.mp = MathParser()
 
-    def test_empty_input(self):
-        self.assertEqual(self.mp.extract_boxed_or_last_number(""), "")
-
-    def test_boxed_simple(self):
-        self.assertEqual(
-            self.mp.extract_boxed_or_last_number(r"The answer is \boxed{42}."),
-            "42",
-        )
+    def test_boxed_extraction(self):
+        self.assertEqual(self.mp.extract_universal_numeric(r"Result is \boxed{42}."), "42")
 
     def test_boxed_fraction(self):
-        result = self.mp.extract_boxed_or_last_number(r"\boxed{\frac{1}{2}}")
-        self.assertEqual(result, "\\frac{1}{2}")
+        # This matches what the user was trying to test
+        self.assertEqual(self.mp.extract_universal_numeric(r"\boxed{\frac{1}{2}}"), "1/2")
 
-    def test_fallback_last_number(self):
-        self.assertEqual(
-            self.mp.extract_boxed_or_last_number("There are 7 apples and 12 oranges"),
-            "12",
-        )
+    def test_scientific_notation(self):
+        self.assertEqual(self.mp.extract_universal_numeric("Value: 1.23e-4"), "0.000123")
 
-    def test_fallback_decimal(self):
-        self.assertEqual(
-            self.mp.extract_boxed_or_last_number("The radius is $3.14$ meters."),
-            "3.14",
-        )
+    def test_comma_numbers(self):
+        self.assertEqual(self.mp.extract_universal_numeric("The total is 1,234.5"), "1234.5")
 
-    def test_fallback_fraction_slash(self):
-        self.assertEqual(
-            self.mp.extract_boxed_or_last_number("The ratio is 1/2 of the total"),
-            "1/2",
-        )
+    def test_percentage(self):
+        self.assertEqual(self.mp.extract_universal_numeric("The rate is 50%"), "1/2")
 
-    def test_no_numbers_returns_input(self):
-        self.assertEqual(
-            self.mp.extract_boxed_or_last_number("no numbers here"),
-            "no numbers here",
-        )
+    def test_mixed_text(self):
+        text = "The answer is 42, but wait, the final answer: 7."
+        self.assertEqual(self.mp.extract_universal_numeric(text), "7")
 
-    def test_negative_number(self):
-        self.assertEqual(
-            self.mp.extract_boxed_or_last_number("Temperature is -5 degrees"),
-            "-5",
-        )
+    def test_mixed_number(self):
+        self.assertEqual(self.mp.extract_universal_numeric("The answer is 3 1/2."), "7/2")
 
+    def test_plain_fraction(self):
+        self.assertEqual(self.mp.extract_universal_numeric("It is 3/4 empty"), "3/4")
 
-class TestExtractFinalNumber(unittest.TestCase):
-    """MathParser.extract_final_number — comma-aware last number."""
+    def test_degree_symbol(self):
+        self.assertEqual(self.mp.extract_universal_numeric(r"Angle is 45^\circ"), "45")
 
-    def setUp(self):
-        self.mp = MathParser()
+    def test_complex_latex_formatting(self):
+        self.assertEqual(self.mp.extract_universal_numeric(r"The answer is \mathrm{42}."), "42")
+        self.assertEqual(self.mp.extract_universal_numeric(r"\mathbf{10.5}"), "10.5")
 
-    def test_empty_input(self):
-        self.assertEqual(self.mp.extract_final_number(""), "")
+    def test_sqrt_latex(self):
+        self.assertEqual(self.mp.extract_universal_numeric(r"\sqrt{16}"), "4")
 
-    def test_comma_separated(self):
-        self.assertEqual(
-            self.mp.extract_final_number("The cost is 1,234.50 dollars."),
-            "1234.50",
-        )
+    def test_scientific_times(self):
+        self.assertEqual(self.mp.extract_universal_numeric(r"1.23 \times 10^{-4}"), "0.000123")
+        self.assertEqual(self.mp.extract_universal_numeric(r"2 \cdot 10^3"), "2000")
 
-    def test_multiple_numbers(self):
-        self.assertEqual(
-            self.mp.extract_final_number("5 items cost 100"),
-            "100",
-        )
-
-    def test_negative(self):
-        self.assertEqual(self.mp.extract_final_number("Profit: -42"), "-42")
-
-    def test_no_number(self):
-        self.assertEqual(self.mp.extract_final_number("no numbers"), "")
-
-
-class TestExtractMathExpression(unittest.TestCase):
-    """MathParser.extract_math_expression — lightweight operator extraction."""
-
-    def setUp(self):
-        self.mp = MathParser()
-
-    def test_empty_input(self):
-        self.assertEqual(self.mp.extract_math_expression(""), "")
-
-    def test_simple_expression(self):
-        self.assertEqual(self.mp.extract_math_expression("result is 3+4"), "3+4")
-
-    def test_decimal(self):
-        self.assertEqual(self.mp.extract_math_expression("value: 3.14"), "3.14")
-
-    def test_no_expression(self):
-        self.assertEqual(self.mp.extract_math_expression("hello world"), "")
+    def test_simple_arithmetic(self):
+        self.assertEqual(self.mp.extract_universal_numeric("The answer is 1+2."), "3")
+        self.assertEqual(self.mp.extract_universal_numeric("2 * 3"), "6")
 
 
 class TestParseLatex(unittest.TestCase):

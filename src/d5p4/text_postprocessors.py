@@ -6,146 +6,12 @@ from sympy import simplify
 from sympy.parsing.latex import parse_latex
 
 
-def gsm8k_postprocess(text: str) -> str:
-    """opencompass"""
-    text = text.split("Question:")[0]
-    numbers = re.findall(r"\-?\d+\.\d+|\-?\d+", text)
-    if not numbers:
-        return "NULL"
-    return numbers[-1]
-
-
-def extract_and_parse_math(generation: str) -> str:
-    """
-    Extracts and normalizes a math answer from a model's generation.
-    """
-    if not generation:
-        return ""
-
-    # 1. Try to extract the answer from a LaTeX \boxed{} tag
-    # This matches \boxed{...} and handles basic nested brackets
-    boxed_match = re.search(r"\\boxed{((?:[^{}]|{[^{}]*})*)}", generation)
-
-    if boxed_match:
-        answer = boxed_match.group(1)
-    else:
-        # 2. Fallback: Extract the last standalone number or fraction
-        # Matches formats like: 42, -42, 3.14, 1/2, -1/2
-        numbers = re.findall(r"-?\d+(?:\.\d+)?(?:/-?\d+)?", generation)
-        answer = numbers[-1] if numbers else generation
-
-    return normalize_math(answer)
-
-
-def normalize_math(answer: str) -> str:
-    """
-    Cleans up the extracted math string to make it easy to compare.
-    """
-    # Shelter escaped chars with sentinels so the bare-$ strip doesn't eat them
-    answer = answer.replace("\\%", "\x00PCT").replace("\\$", "\x00DLR")
-
-    # Remove standard LaTeX math delimiters
-    answer = answer.replace("$", "").replace("\\[", "").replace("\\]", "")
-    answer = answer.replace("\\(", "").replace("\\)", "")
-
-    # Remove basic LaTeX text commands
-    answer = re.sub(r"\\text{.*?}", "", answer)
-
-    # Restore escaped chars
-    answer = answer.replace("\x00PCT", "%").replace("\x00DLR", "$")
-
-    # Remove spaces and trailing punctuation
-    answer = answer.replace(" ", "")
-    answer = answer.rstrip(".")
-
-    return answer.strip()
-
-
-def extract_math_expression(text: str) -> str:
-    """
-    Extracts the last math expression (numbers, fractions, basic operators).
-    """
-    if not text:
-        return ""
-
-    # Matches digits and basic math symbols: +, -, *, /, %, ., (, )
-    pattern = r"[-+*/%\.\(\)\d]+"
-    matches = re.findall(pattern, text)
-
-    if matches:
-        # Grab the last match and strip any accidental leading closing parenthesis
-        result = matches[-1].lstrip(")")
-        return result.strip()
-
-    return ""
-
-
-def extract_final_number(text: str) -> str:
-    """
-    Extracts the final number from a string, stripping out commas.
-    """
-    if not text:
-        return ""
-
-    # Matches optional minus, digits with optional commas, and optional decimals
-    matches = re.findall(r"-?[\d,]+(?:.\d+)?", text)
-
-    if matches:
-        # Return the last matched number and remove commas for easy parsing
-        return matches[-1].replace(",", "")
-
-    return ""
-
-
-def parse_latex_to_math(latex_str: str):
-    """
-    Parses a LaTeX math string into a SymPy expression.
-    """
-    if not latex_str:
-        return None
-
-    try:
-        # Convert the LaTeX string into a symbolic math object
-        math_expr = parse_latex(latex_str, backend="lark")
-        return math_expr
-    except Exception as e:
-        print(f"Failed to parse LaTeX: {e}")
-        return None
-
-
-def evaluate_llm_math(latex_str: str):
-    """
-    Uses sympy.parsing.latex (lark backend) to parse and evaluate mathematical LaTeX.
-    """
-    try:
-        # parse_latex with lark backend returns a SymPy object
-        expr = parse_latex(latex_str, backend="lark")
-
-        if expr is None:
-            return None
-
-        # You can return the evaluated float, or keep it symbolic
-        if hasattr(expr, "evalf"):
-            return expr.evalf()
-        return expr
-    except Exception:
-        # Fallback if the string isn't valid math
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Class-based API — consolidates the most robust parsers above
-# ---------------------------------------------------------------------------
-
-
 class MathParser:
     """Robust math / LaTeX answer extractor and evaluator.
 
     Pre-compiles all regex patterns once and exposes a clean API that
     covers the main extraction strategies:
-      • ``extract_boxed_or_last_number`` — best general-purpose pipeline
-      • ``extract_final_number`` — comma-aware last-number extraction
-      • ``extract_math_expression`` — lightweight operator-level extraction
+      • ``extract_universal_numeric`` — best general-purpose pipeline
       • ``parse_latex`` — symbolic parsing via SymPy (optionally evaluated)
     """
 
@@ -153,22 +19,32 @@ class MathParser:
     _BOXED_RE = re.compile(r"\\boxed{((?:[^{}]|{[^{}]*})*)}")
     _INLINE_MATH_RE = re.compile(r"\$(.*?)\$|\\\((.*?)\\\)|\\\[(.*?)\\\]", re.DOTALL)
     _ANSWER_LINE_RE = re.compile(r"(?:^|\b)(?:final answer|answer)\s*[:=]\s*(.+)$", re.IGNORECASE)
-    _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:/-?\d+)?")
-    _SCIENTIFIC_NUMBER_RE = re.compile(r"-?(?:\d+(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?")
-    _FINAL_NUMBER_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
-    _MATH_EXPR_RE = re.compile(r"[-+*/%\.\(\)\d]+")
+    _SCIENTIFIC_NUMBER_RE = re.compile(r"-?(?:\d+(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?%?")
+    _FRACTION_RE = re.compile(r"-?\d+/\d+")
+    _MIXED_NUMBER_RE = re.compile(r"(\d+)\s+(\d+/\d+)")
+    _LATEX_FORMAT_RE = re.compile(r"\\(mathrm|mathbf|mathit|mathsf|mathtt|mathcal|bm|bold|textbf|textit){(.*?)}")
     _LATEX_TEXT_RE = re.compile(r"\\text{.*?}")
+    _ARITHMETIC_RE = re.compile(r"-?\d+(?:\s*[\+\-\*\/]\s*-?\d+)+")
 
     # ── normalisation ──────────────────────────────────────────────────────
 
     @staticmethod
     def normalize(answer: str) -> str:
-        """Strip LaTeX delimiters, ``\\text{}``, and trailing punctuation."""
+        """Strip LaTeX delimiters, formatting commands, and trailing punctuation."""
+        # Handle degree symbol
+        answer = answer.replace(r"^\circ", "").replace(r"\degree", "")
+
         # Shelter escaped chars with sentinels so the bare-$ strip doesn't eat them
         answer = answer.replace("\\%", "\x00PCT").replace("\\$", "\x00DLR")
         answer = answer.replace("$", "").replace("\\[", "").replace("\\]", "")
         answer = answer.replace("\\(", "").replace("\\)", "")
+
+        # Remove common LaTeX formatting commands while keeping their content
+        answer = MathParser._LATEX_FORMAT_RE.sub(r"\2", answer)
+
+        # Remove LaTeX text commands completely
         answer = MathParser._LATEX_TEXT_RE.sub("", answer)
+
         # Restore escaped chars
         answer = answer.replace("\x00PCT", "%").replace("\x00DLR", "$")
         answer = answer.replace(" ", "").rstrip(".")
@@ -176,40 +52,7 @@ class MathParser:
 
     # ── text → str extraction ──────────────────────────────────────────────
 
-    def extract_boxed_or_last_number(self, text: str) -> str:
-        r"""Extract from ``\boxed{}`` if present, else the last number/fraction.
-
-        The result is fed through :meth:`normalize` before returning.
-        """
-        if not text:
-            return ""
-
-        boxed = self._BOXED_RE.search(text)
-        if boxed:
-            return self.normalize(boxed.group(1))
-
-        numbers = self._NUMBER_RE.findall(text)
-        return self.normalize(numbers[-1]) if numbers else text
-
-    def extract_final_number(self, text: str) -> str:
-        """Return the last number in *text*, stripping commas."""
-        if not text:
-            return ""
-
-        matches = self._FINAL_NUMBER_RE.findall(text)
-        return matches[-1].replace(",", "") if matches else ""
-
-    def extract_math_expression(self, text: str) -> str:
-        """Return the last math expression (digits + basic operators)."""
-        if not text:
-            return ""
-
-        matches = self._MATH_EXPR_RE.findall(text)
-        if matches:
-            return matches[-1].lstrip(")").strip()
-        return ""
-
-    def _extract_numeric_candidates(self, text: str) -> list[str]:
+    def _extract_numeric_candidates(self, text: str) -> list[str]:  # noqa: C901
         """Return candidates ordered from most to least likely."""
         candidates: list[str] = []
 
@@ -227,11 +70,28 @@ class MathParser:
             if expr:
                 candidates.append(expr.strip())
 
-        sci_numbers = self._SCIENTIFIC_NUMBER_RE.findall(text)
-        if sci_numbers:
-            candidates.append(sci_numbers[-1].replace(",", ""))
+        # Prioritize more complex forms (mixed numbers, arithmetic, fractions)
+        mixed = self._MIXED_NUMBER_RE.findall(text)
+        if mixed:
+            candidates.extend(reversed([f"({w}+{f})" for w, f in mixed]))
+
+        arithmetic = self._ARITHMETIC_RE.findall(text)
+        if arithmetic:
+            candidates.extend(reversed(arithmetic))
+
+        fractions = self._FRACTION_RE.findall(text)
+        if fractions:
+            candidates.extend(reversed(fractions))
 
         candidates.append(text)
+
+        sci_numbers = self._SCIENTIFIC_NUMBER_RE.findall(text)
+        if sci_numbers:
+            # Filter matches to avoid picking up single digits from fractions already found
+            last_num = sci_numbers[-1].replace(",", "")
+            if last_num not in candidates:
+                candidates.append(last_num)
+
         return candidates
 
     def _canonicalize_numeric(self, value: str) -> str | None:  # noqa: C901, PLR0911, PLR0912
@@ -273,7 +133,7 @@ class MathParser:
         if getattr(expr, "is_Rational", False):
             p = getattr(expr, "p", None)
             q = getattr(expr, "q", None)
-            if q == 1:
+            if q == 1 and p is not None:
                 return str(int(p))
             return f"{p}/{q}"
 
@@ -340,10 +200,10 @@ def universal_math_postprocess(text: str) -> str:
 if __name__ == "__main__":
     mp = MathParser()
 
-    print(mp.extract_boxed_or_last_number(r"The answer is \boxed{42}."))
-    print(mp.extract_boxed_or_last_number(r"Therefore, the radius is $3.14$ meters."))
-    print(mp.extract_boxed_or_last_number(r"I calculate the fraction to be \boxed{\frac{1}{2}}"))
-    print(mp.extract_final_number("The cost of the 5 items is 1,234.50 dollars."))
+    print(mp.extract_universal_numeric(r"The answer is \boxed{42}."))
+    print(mp.extract_universal_numeric(r"Therefore, the radius is $3.14$ meters."))
+    print(mp.extract_universal_numeric(r"I calculate the fraction to be \boxed{\frac{1}{2}}"))
+    print(mp.extract_universal_numeric("The cost of the 5 items is 1,234.50 dollars."))
 
     expr = mp.parse_latex(r"\frac{1}{2} + \frac{1}{4}")
     if expr is not None:
