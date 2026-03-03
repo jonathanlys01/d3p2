@@ -144,7 +144,7 @@ def compute_ranks_1_to_N(scores: list[float]) -> list[float]:
     return ranks
 
 
-def main():  # noqa: C901, PLR0915
+def main():  # noqa: C901, PLR0912, PLR0915
     """Benchmark scaling performance of subsampling methods."""
     print("Subsampling Methods Scaling Benchmark")
     print(f"Trials per setting: {N_TRIALS}")
@@ -165,6 +165,8 @@ def main():  # noqa: C901, PLR0915
 
     for n_groups in N_GROUPS_LIST:
         for group_size in GROUP_SIZE_LIST:
+            if n_groups == 64 and group_size == 64:
+                continue
             total_items = n_groups * group_size
 
             for w in W_VALUES:
