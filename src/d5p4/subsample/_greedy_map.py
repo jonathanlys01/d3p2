@@ -19,8 +19,12 @@ class _GreedyMAP(BaseSelector):
             return None
 
         n_groups = self.config.n_groups * self.distributed_mul
-        item_to_group = torch.arange(n_groups, device=L.device).repeat_interleave(L.size(0) // n_groups)
-        ret = _greedy_map_full_explore(L, n_groups, item_to_group)
+        group_size_each = L.size(0) // n_groups
+
+        item_to_group = torch.arange(n_groups, device=L.device).repeat_interleave(group_size_each)
+        group_member_table = torch.arange(L.size(0), device=L.device).view(n_groups, group_size_each)
+
+        ret = _greedy_map_full_explore(L, n_groups, item_to_group, group_member_table)
 
         if not self._guard_unique(ret):
             ret = fallback_greedy_block(L, self.config.group_size, n_groups)
@@ -32,8 +36,11 @@ class _GreedyMAP(BaseSelector):
             return None
 
         n_groups = self.config.n_groups * self.distributed_mul
+
         item_to_group = torch.arange(L.size(0), device=L.device)
-        ret = _greedy_map_full_explore(L, n_groups, item_to_group)
+        group_member_table = torch.arange(L.size(0), device=L.device).view(L.size(0), 1)
+
+        ret = _greedy_map_full_explore(L, n_groups, item_to_group, group_member_table)
 
         if not self._guard_unique(ret):
             ret = fallback_greedy(L, n_groups)
@@ -45,69 +52,71 @@ def _greedy_map_full_explore(
     kernel: torch.Tensor,
     num_groups: int,
     item_to_group: torch.Tensor,
+    group_member_table: torch.Tensor,
 ) -> torch.Tensor:
     """
     Run N parallel greedy DPP selections, each starting from a different item.
-
     Uses Cholesky-like orthogonalization to incrementally compute log-determinant.
     Returns the trajectory with highest log-determinant.
     """
     device = kernel.device
     dtype = kernel.dtype
     n_items = kernel.size(0)
+    epsilon = 1e-10
 
-    # State tensors
-    di2s = kernel.diag().unsqueeze(0).expand(n_items, -1).clone()  # (N, N)
     selected = torch.empty((n_items, num_groups), dtype=torch.long, device=device)
     log_dets = torch.zeros(n_items, dtype=dtype, device=device)
-
-    epsilon = 1e-10  # Local constant for JIT compatibility
 
     # Step 0: each trajectory b starts with item b
     start_items = torch.arange(n_items, device=device)
     selected[:, 0] = start_items
-    di_sq = kernel.diag().clamp(min=epsilon)
-    log_dets = torch.log(di_sq)
 
-    # First orthogonal vectors: e0[b, j] = kernel[b, j] / sqrt(kernel[b, b])
-    e_prev = kernel / torch.sqrt(di_sq).unsqueeze(1)  # (N, N)
-    di2s = di2s - e_prev**2
+    diag = torch.diagonal(kernel).clamp(min=epsilon)
+    log_dets = log_dets + torch.log(diag)
 
-    # Mask starting groups
+    di2s = diag.unsqueeze(0).expand(n_items, -1).clone()
+
+    # Mask starting groups natively via in-place scatter to avoid O(N^2) boolean evaluation
     start_groups = item_to_group[start_items]
-    group_mask = item_to_group.unsqueeze(0) == start_groups.unsqueeze(1)
-    di2s[group_mask] = -float("inf")
+    start_members = group_member_table[start_groups]
+    di2s.scatter_(1, start_members, -float("inf"))
 
-    # Stack of orthogonal vectors: e_all[b, k, j]
-    e_all = e_prev.unsqueeze(1)  # (N, 1, N)
+    # Store Gram-Schmidt basis vectors natively pre-allocated! (Avoids torch.cat cost)
+    e_all = torch.zeros((n_items, num_groups, n_items), dtype=dtype, device=device)
 
-    for k in range(num_groups - 1):
+    # First orthogonal vectors: e_0[b, j] = kernel[b, j] / sqrt(kernel[b, b])
+    e_0 = kernel[start_items, :] / torch.sqrt(diag).unsqueeze(1)
+    e_all[:, 0, :] = e_0
+    di2s = di2s - e_0**2
+
+    for k in range(1, num_groups):
         # Select next item for each trajectory
         next_items = torch.argmax(di2s, dim=1)  # (N,)
-        selected[:, k + 1] = next_items
+        selected[:, k] = next_items
 
         # Get di_sq for next items
         di_sq = torch.gather(di2s, 1, next_items.unsqueeze(1)).squeeze(1).clamp(min=epsilon)
         log_dets = log_dets + torch.log(di_sq)
 
-        # Mask selected groups
+        # Mask selected groups using native scatter memory views
         next_groups = item_to_group[next_items]
-        group_mask = item_to_group.unsqueeze(0) == next_groups.unsqueeze(1)
-        di2s[group_mask] = -float("inf")
+        next_members = group_member_table[next_groups]
+        di2s.scatter_(1, next_members, -float("inf"))
 
-        if k < num_groups - 2:  # No need to compute for last iteration
-            # Compute new orthogonal vector
-            elements = kernel[next_items, :]  # (N, N)
+        if k < num_groups - 1:
+            # Load full kernel rows
+            e_new = kernel[next_items, :]  # (N, N)
+            e_active = e_all[:, :k, :]  # (N, k, N)
 
-            # Get coefficients at selected items
-            idx = next_items.view(n_items, 1, 1).expand(-1, k + 1, 1)
-            coeffs = torch.gather(e_all, 2, idx).squeeze(2)  # (N, k+1)
+            # Get coefficients for selected items and previously stored orthogonal vectors
+            idx = next_items.view(n_items, 1, 1).expand(-1, k, 1)
+            coeffs = torch.gather(e_active, 2, idx).squeeze(2)  # (N, k)
 
-            # Compute dot product
-            dot_prod = torch.bmm(coeffs.unsqueeze(1), e_all).squeeze(1)  # (N, N)
+            # Compute dot product against active projections
+            dot_prod = torch.bmm(coeffs.unsqueeze(1), e_active).squeeze(1)  # (N, N)
 
-            e_new = (elements - dot_prod) / torch.sqrt(di_sq).unsqueeze(1)
-            e_all = torch.cat([e_all, e_new.unsqueeze(1)], dim=1)  # (N, k+2, N)
+            e_new = (e_new - dot_prod) / torch.sqrt(di_sq).unsqueeze(1)
+            e_all[:, k, :] = e_new  # Fast insertion to pre-allocated tensor memory block
 
             di2s = di2s - e_new**2
 
@@ -122,10 +131,10 @@ def fast_greedy_map(
     """
     Reference implementation: single-trajectory greedy MAP-DPP selection.
 
-    This is the original O(N*K) version without full exploration. It selects greedily
-    from a single starting point. The _greedy_map_full_explore function above runs N
-    parallel trajectories and picks the best one, which yields better results at the
-    cost of O(N^2*K) complexity.
+    This is the original O(N*K) version without full exploration.
+    It selects greedily from a single starting point.
+    The _greedy_map_full_explore function above runs N parallel trajectories
+    and picks the best one, which yields better results at the cost of O(N^2*K) complexity.
 
     Adapted from: https://github.com/laming-chen/fast-map-dpp/blob/master/dpp.py
     """
@@ -159,7 +168,17 @@ def fast_greedy_map(
 if __name__ == "__main__":
     import timeit
 
+    # Provide a symmetric semi-positive definite dummy block to ensure sqrt yields real answers
     dummy_kernel = torch.randn(8, 8)
+    dummy_kernel = dummy_kernel @ dummy_kernel.T
+
     dummy_item_to_group = torch.arange(8)
-    print(timeit.timeit(lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group), number=1000))
+    dummy_group_member_table = torch.arange(8).view(-1, 1)
+
+    print(
+        timeit.timeit(
+            lambda: _greedy_map_full_explore(dummy_kernel, 8, dummy_item_to_group, dummy_group_member_table),
+            number=1000,
+        ),
+    )
     print(timeit.timeit(lambda: fast_greedy_map(dummy_kernel, 8, dummy_item_to_group), number=1000))

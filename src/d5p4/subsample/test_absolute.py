@@ -31,17 +31,19 @@ GROUP_SIZE_LIST = [4, 8, 16, 32, 64]
 W_VALUES = np.logspace(np.log10(3), np.log10(99.9), num=15).tolist()  # 3 to 100 log scale
 
 IMPLEMENTED_METHODS = [
-    ("_greedy_map", True),  # old non-triton implementation (fair comparison)
+    ("_greedy_map", True),  # non-triton implementation
+    ("greedy_map", True),  # triton implementation
     ("greedy_beam", True),
     ("diverse_beam", True),
     ("random", True),
 ]
 
 # ANSI colors
-C_GM = "\033[96m"  # Cyan
-C_GB = "\033[93m"  # Yellow
-C_DB = "\033[92m"  # Green
-C_R = "\033[95m"  # Magenta
+C_GM = "\033[96m"  # Cyan          — _greedy_map (non-triton)
+C_GMt = "\033[36m"  # Dark Cyan     — greedy_map  (triton)
+C_GB = "\033[93m"  # Yellow        — greedy_beam
+C_DB = "\033[92m"  # Green         — diverse_beam
+C_R = "\033[95m"  # Magenta       — random
 C_RST = "\033[0m"  # Reset
 
 
@@ -155,11 +157,11 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     print(
         f"{'N_G':>4} | {'N_I':>4} | {'w_int':>5} | "
-        f"{C_GM}{'Raw GM':>8}{C_RST} | {C_GB}{'Raw GB':>8}{C_RST} | {C_DB}{'Raw DB':>8}{C_RST} | {C_R}{'Raw R':>8}{C_RST} | "  # noqa: E501
-        f"{C_GM}{'Rnk GM':>6}{C_RST} | {C_GB}{'Rnk GB':>6}{C_RST} | {C_DB}{'Rnk DB':>6}{C_RST} | {C_R}{'Rnk R':>6}{C_RST} | "  # noqa: E501
-        f"{C_GM}{'T50 GM':>7}{C_RST} | {C_GB}{'T50 GB':>7}{C_RST} | {C_DB}{'T50 DB':>7}{C_RST} | {C_R}{'T50 R':>7}{C_RST}",  # noqa: E501
+        f"{C_GM}{'Raw GM':>8}{C_RST} | {C_GMt}{'Raw GMt':>8}{C_RST} | {C_GB}{'Raw GB':>8}{C_RST} | {C_DB}{'Raw DB':>8}{C_RST} | {C_R}{'Raw R':>8}{C_RST} | "  # noqa: E501
+        f"{C_GM}{'Rnk GM':>6}{C_RST} | {C_GMt}{'Rnk GMt':>7}{C_RST} | {C_GB}{'Rnk GB':>6}{C_RST} | {C_DB}{'Rnk DB':>6}{C_RST} | {C_R}{'Rnk R':>6}{C_RST} | "  # noqa: E501
+        f"{C_GM}{'T50 GM':>7}{C_RST} | {C_GMt}{'T50 GMt':>8}{C_RST} | {C_GB}{'T50 GB':>7}{C_RST} | {C_DB}{'T50 DB':>7}{C_RST} | {C_R}{'T50 R':>7}{C_RST}",  # noqa: E501
     )
-    print("-" * 135)
+    print("-" * 158)
 
     all_results = []
 
@@ -240,12 +242,12 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
                 print(
                     f"{n_groups:>4} | {group_size:>4} | {w:>5.2f} | "
-                    f"{C_GM}{avg_raw[0]:>8.2f}{C_RST} | {C_GB}{avg_raw[1]:>8.2f}{C_RST} | "
-                    f"{C_DB}{avg_raw[2]:>8.2f}{C_RST} | {C_R}{avg_raw[3]:>8.2f}{C_RST} | "
-                    f"{C_GM}{avg_rnk[0]:>6.2f}{C_RST} | {C_GB}{avg_rnk[1]:>6.2f}{C_RST} | "
-                    f"{C_DB}{avg_rnk[2]:>6.2f}{C_RST} | {C_R}{avg_rnk[3]:>6.2f}{C_RST} | "
-                    f"{C_GM}{med_times[0]:>7.4f}{C_RST} | {C_GB}{med_times[1]:>7.4f}{C_RST} | "
-                    f"{C_DB}{med_times[2]:>7.4f}{C_RST} | {C_R}{med_times[3]:>7.4f}{C_RST}",
+                    f"{C_GM}{avg_raw[0]:>8.2f}{C_RST} | {C_GMt}{avg_raw[1]:>8.2f}{C_RST} | "
+                    f"{C_GB}{avg_raw[2]:>8.2f}{C_RST} | {C_DB}{avg_raw[3]:>8.2f}{C_RST} | {C_R}{avg_raw[4]:>8.2f}{C_RST} | "
+                    f"{C_GM}{avg_rnk[0]:>6.2f}{C_RST} | {C_GMt}{avg_rnk[1]:>7.2f}{C_RST} | "
+                    f"{C_GB}{avg_rnk[2]:>6.2f}{C_RST} | {C_DB}{avg_rnk[3]:>6.2f}{C_RST} | {C_R}{avg_rnk[4]:>6.2f}{C_RST} | "
+                    f"{C_GM}{med_times[0]:>7.4f}{C_RST} | {C_GMt}{med_times[1]:>8.4f}{C_RST} | "
+                    f"{C_GB}{med_times[2]:>7.4f}{C_RST} | {C_DB}{med_times[3]:>7.4f}{C_RST} | {C_R}{med_times[4]:>7.4f}{C_RST}",
                 )
 
                 all_results.append(
@@ -254,31 +256,36 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         "group_size": group_size,
                         "w_int": w,
                         "raw_gm": avg_raw[0],
-                        "raw_gb": avg_raw[1],
-                        "raw_db": avg_raw[2],
-                        "raw_r": avg_raw[3],
+                        "raw_gmt": avg_raw[1],
+                        "raw_gb": avg_raw[2],
+                        "raw_db": avg_raw[3],
+                        "raw_r": avg_raw[4],
                         "rnk_gm": avg_rnk[0],
-                        "rnk_gb": avg_rnk[1],
-                        "rnk_db": avg_rnk[2],
-                        "rnk_r": avg_rnk[3],
+                        "rnk_gmt": avg_rnk[1],
+                        "rnk_gb": avg_rnk[2],
+                        "rnk_db": avg_rnk[3],
+                        "rnk_r": avg_rnk[4],
                         "time50_gm": med_times[0],
-                        "time50_gb": med_times[1],
-                        "time50_db": med_times[2],
-                        "time50_r": med_times[3],
+                        "time50_gmt": med_times[1],
+                        "time50_gb": med_times[2],
+                        "time50_db": med_times[3],
+                        "time50_r": med_times[4],
                         "time95_gm": p95_times[0],
-                        "time95_gb": p95_times[1],
-                        "time95_db": p95_times[2],
-                        "time95_r": p95_times[3],
+                        "time95_gmt": p95_times[1],
+                        "time95_gb": p95_times[2],
+                        "time95_db": p95_times[3],
+                        "time95_r": p95_times[4],
                         "time_std_gm": std_times[0],
-                        "time_std_gb": std_times[1],
-                        "time_std_db": std_times[2],
-                        "time_std_r": std_times[3],
+                        "time_std_gmt": std_times[1],
+                        "time_std_gb": std_times[2],
+                        "time_std_db": std_times[3],
+                        "time_std_r": std_times[4],
                     },
                 )
 
     print(
-        f"\nNB: {C_GM}GM (Greedy Map){C_RST}, {C_GB}GB (Greedy Beam){C_RST}, "
-        f"{C_DB}DB (Diverse Beam){C_RST}, {C_R}R (Random){C_RST}",
+        f"\nNB: {C_GM}GM (_greedy_map, non-triton){C_RST}, {C_GMt}GMt (greedy_map, triton){C_RST}, "
+        f"{C_GB}GB (Greedy Beam){C_RST}, {C_DB}DB (Diverse Beam){C_RST}, {C_R}R (Random){C_RST}",
     )
     print("Timing columns in table use median latency (T50, seconds). CSV also includes T95 and std.")
 
