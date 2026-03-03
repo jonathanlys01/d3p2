@@ -69,116 +69,81 @@ if HAS_TRITON:
 
     @triton.autotune(  # type: ignore[misc]
         configs=[
-            triton.Config({}, num_warps=4, num_stages=2),  # type: ignore[misc]
-            triton.Config({}, num_warps=8, num_stages=2),  # type: ignore[misc]
-            triton.Config({}, num_warps=16, num_stages=2),  # type: ignore[misc]
-            triton.Config({}, num_warps=4, num_stages=3),  # type: ignore[misc]
-            triton.Config({}, num_warps=8, num_stages=3),  # type: ignore[misc]
-            triton.Config({}, num_warps=16, num_stages=3),  # type: ignore[misc]
-            triton.Config({}, num_warps=4, num_stages=4),  # type: ignore[misc]
-            triton.Config({}, num_warps=8, num_stages=4),  # type: ignore[misc]
-            triton.Config({}, num_warps=16, num_stages=4),  # type: ignore[misc]
-            triton.Config({}, num_warps=32, num_stages=4),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 32}, num_warps=4),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 64}, num_warps=4),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 64}, num_warps=8),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 128}, num_warps=8),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 128}, num_warps=16),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 256}, num_warps=8),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 256}, num_warps=16),  # type: ignore[misc]
+            triton.Config({"BLOCK_D": 256}, num_warps=32),  # type: ignore[misc]
         ],
-        key=["n_items", "num_groups"],
+        key=["n_items", "emb_dim"],
     )
     @triton.jit  # type: ignore[misc]
-    def _diverse_beam_triton_kernel(  # noqa: PLR0913
-        scores_ptr,
+    def _fused_mmr_argmax_kernel(  # noqa: PLR0913
+        emb_sum_ptr,
         embeddings_ptr,
-        item_to_group_ptr,
-        selected_ptr,
-        cumulative_ptr,
-        emb_sum_ptr,  # (n_items, emb_dim) workspace buffer
+        scores_ptr,
+        mask_ptr,
+        out_argmax_ptr,
+        out_score_ptr,
         n_items: tl.constexpr,
         emb_dim: tl.constexpr,
-        num_groups: tl.constexpr,
-        alpha: tl.constexpr,
-        stride_emb_n: tl.constexpr,
-        stride_emb_d: tl.constexpr,
-        stride_sel_traj: tl.constexpr,
-        stride_sel_step: tl.constexpr,
+        alpha_over_k: float,
+        stride_es: tl.constexpr,  # emb_sum row stride  (== emb_dim if contiguous)
+        stride_emb: tl.constexpr,  # embeddings row stride (== emb_dim if contiguous)
+        stride_mask: tl.constexpr,  # mask row stride       (== n_items if contiguous)
         BLOCK_N: tl.constexpr,
         BLOCK_D: tl.constexpr,
     ):
         """
-        Executes N full trajectories in parallel.
-        pid represents the starting item (trajectory ID).
+        Fused MMR diversity-penalty + argmax kernel.
+
+        One Triton program per trajectory. For trajectory `pid`, computes:
+            adj[j] = base_scores[j] - alpha_over_k * (emb_sum[pid] · embeddings[j]) + mask[pid, j]
+        and returns argmax_j(adj) and its value.
+
+        Dot products are accumulated in SRAM across BLOCK_D tiles of the embedding
+        dimension — the full (n_items, n_items) penalty matrix is NEVER written to HBM.
         """
         pid = tl.program_id(0)
 
-        offs_N = tl.arange(0, BLOCK_N)
-        mask_N = offs_N < n_items
+        offs_n = tl.arange(0, BLOCK_N)
+        mask_n = offs_n < n_items
 
-        # Load static base scores and group assignments
-        base_scores = tl.load(scores_ptr + offs_N, mask=mask_N, other=-float("inf"))
-        item_groups = tl.load(item_to_group_ptr + offs_N, mask=mask_N, other=-1)
+        # Accumulate dot products: emb_sum[pid] · embeddings[j] for all j
+        dot = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
-        current_item = pid
-        cumulative_score = 0.0
+        for d_start in range(0, emb_dim, BLOCK_D):  # static loop when emb_dim is constexpr
+            offs_d = d_start + tl.arange(0, BLOCK_D)
+            mask_d = offs_d < emb_dim
 
-        # Mask array: 0 for valid, 1 for masked out
-        is_masked = tl.zeros((BLOCK_N,), dtype=tl.int32)
+            # Load emb_sum[pid, d_start : d_start+BLOCK_D] — stays in register file
+            es = tl.load(emb_sum_ptr + pid * stride_es + offs_d, mask=mask_d, other=0.0)
 
-        for k in tl.static_range(num_groups):
-            # 1. Record selection for this step
-            tl.store(selected_ptr + pid * stride_sel_traj + k * stride_sel_step, current_item)
+            # Load embeddings[0:BLOCK_N, d_start : d_start+BLOCK_D] — (BLOCK_N, BLOCK_D)
+            embs = tl.load(
+                embeddings_ptr + offs_n[:, None] * stride_emb + offs_d[None, :],
+                mask=mask_n[:, None] & mask_d[None, :],  # type: ignore
+                other=0.0,
+            )
 
-            # 2. Mask out items in the newly selected group
-            current_group = tl.sum(tl.where(offs_N == current_item, item_groups, 0))
-            is_masked = is_masked | (item_groups == current_group)
+            # dot[j] += embs[j] · es  (outer product reduced over D)
+            dot += tl.sum(embs * es[None, :], axis=1)
 
-            # 3. Apply score to total (k=0 is just the base score)
-            if k == 0:
-                first_score = tl.sum(tl.where(offs_N == pid, base_scores, 0.0))
-                cumulative_score += first_score
+        # Load base scores and additive group-mask row for this trajectory
+        base = tl.load(scores_ptr + offs_n, mask=mask_n, other=-float("inf"))
+        msk = tl.load(mask_ptr + pid * stride_mask + offs_n, mask=mask_n, other=-float("inf"))
 
-            if k < num_groups - 1:
-                dot_products = tl.zeros((BLOCK_N,), dtype=tl.float32)
+        # Compute adjusted score and find argmax — stays in registers
+        adj = base - alpha_over_k * dot + msk
 
-                # Tile across embedding dimension to calculate dot products
-                for d in range(0, emb_dim, BLOCK_D):
-                    offs_D = d + tl.arange(0, BLOCK_D)
-                    mask_D = offs_D < emb_dim
+        best_score = tl.max(adj, axis=0)
+        best_idx = tl.argmax(adj, axis=0)
 
-                    # Load previous emb_sum and the current item's embedding chunk
-                    prev_sum = tl.load(emb_sum_ptr + pid * emb_dim + offs_D, mask=mask_D, other=0.0)
-                    curr_emb = tl.load(
-                        embeddings_ptr + current_item * stride_emb_n + offs_D * stride_emb_d,
-                        mask=mask_D,
-                        other=0.0,
-                    )
-
-                    # Update and store emb_sum in HBM for next iteration
-                    new_sum = prev_sum + curr_emb
-                    tl.store(emb_sum_ptr + pid * emb_dim + offs_D, new_sum, mask=mask_D)
-
-                    # Load chunks of all embeddings to compute the diversity penalty
-                    embs = tl.load(
-                        embeddings_ptr + offs_N[:, None] * stride_emb_n + offs_D[None, :] * stride_emb_d,
-                        mask=mask_N[:, None] & mask_D[None, :],  # type: ignore
-                        other=0.0,
-                    )
-
-                    # dot_products += embs @ new_sum
-                    dot_products += tl.sum(embs * new_sum[None, :], axis=1)
-
-                # 4. Calculate adjusted MMR score
-                div_penalty = dot_products / (k + 1)
-                adj_scores = base_scores - alpha * div_penalty
-
-                # Apply group masking
-                adj_scores = tl.where(is_masked == 0, adj_scores, -float("inf"))
-
-                # 5. Greedy step selection
-                best_score = tl.max(adj_scores, axis=0)
-                current_item = tl.argmax(adj_scores, axis=0)
-
-                # Append to running cumulative score
-                cumulative_score += best_score
-
-        # Store the trajectory's final score
-        tl.store(cumulative_ptr + pid, cumulative_score)
+        tl.store(out_argmax_ptr + pid, best_idx)
+        tl.store(out_score_ptr + pid, best_score)
 
 
 class DiverseBeamSearch(BaseSelector):
@@ -190,7 +155,7 @@ class DiverseBeamSearch(BaseSelector):
         self._bufs = []
 
     def _ensure_buffers(self, n_items: int, emb_dim: int, device: torch.device, dtype: torch.dtype):
-        """Lazily pre-allocate dynamic work buffers for zero-overhead execution."""
+        """Lazily pre-allocate work buffers for zero-overhead execution."""
         signature = (n_items, emb_dim, str(device), str(dtype))
         if self._buf_signature == signature:
             return
@@ -198,17 +163,22 @@ class DiverseBeamSearch(BaseSelector):
         num_groups = self.config.n_groups * self.distributed_mul
 
         if HAS_TRITON and device.type == "cuda":
+            # CUDA path: fused Triton kernel reads emb_sum directly — no (n×n) GEMM output buffer
             self._bufs = [
-                torch.empty((n_items, num_groups), dtype=torch.long, device=device),  # selected
-                torch.empty(n_items, dtype=dtype, device=device),  # cumulative
-                torch.empty((n_items, emb_dim), dtype=dtype, device=device),  # emb_sum_buf
+                torch.empty((n_items, num_groups), dtype=torch.long, device=device),  # 0: selected
+                torch.empty(n_items, dtype=dtype, device=device),  # 1: cumulative
+                torch.empty((n_items, n_items), dtype=dtype, device=device),  # 2: mask (group exclusions)
+                torch.empty((n_items, emb_dim), dtype=dtype, device=device),  # 3: emb_sum
+                torch.empty(n_items, dtype=torch.long, device=device),  # 4: next_items (kernel out)
+                torch.empty(n_items, dtype=dtype, device=device),  # 5: next_scores (kernel out)
             ]
         else:
+            # CPU / MPS path: torch.mm-based, needs (n×n) sim_cache buffer
             self._bufs = [
-                torch.empty((n_items, num_groups), dtype=torch.long, device=device),  # selected
-                torch.empty(n_items, dtype=dtype, device=device),  # cumulative
-                torch.empty((n_items, emb_dim), dtype=dtype, device=device),  # emb_sum
-                torch.empty((n_items, n_items), dtype=dtype, device=device),  # mask
+                torch.empty((n_items, num_groups), dtype=torch.long, device=device),  # 0: selected
+                torch.empty(n_items, dtype=dtype, device=device),  # 1: cumulative
+                torch.empty((n_items, n_items), dtype=dtype, device=device),  # 2: sim_cache
+                torch.empty((n_items, n_items), dtype=dtype, device=device),  # 3: mask
             ]
         self._buf_signature = signature
 
@@ -279,66 +249,138 @@ def _diverse_beam_full_explore(  # noqa: PLR0913
     item_to_group: torch.Tensor,
     bufs: list[torch.Tensor],
 ) -> torch.Tensor:
-    """Dispatches diverse beam logic to either Triton (CUDA) or optimized Python (CPU/MPS)."""
-    n_items, emb_dim = embeddings.shape
-
+    """Dispatch to Triton-fused (CUDA) or cuBLAS-based (CPU/MPS) diverse beam implementation."""
     if HAS_TRITON and scores.device.type == "cuda":
-        selected, cumulative, emb_sum_buf = bufs
-        cumulative.zero_()
-        emb_sum_buf.zero_()
+        return _diverse_beam_cuda(scores, embeddings, num_groups, alpha, item_to_group, bufs)
+    return _diverse_beam_cpu(scores, embeddings, num_groups, alpha, item_to_group, bufs)
 
-        BLOCK_N = triton.next_power_of_2(n_items)
-        BLOCK_D = min(256, triton.next_power_of_2(emb_dim))
 
-        _diverse_beam_triton_kernel[(n_items,)](
-            scores,
-            embeddings,
-            item_to_group,
-            selected,
-            cumulative,
-            emb_sum_buf,
-            n_items=n_items,
-            emb_dim=emb_dim,
-            num_groups=num_groups,
-            alpha=alpha,
-            stride_emb_n=embeddings.stride(0),
-            stride_emb_d=embeddings.stride(1),
-            stride_sel_traj=selected.stride(0),
-            stride_sel_step=selected.stride(1),
-            BLOCK_N=BLOCK_N,
-            BLOCK_D=BLOCK_D,
-        )
-        return selected[torch.argmax(cumulative), :]
+def _diverse_beam_cuda(  # noqa: PLR0913
+    scores: torch.Tensor,
+    embeddings: torch.Tensor,
+    num_groups: int,
+    alpha: float,
+    item_to_group: torch.Tensor,
+    bufs: list[torch.Tensor],
+) -> torch.Tensor:
+    """
+    CUDA path: fused Triton kernel per step.
 
-    # --- CPU/MPS Fallback Logic ---
-    selected, cumulative, emb_sum, mask = bufs
+    For each step k, launches one Triton program per trajectory. Each program
+    computes the full MMR adjusted score for all candidates using SRAM dot products
+    and returns the argmax — the (n_items, n_items) intermediate is never written to HBM.
+
+    Buffer layout (set by _ensure_buffers for CUDA):
+      bufs[0]: selected      (n_items, num_groups) long
+      bufs[1]: cumulative    (n_items,)
+      bufs[2]: mask          (n_items, n_items)   — additive -inf group exclusion mask
+      bufs[3]: emb_sum       (n_items, emb_dim)   — running embedding sum per trajectory
+      bufs[4]: next_items    (n_items,)  long     — kernel output: argmax indices
+      bufs[5]: next_scores   (n_items,)           — kernel output: adjusted scores
+    """
+    n_items, emb_dim = embeddings.shape
+    selected, cumulative, mask, emb_sum, next_items_buf, next_scores_buf = bufs
+
     selected.zero_()
     cumulative.zero_()
-    emb_sum.zero_()
     mask.zero_()
 
     start_items = torch.arange(n_items, device=scores.device)
     selected[:, 0] = start_items
-    cumulative += scores[start_items]
-    emb_sum += embeddings[start_items]
+    cumulative.copy_(scores[start_items])
 
+    # Initialize emb_sum: trajectory i starts with embeddings[i]
+    torch.index_select(embeddings, 0, start_items, out=emb_sum)
+
+    # Build additive -inf mask for starting groups
     start_groups = item_to_group[start_items]
     group_mask = start_groups.unsqueeze(1) == item_to_group.unsqueeze(0)
     mask.masked_fill_(group_mask, -torch.inf)
 
+    BLOCK_N = triton.next_power_of_2(n_items)  # type: ignore[misc]
+
     for k in range(1, num_groups):
-        mean_emb = emb_sum / k
-        diversity_penalty = torch.matmul(mean_emb, embeddings.T)
-        adjusted = scores.unsqueeze(0) - alpha * diversity_penalty + mask
+        _fused_mmr_argmax_kernel[(n_items,)](  # type: ignore[misc]
+            emb_sum,
+            embeddings,
+            scores,
+            mask,
+            next_items_buf,
+            next_scores_buf,
+            n_items=n_items,
+            emb_dim=emb_dim,
+            alpha_over_k=alpha / k,
+            stride_es=emb_sum.stride(0),
+            stride_emb=embeddings.stride(0),
+            stride_mask=mask.stride(0),
+            BLOCK_N=BLOCK_N,
+        )
+
+        selected[:, k] = next_items_buf
+        cumulative.add_(next_scores_buf)
+        emb_sum.add_(embeddings[next_items_buf])
+
+        new_groups = item_to_group[next_items_buf]
+        new_mask = new_groups.unsqueeze(1) == item_to_group.unsqueeze(0)
+        mask.masked_fill_(new_mask, -torch.inf)
+
+    return selected[torch.argmax(cumulative), :]
+
+
+@torch.jit.script
+def _diverse_beam_cpu(  # noqa: PLR0913
+    scores: torch.Tensor,
+    embeddings: torch.Tensor,
+    num_groups: int,
+    alpha: float,
+    item_to_group: torch.Tensor,
+    bufs: list[torch.Tensor],
+) -> torch.Tensor:
+    """
+    CPU / MPS path: torch.jit.script + cuBLAS (torch.mm) per step.
+
+    Uses a batched GEMM to compute all (n_items, n_items) MMR scores at once,
+    which is significantly faster than per-trajectory dot products on CPU/MPS.
+
+    Buffer layout (set by _ensure_buffers for CPU/MPS):
+      bufs[0]: selected   (n_items, num_groups) long
+      bufs[1]: cumulative (n_items,)
+      bufs[2]: sim_cache  (n_items, n_items)   — GEMM output  emb_sum @ E.T
+      bufs[3]: mask       (n_items, n_items)   — additive -inf group exclusion mask
+    """
+    n_items = embeddings.size(0)
+    selected, cumulative, sim_cache, mask = bufs
+    selected.zero_()
+    cumulative.zero_()
+    sim_cache.zero_()
+    mask.zero_()
+
+    start_items = torch.arange(n_items, device=scores.device)
+    selected[:, 0] = start_items
+    cumulative.add_(scores[start_items])
+
+    # Build additive -inf mask for starting groups
+    start_groups = item_to_group[start_items]
+    group_mask = start_groups.unsqueeze(1) == item_to_group.unsqueeze(0)
+    mask.masked_fill_(group_mask, -float("inf"))
+
+    # emb_sum[i] = running sum of embeddings selected in trajectory i
+    emb_sum = embeddings[start_items].clone()
+
+    for k in range(1, num_groups):
+        # One cuBLAS GEMM: (n_items, emb_dim) @ (emb_dim, n_items) -> (n_items, n_items)
+        # sim_cache[i, j] = emb_sum[i] . embeddings[j]  (sum; divide by k for mean)
+        torch.mm(emb_sum, embeddings.T, out=sim_cache)
+        adjusted = scores.unsqueeze(0) - alpha * (sim_cache / k) + mask
 
         next_items = torch.argmax(adjusted, dim=1)
         selected[:, k] = next_items
-        cumulative += torch.gather(adjusted, 1, next_items.unsqueeze(1)).squeeze(1)
-        emb_sum += embeddings[next_items]
+        cumulative.add_(adjusted.gather(1, next_items.unsqueeze(1)).squeeze(1))
+        emb_sum.add_(embeddings[next_items])
 
         new_groups = item_to_group[next_items]
         new_mask = new_groups.unsqueeze(1) == item_to_group.unsqueeze(0)
-        mask.masked_fill_(new_mask, -torch.inf)
+        mask.masked_fill_(new_mask, -float("inf"))
 
     return selected[torch.argmax(cumulative), :]
 
@@ -349,61 +391,98 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Running benchmarks on: {device}")
 
-    # Simulated Data
     n_items, n_groups = 128, 8
     emb_dim = 256
     dummy_scores = torch.randn(n_items, device=device)
     dummy_embeddings = torch.randn(n_items, emb_dim, device=device)
     dummy_alpha = 0.5
-
-    # Simulate Transversal group structure
     group_size_each = n_items // n_groups
     dummy_item_to_group = torch.arange(n_groups, device=device).repeat_interleave(group_size_each)
 
     if device == "cuda" and HAS_TRITON:
-        # Pre-allocate Triton buffers
-        triton_bufs = [
+        cuda_bufs = [
             torch.empty((n_items, n_groups), dtype=torch.long, device=device),  # selected
             torch.empty(n_items, dtype=dummy_scores.dtype, device=device),  # cumulative
-            torch.empty((n_items, emb_dim), dtype=dummy_scores.dtype, device=device),  # emb_sum_buf
+            torch.empty((n_items, n_items), dtype=dummy_scores.dtype, device=device),  # mask
+            torch.empty((n_items, emb_dim), dtype=dummy_scores.dtype, device=device),  # emb_sum
+            torch.empty(n_items, dtype=torch.long, device=device),  # next_items
+            torch.empty(n_items, dtype=dummy_scores.dtype, device=device),  # next_scores
         ]
 
-        # Warmup and compile JIT
-        _diverse_beam_full_explore(
+        # Warmup / autotune
+        _diverse_beam_cuda(
             dummy_scores,
             dummy_embeddings,
             n_groups,
             dummy_alpha,
             dummy_item_to_group,
-            triton_bufs,
+            cuda_bufs,
         )
+        torch.cuda.synchronize()
 
-        print("\nTriton Kernel Benchmark (CUDA):")
+        print("\nTriton Fused Kernel Benchmark (CUDA):")
         print(
             timeit.timeit(
-                lambda: _diverse_beam_full_explore(
-                    dummy_scores,
-                    dummy_embeddings,
-                    n_groups,
-                    dummy_alpha,
-                    dummy_item_to_group,
-                    triton_bufs,
+                lambda: (
+                    _diverse_beam_cuda(
+                        dummy_scores,
+                        dummy_embeddings,
+                        n_groups,
+                        dummy_alpha,
+                        dummy_item_to_group,
+                        cuda_bufs,
+                    ),
+                    torch.cuda.synchronize(),
+                ),
+                number=1000,
+            ),
+        )
+
+        # Also compare the CPU path (torch.mm) on the same device for reference
+        cpu_style_bufs = [
+            torch.empty((n_items, n_groups), dtype=torch.long, device=device),
+            torch.empty(n_items, dtype=dummy_scores.dtype, device=device),
+            torch.empty((n_items, n_items), dtype=dummy_scores.dtype, device=device),
+            torch.empty((n_items, n_items), dtype=dummy_scores.dtype, device=device),
+        ]
+        _diverse_beam_cpu(
+            dummy_scores,
+            dummy_embeddings,
+            n_groups,
+            dummy_alpha,
+            dummy_item_to_group,
+            cpu_style_bufs,
+        )
+        torch.cuda.synchronize()
+
+        print("\ntorch.mm Baseline Benchmark (CUDA, for comparison):")
+        print(
+            timeit.timeit(
+                lambda: (
+                    _diverse_beam_cpu(
+                        dummy_scores,
+                        dummy_embeddings,
+                        n_groups,
+                        dummy_alpha,
+                        dummy_item_to_group,
+                        cpu_style_bufs,
+                    ),
+                    torch.cuda.synchronize(),
                 ),
                 number=1000,
             ),
         )
 
     else:
-        # Pre-allocate CPU buffers
         cpu_bufs = [
-            torch.empty((n_items, n_groups), dtype=torch.long, device=device),  # selected
-            torch.empty(n_items, dtype=dummy_scores.dtype, device=device),  # cumulative
-            torch.empty((n_items, emb_dim), dtype=dummy_scores.dtype, device=device),  # emb_sum
-            torch.empty((n_items, n_items), dtype=dummy_scores.dtype, device=device),  # mask
+            torch.empty((n_items, n_groups), dtype=torch.long, device=device),
+            torch.empty(n_items, dtype=dummy_scores.dtype, device=device),
+            torch.empty((n_items, n_items), dtype=dummy_scores.dtype, device=device),
+            torch.empty((n_items, n_items), dtype=dummy_scores.dtype, device=device),
         ]
 
-        # Warmup and compile JIT
-        _diverse_beam_full_explore(
+        # Warmup / TorchScript compile
+        _diverse_beam_cpu(
             dummy_scores,
             dummy_embeddings,
             n_groups,
@@ -412,10 +491,10 @@ if __name__ == "__main__":
             cpu_bufs,
         )
 
-        print("\nCPU Kernel Benchmark (CPU/MPS):")
+        print(f"\nCPU/MPS Benchmark ({device}):")
         print(
             timeit.timeit(
-                lambda: _diverse_beam_full_explore(
+                lambda: _diverse_beam_cpu(
                     dummy_scores,
                     dummy_embeddings,
                     n_groups,
