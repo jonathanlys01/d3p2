@@ -165,8 +165,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     for n_groups in N_GROUPS_LIST:
         for group_size in GROUP_SIZE_LIST:
-            if n_groups == 64 and group_size == 64:
-                continue
             total_items = n_groups * group_size
 
             for w in W_VALUES:
