@@ -9,7 +9,6 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-import idr_torch
 import optuna
 import torch
 import torch.distributed as dist
@@ -17,6 +16,7 @@ from optuna import Study
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
+import idr_torch
 from d5p4.config import RESULTS_DIR, Config
 from d5p4.diffusion_mdlm import MDLMSampler
 from d5p4.eval_core import Evaluator
@@ -38,7 +38,7 @@ def _bcast(obj):
     """Broadcast a single Python object from rank 0; return it on all ranks."""
     if not dist.is_available() or not dist.is_initialized():
         return obj
-    is_master: bool = idr_torch.is_master  # type: ignore
+    is_master = idr_torch.is_master
     obj_list = [obj] if is_master else [None]
     dist.broadcast_object_list(obj_list, src=0)
     return obj_list[0]
@@ -191,14 +191,14 @@ def run_sweep(sweep_name, og_config, objective_fn, init_trials=None, study_to_re
     dist.init_process_group(
         backend="nccl",
         init_method="env://",
-        world_size=idr_torch.world_size,  # type: ignore
-        rank=idr_torch.rank,  # type: ignore
+        world_size=idr_torch.world_size,
+        rank=idr_torch.rank,
     )
 
     device = f"cuda:{idr_torch.local_rank}"
     torch.cuda.set_device(device)
 
-    is_master: bool = idr_torch.is_master  # type: ignore
+    is_master = idr_torch.is_master
 
     # Initialize model once before the sweep
     model = MDLMSampler(og_config)

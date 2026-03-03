@@ -23,6 +23,7 @@ single_init: true
 # Datasets
 truthful_qa_path: ${oc.env:WORK}/datasets/truthfulqa/truthful_qa
 commonsense_qa_path: ${oc.env:WORK}/datasets/tau/commonsense_qa
+gsm8k_path: ${oc.env:WORK}/datasets/openai/gsm8k
 
 
 # JZ-specific experiment settings (differ from defaults)

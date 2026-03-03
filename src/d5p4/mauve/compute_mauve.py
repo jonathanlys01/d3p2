@@ -272,7 +272,13 @@ def cluster_feats(
     data1 = data1.astype(np.float32)  # Faiss requires float32.
     t1 = time.time()
     kmeans = faiss.Kmeans(
-        data1.shape[1], num_clusters, niter=max_iter, verbose=verbose, nredo=num_redo, update_index=True, seed=seed + 2,
+        data1.shape[1],
+        num_clusters,
+        niter=max_iter,
+        verbose=verbose,
+        nredo=num_redo,
+        update_index=True,
+        seed=seed + 2,
     )
     kmeans.train(data1)
     _, labels = kmeans.index.search(data1, 1)

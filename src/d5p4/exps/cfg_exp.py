@@ -15,10 +15,10 @@ import os
 from dataclasses import asdict
 from datetime import datetime
 
-import idr_torch
 import numpy as np
 import torch
 
+import idr_torch
 from d5p4 import utils
 from d5p4.config import RESULTS_DIR, Config
 from d5p4.data.qa import get_qa_dataset

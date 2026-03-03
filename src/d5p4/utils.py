@@ -3,14 +3,14 @@ import warnings
 from builtins import print as bprint
 from typing import Iterable, TypeVar
 
-import idr_torch
 import numpy as np
 import torch
 import transformers
-from idr_torch import IdrTorchWarning
 from tqdm import tqdm as tqdm_
 
+import idr_torch
 from d5p4.config import Config
+from idr_torch import IdrTorchWarning
 
 
 T = TypeVar("T")
@@ -135,12 +135,12 @@ class DistributedUtils:
 
     @classmethod
     def is_distributed(self) -> bool:
-        return idr_torch.world_size > 1  # type: ignore
+        return idr_torch.world_size > 1
 
     def __init__(self, cfg: Config):
-        self.rank: int = idr_torch.rank  # type: ignore
-        self.local_rank: int = idr_torch.local_rank  # type: ignore
-        self.world_size: int = idr_torch.world_size  # type: ignore
+        self.rank: int = idr_torch.rank
+        self.local_rank: int = idr_torch.local_rank
+        self.world_size: int = idr_torch.world_size
         self.cfg = cfg
 
         if self.is_distributed():
