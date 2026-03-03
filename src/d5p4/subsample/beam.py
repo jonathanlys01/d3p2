@@ -7,6 +7,7 @@ from d5p4.config import Cache
 from d5p4.subsample.base import BaseSelector, _compute_scores
 
 
+@torch.jit.script
 def _sample_from_logits(scores: torch.Tensor, k: int, temperature: float) -> torch.Tensor:
     """Sample k indices from scores, using argmax if temperature=0, else multinomial sampling."""
     if temperature == 0:
@@ -16,6 +17,7 @@ def _sample_from_logits(scores: torch.Tensor, k: int, temperature: float) -> tor
     return torch.multinomial(probs, num_samples=k, replacement=False)
 
 
+@torch.jit.script
 def _sample_per_group(
     scores: torch.Tensor,
     n_groups: int,
@@ -100,6 +102,7 @@ class DiverseBeamSearch(BaseSelector):
         return _diverse_beam_full_explore(scores, flat, total_groups, self.config._diversity_alpha, item_to_group)
 
 
+@torch.jit.script
 def _diverse_beam_full_explore(
     scores: torch.Tensor,
     embeddings: torch.Tensor,
