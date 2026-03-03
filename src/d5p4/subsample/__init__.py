@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from d5p4.config import Config
 
+    from ._greedy_map import _GreedyMAP
     from .base import BaseSelector
     from .baseline import BaselineSelection
     from .beam import DiverseBeamSearch, GreedyBeamSearch
@@ -19,6 +20,7 @@ AVAIL = {
     "dpp": ("d5p4.subsample.dpp_selector", "DPP"),
     "exhaustive": ("d5p4.subsample.exhaustive", "Exhaustive"),
     "greedy_map": ("d5p4.subsample.greedy_map", "GreedyMAP"),
+    "_greedy_map": ("d5p4.subsample._greedy_map", "_GreedyMAP"),
     "greedy_beam": ("d5p4.subsample.beam", "GreedyBeamSearch"),
     "diverse_beam": ("d5p4.subsample.beam", "DiverseBeamSearch"),
     "random": ("d5p4.subsample.random_selector", "RandomSelection"),
@@ -28,7 +30,7 @@ AVAIL = {
 
 def get_subsample_selector(
     config: Config,
-) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | RandomSelection | BaselineSelection":  # noqa: E501
+) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | _GreedyMAP | RandomSelection | BaselineSelection":  # noqa: E501
     """
     Factory function to dynamically load and instantiate a subset selector.
     """

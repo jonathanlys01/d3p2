@@ -31,7 +31,7 @@ GROUP_SIZE_LIST = [4, 8, 16, 32, 64]
 W_VALUES = np.logspace(np.log10(3), np.log10(99.9), num=15).tolist()  # 3 to 100 log scale
 
 IMPLEMENTED_METHODS = [
-    ("greedy_map", True),
+    ("_greedy_map", True),  # old non-triton implementation (fair comparison)
     ("greedy_beam", True),
     ("diverse_beam", True),
     ("random", True),
