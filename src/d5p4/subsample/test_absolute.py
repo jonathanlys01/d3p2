@@ -220,6 +220,25 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         _ = selectors[method].subsample(cache)
                         _sync_if_cuda()
 
+                # Post-warmup timing probe: skip methods that exceed 1 s.
+                SKIP_THRESHOLD = 1.0
+                skipped: set[str] = set()
+                probe_cache = make_synthetic_cache(total_items, seed=200_000)
+                for method, _ in IMPLEMENTED_METHODS:
+                    _sync_if_cuda()
+                    t0 = perf_counter()
+                    _ = selectors[method].subsample(probe_cache)
+                    _sync_if_cuda()
+                    probe_elapsed = perf_counter() - t0
+                    if probe_elapsed > SKIP_THRESHOLD:
+                        skipped.add(method)
+                        clr = METHOD_META[method]["color"]
+                        lbl = METHOD_META[method]["label"]
+                        print(
+                            f"  {clr}[SKIP]{C_RST} {lbl} ({method}) took "
+                            f"{probe_elapsed:.2f}s after warmup — skipping for this setting.",
+                        )
+
                 for trial in range(N_TRIALS):
                     cache = make_synthetic_cache(total_items, seed=trial)
                     assert cache.embeddings is not None
@@ -228,6 +247,12 @@ def main():  # noqa: C901, PLR0912, PLR0915
                     trial_raw_scores = []
 
                     for method, _ in IMPLEMENTED_METHODS:
+                        if method in skipped:
+                            trial_raw_scores.append(float("-inf"))
+                            raw_scores[method].append(float("-inf"))
+                            times[method].append(float("nan"))
+                            continue
+
                         selector = selectors[method]
 
                         _sync_if_cuda()
@@ -259,12 +284,20 @@ def main():  # noqa: C901, PLR0912, PLR0915
                 std_times = []
 
                 for method, _ in IMPLEMENTED_METHODS:
+                    if method in skipped:
+                        avg_raw.append(-np.inf)
+                        avg_rnk.append(float("nan"))
+                        med_times.append(float("nan"))
+                        p95_times.append(float("nan"))
+                        std_times.append(float("nan"))
+                        continue
                     scores = [s for s in raw_scores[method] if s > -1e9]
                     avg_raw.append(float(np.mean(scores)) if scores else -np.inf)
                     avg_rnk.append(float(np.mean(ranks[method])))
-                    med_times.append(float(np.median(times[method])))
-                    p95_times.append(float(np.percentile(times[method], 95)))
-                    std_times.append(float(np.std(times[method])))
+                    valid_times = [t for t in times[method] if not np.isnan(t)]
+                    med_times.append(float(np.median(valid_times)) if valid_times else float("nan"))
+                    p95_times.append(float(np.percentile(valid_times, 95)) if valid_times else float("nan"))
+                    std_times.append(float(np.std(valid_times)) if valid_times else float("nan"))
 
                 # Dynamic row printing
                 row_cols = [f"{n_groups:>4}", f"{group_size:>4}", f"{w:>5.2f}"]
