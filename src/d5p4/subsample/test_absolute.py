@@ -35,6 +35,7 @@ IMPLEMENTED_METHODS = [
     ("greedy_map", True),  # triton implementation
     ("greedy_beam", True),
     ("diverse_beam", True),
+    ("dpp", False),
     ("random", True),
 ]
 
@@ -43,8 +44,20 @@ C_GM = "\033[96m"  # Cyan          — _greedy_map (non-triton)
 C_GMt = "\033[36m"  # Dark Cyan     — greedy_map  (triton)
 C_GB = "\033[93m"  # Yellow        — greedy_beam
 C_DB = "\033[92m"  # Green         — diverse_beam
+C_DPP = "\033[91m"  # Red           — dpp
 C_R = "\033[95m"  # Magenta       — random
 C_RST = "\033[0m"  # Reset
+
+
+# Method metadata for dynamic reporting
+METHOD_META = {
+    "_greedy_map": {"label": "GM", "color": C_GM},
+    "greedy_map": {"label": "GMt", "color": C_GMt},
+    "greedy_beam": {"label": "GB", "color": C_GB},
+    "diverse_beam": {"label": "DB", "color": C_DB},
+    "dpp": {"label": "DPP", "color": C_DPP},
+    "random": {"label": "R", "color": C_R},
+}
 
 
 def _sync_if_cuda() -> None:
@@ -155,13 +168,23 @@ def main():  # noqa: C901, PLR0912, PLR0915
     print(f"Synthetic shapes: embeddings=[B,{SEQ_LEN},{HIDDEN_SIZE}], log_p_x0=[B,{SEQ_LEN},{VOCAB_SIZE}]")
     print("Metrics: Raw average log-det on reference kernel, and average rank (1=best)\n")
 
-    print(
-        f"{'N_G':>4} | {'N_I':>4} | {'w_int':>5} | "
-        f"{C_GM}{'Raw GM':>8}{C_RST} | {C_GMt}{'Raw GMt':>8}{C_RST} | {C_GB}{'Raw GB':>8}{C_RST} | {C_DB}{'Raw DB':>8}{C_RST} | {C_R}{'Raw R':>8}{C_RST} | "  # noqa: E501
-        f"{C_GM}{'Rnk GM':>6}{C_RST} | {C_GMt}{'Rnk GMt':>7}{C_RST} | {C_GB}{'Rnk GB':>6}{C_RST} | {C_DB}{'Rnk DB':>6}{C_RST} | {C_R}{'Rnk R':>6}{C_RST} | "  # noqa: E501
-        f"{C_GM}{'T50 GM':>7}{C_RST} | {C_GMt}{'T50 GMt':>8}{C_RST} | {C_GB}{'T50 GB':>7}{C_RST} | {C_DB}{'T50 DB':>7}{C_RST} | {C_R}{'T50 R':>7}{C_RST}",  # noqa: E501
-    )
-    print("-" * 158)
+    # Dynamic header generation
+    headers = [f"{'N_G':>4}", f"{'N_I':>4}", f"{'w_int':>5}"]
+
+    raw_h = []
+    rnk_h = []
+    t50_h = []
+
+    for method, _ in IMPLEMENTED_METHODS:
+        meta = METHOD_META[method]
+        lbl = meta["label"]
+        clr = meta["color"]
+        raw_h.append(f"{clr}{f'Raw {lbl}':>8}{C_RST}")
+        rnk_h.append(f"{clr}{f'Rnk {lbl}':>7}{C_RST}")
+        t50_h.append(f"{clr}{f'T50 {lbl}':>8}{C_RST}")
+
+    print(f"{' | '.join(headers)} | {' | '.join(raw_h)} | {' | '.join(rnk_h)} | {' | '.join(t50_h)}")
+    print("-" * (15 + 11 * len(IMPLEMENTED_METHODS) + 10 * len(IMPLEMENTED_METHODS) + 11 * len(IMPLEMENTED_METHODS)))
 
     all_results = []
 
@@ -202,9 +225,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
                     assert cache.embeddings is not None
                     ref_kernel = compute_similarity(cache.embeddings)
 
-                    trial_raw = []
+                    trial_raw_scores = []
 
-                    for method, transversal in IMPLEMENTED_METHODS:
+                    for method, _ in IMPLEMENTED_METHODS:
                         selector = selectors[method]
 
                         _sync_if_cuda()
@@ -219,75 +242,70 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             indices = []
 
                         score = compute_log_det(ref_kernel, indices)
-                        trial_raw.append(score)
+                        trial_raw_scores.append(score)
 
                         raw_scores[method].append(score)
                         times[method].append(elapsed)
 
                     # Compute rank for this trial (higher raw score is better)
-                    trial_r = compute_ranks_1_to_N(trial_raw)
+                    trial_r = compute_ranks_1_to_N(trial_raw_scores)
                     for (method, _), r in zip(IMPLEMENTED_METHODS, trial_r):
                         ranks[method].append(r)
 
-                avg_raw = [
-                    float(np.mean([s for s in raw_scores[m[0]] if s > -1e9]))
-                    if any(s > -1e9 for s in raw_scores[m[0]])
-                    else -np.inf
-                    for m in IMPLEMENTED_METHODS
-                ]
-                avg_rnk = [float(np.mean(ranks[m[0]])) for m in IMPLEMENTED_METHODS]
-                med_times = [float(np.median(times[m[0]])) for m in IMPLEMENTED_METHODS]
-                p95_times = [float(np.percentile(times[m[0]], 95)) for m in IMPLEMENTED_METHODS]
-                std_times = [float(np.std(times[m[0]])) for m in IMPLEMENTED_METHODS]
+                avg_raw = []
+                avg_rnk = []
+                med_times = []
+                p95_times = []
+                std_times = []
+
+                for method, _ in IMPLEMENTED_METHODS:
+                    scores = [s for s in raw_scores[method] if s > -1e9]
+                    avg_raw.append(float(np.mean(scores)) if scores else -np.inf)
+                    avg_rnk.append(float(np.mean(ranks[method])))
+                    med_times.append(float(np.median(times[method])))
+                    p95_times.append(float(np.percentile(times[method], 95)))
+                    std_times.append(float(np.std(times[method])))
+
+                # Dynamic row printing
+                row_cols = [f"{n_groups:>4}", f"{group_size:>4}", f"{w:>5.2f}"]
+
+                raw_cells = []
+                rnk_cells = []
+                t50_cells = []
+
+                for i, (method, _) in enumerate(IMPLEMENTED_METHODS):
+                    clr = METHOD_META[method]["color"]
+                    raw_cells.append(f"{clr}{avg_raw[i]:>8.2f}{C_RST}")
+                    rnk_cells.append(f"{clr}{avg_rnk[i]:>7.2f}{C_RST}")
+                    t50_cells.append(f"{clr}{med_times[i]:>8.4f}{C_RST}")
 
                 print(
-                    f"{n_groups:>4} | {group_size:>4} | {w:>5.2f} | "
-                    f"{C_GM}{avg_raw[0]:>8.2f}{C_RST} | {C_GMt}{avg_raw[1]:>8.2f}{C_RST} | "
-                    f"{C_GB}{avg_raw[2]:>8.2f}{C_RST} | {C_DB}{avg_raw[3]:>8.2f}{C_RST} | {C_R}{avg_raw[4]:>8.2f}{C_RST} | "
-                    f"{C_GM}{avg_rnk[0]:>6.2f}{C_RST} | {C_GMt}{avg_rnk[1]:>7.2f}{C_RST} | "
-                    f"{C_GB}{avg_rnk[2]:>6.2f}{C_RST} | {C_DB}{avg_rnk[3]:>6.2f}{C_RST} | {C_R}{avg_rnk[4]:>6.2f}{C_RST} | "
-                    f"{C_GM}{med_times[0]:>7.4f}{C_RST} | {C_GMt}{med_times[1]:>8.4f}{C_RST} | "
-                    f"{C_GB}{med_times[2]:>7.4f}{C_RST} | {C_DB}{med_times[3]:>7.4f}{C_RST} | {C_R}{med_times[4]:>7.4f}{C_RST}",
+                    f"{' | '.join(row_cols)} | "
+                    f"{' | '.join(raw_cells)} | "
+                    f"{' | '.join(rnk_cells)} | "
+                    f"{' | '.join(t50_cells)}",
                 )
 
-                all_results.append(
-                    {
-                        "n_groups": n_groups,
-                        "group_size": group_size,
-                        "w_int": w,
-                        "raw_gm": avg_raw[0],
-                        "raw_gmt": avg_raw[1],
-                        "raw_gb": avg_raw[2],
-                        "raw_db": avg_raw[3],
-                        "raw_r": avg_raw[4],
-                        "rnk_gm": avg_rnk[0],
-                        "rnk_gmt": avg_rnk[1],
-                        "rnk_gb": avg_rnk[2],
-                        "rnk_db": avg_rnk[3],
-                        "rnk_r": avg_rnk[4],
-                        "time50_gm": med_times[0],
-                        "time50_gmt": med_times[1],
-                        "time50_gb": med_times[2],
-                        "time50_db": med_times[3],
-                        "time50_r": med_times[4],
-                        "time95_gm": p95_times[0],
-                        "time95_gmt": p95_times[1],
-                        "time95_gb": p95_times[2],
-                        "time95_db": p95_times[3],
-                        "time95_r": p95_times[4],
-                        "time_std_gm": std_times[0],
-                        "time_std_gmt": std_times[1],
-                        "time_std_gb": std_times[2],
-                        "time_std_db": std_times[3],
-                        "time_std_r": std_times[4],
-                    },
-                )
+                results_row = {
+                    "n_groups": n_groups,
+                    "group_size": group_size,
+                    "w_int": w,
+                }
+                for i, (method, _) in enumerate(IMPLEMENTED_METHODS):
+                    lbl = METHOD_META[method]["label"].lower()
+                    results_row[f"raw_{lbl}"] = avg_raw[i]
+                    results_row[f"rnk_{lbl}"] = avg_rnk[i]
+                    results_row[f"time50_{lbl}"] = med_times[i]
+                    results_row[f"time95_{lbl}"] = p95_times[i]
+                    results_row[f"time_std_{lbl}"] = std_times[i]
 
-    print(
-        f"\nNB: {C_GM}GM (_greedy_map, non-triton){C_RST}, {C_GMt}GMt (greedy_map, triton){C_RST}, "
-        f"{C_GB}GB (Greedy Beam){C_RST}, {C_DB}DB (Diverse Beam){C_RST}, {C_R}R (Random){C_RST}",
-    )
-    print("Timing columns in table use median latency (T50, seconds). CSV also includes T95 and std.")
+                all_results.append(results_row)
+
+    print("\nMethod Key:")
+    for method, _ in IMPLEMENTED_METHODS:
+        meta = METHOD_META[method]
+        print(f"{meta['color']}{meta['label']}{C_RST}: {method}")
+    print("\nTiming columns in table use median latency (T50, seconds). CSV also includes T95 and std.")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     csv_file = f"subsample_benchmark_{timestamp}.csv"
