@@ -134,7 +134,7 @@ class LLADASampler(nn.Module):
     ) -> torch.Tensor:
         if self.config.confidence_eos_eot_inf:
             logits[:, :, 126348] = -torch.inf
-            logits[:, :, 126349] = -torch.inf
+            logits[:, :, 126081] = -torch.inf
 
         if self.config.remasking == "low_confidence":
             p = torch.exp(logits) if is_log_probs else F.softmax(logits, dim=-1)
@@ -229,7 +229,6 @@ class LLADASampler(nn.Module):
                     # Expand indices
                     expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
 
-                    # Expand state
                     # Expand state (index_select gives bounds-checked CPU error instead of cryptic CUDA crash)
                     x = torch.index_select(x, 0, expanded_idx)
                     log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
