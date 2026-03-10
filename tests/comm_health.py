@@ -1,171 +1,98 @@
-#!/usr/bin/env python3
-"""
-Communication Health Test script to verify NCCL and Torch distributed setup.
-Run with: torchrun --nproc_per_node=gpu tests/comm_health.py
-"""
+# /// script
+# requires-python = ">=3.8"
+# dependencies = [
+#     "torch",
+#     "nvidia-ml-py",
+# ]
+# ///
 
 import os
 import time
 
+import pynvml
 import torch
 import torch.distributed as dist
 
 
-def setup_distributed():
-    """Initialize distributed environment."""
-    if not dist.is_initialized():
-        # Look for environment variables set by torchrun/slurm
-        rank = int(os.environ.get("RANK", "0"))
-        world_size = int(os.environ.get("WORLD_SIZE", "1"))
-        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-
-        dist.init_process_group(backend="nccl")
-    else:
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-        local_rank = rank % torch.cuda.device_count()
-
+def run_diagnostics(duration_seconds=600, matrix_size=8192):
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    world_size = dist.get_world_size()
     torch.cuda.set_device(local_rank)
-    return rank, world_size, local_rank
+    device = torch.device(f"cuda:{local_rank}")
 
+    # Initialize NVML and get the handle for this specific GPU
+    pynvml.nvmlInit()
+    nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(local_rank)
 
-def cleanup_distributed():
-    """Cleanup distributed environment."""
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    A = torch.randn(matrix_size, matrix_size, dtype=torch.float16, device=device)
+    B = torch.randn(matrix_size, matrix_size, dtype=torch.float16, device=device)
 
+    if local_rank == 0:
+        print(f"Starting {duration_seconds}s diagnostic loop on {world_size} GPUs...")
 
-def test_all_reduce(rank, world_size):
-    """Test all_reduce by summing ones across all ranks."""
-    if rank == 0:
-        print("\n--- Testing all_reduce ---")
-
-    # Create a tensor of ones
-    tensor = torch.ones(1, device="cuda")
-
-    dist.barrier()
-    start_time = time.perf_counter()
-
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-
+    # Warmup
+    for _ in range(10):
+        C = torch.matmul(A, B)
+        dist.all_reduce(C)
     torch.cuda.synchronize()
-    end_time = time.perf_counter()
 
-    latency_ms = (end_time - start_time) * 1000
+    start_time = time.time()
+    end_time = start_time + duration_seconds
 
-    # Check result
-    expected = float(world_size)
-    actual = tensor.item()
+    iter_count = 0
+    total_matmul_time = 0.0
+    total_nccl_time = 0.0
 
-    status = "PASSED" if actual == expected else f"FAILED (Expected {expected}, got {actual})"
+    power_readings = []
 
-    if rank == 0:
-        print(f"all_reduce: {status}")
-        print(f"Latency: {latency_ms:.4f} ms")
+    while time.time() < end_time:
+        # 1. Individual Performance (Tensor Cores)
+        t0 = time.time()
+        C = torch.matmul(A, B)
+        torch.cuda.synchronize()
+        t1 = time.time()
 
-    return status == "PASSED"
+        # 2. Synchronized Communication (NCCL)
+        t2 = time.time()
+        dist.all_reduce(C, op=dist.ReduceOp.SUM)
+        torch.cuda.synchronize()
+        t3 = time.time()
 
+        total_matmul_time += t1 - t0
+        total_nccl_time += t3 - t2
 
-def test_all_gather(rank, world_size):
-    """Test all_gather by gathering rank IDs from all ranks."""
-    if rank == 0:
-        print("\n--- Testing all_gather ---")
+        # 3. Power Measurement (Sampled every 10 iterations)
+        if iter_count % 10 == 0:
+            # NVML returns power in milliwatts, convert to Watts
+            power_mW = pynvml.nvmlDeviceGetPowerUsage(nvml_handle)
+            power_readings.append(power_mW / 1000.0)
 
-    # Each rank provides its own rank as a tensor
-    local_tensor = torch.tensor([rank], dtype=torch.int32, device="cuda")
-    # Buffer to hold gathered results
-    gather_list = [torch.zeros(1, dtype=torch.int32, device="cuda") for _ in range(world_size)]
+        iter_count += 1
 
-    dist.barrier()
-    start_time = time.perf_counter()
+    # Math for metrics
+    flops_per_matmul = 2 * (matrix_size**3)
+    data_size_bytes = C.numel() * C.element_size()
 
-    dist.all_gather(gather_list, local_tensor)
+    avg_matmul_time = total_matmul_time / iter_count
+    avg_nccl_time = total_nccl_time / iter_count
 
-    torch.cuda.synchronize()
-    end_time = time.perf_counter()
+    tflops = (flops_per_matmul / avg_matmul_time) / 1e12
+    alg_bw = (data_size_bytes / avg_nccl_time) / 1e9
+    bus_bw = alg_bw * (2 * (world_size - 1) / world_size)
 
-    latency_ms = (end_time - start_time) * 1000
+    # Calculate Power Stats
+    avg_power = sum(power_readings) / len(power_readings)
+    max_power = max(power_readings)
 
-    # Check result
-    gathered_ranks = [t.item() for t in gather_list]
-    expected_ranks = list(range(world_size))
+    print(
+        f"[GPU {local_rank}] Matmul: {tflops:.2f} TFLOPS | NCCL Bus BW: {bus_bw:.2f} GB/s | Power: {avg_power:.0f}W avg / {max_power:.0f}W max"
+    )
 
-    if sorted(gathered_ranks) == expected_ranks:
-        status = "PASSED"
-    else:
-        status = f"FAILED (Expected {expected_ranks}, got {gathered_ranks})"
-
-    if rank == 0:
-        print(f"all_gather: {status}")
-        print(f"Latency: {latency_ms:.4f} ms")
-        print(f"Gathered Ranks: {gathered_ranks}")
-
-    return status == "PASSED"
-
-
-def test_all_gather_into_tensor(rank, world_size):
-    """Test all_gather_into_tensor (more efficient than all_gather)."""
-    if rank == 0:
-        print("\n--- Testing all_gather_into_tensor ---")
-
-    local_tensor = torch.tensor([rank], dtype=torch.int32, device="cuda")
-    output_tensor = torch.zeros(world_size, dtype=torch.int32, device="cuda")
-
-    dist.barrier()
-    start_time = time.perf_counter()
-
-    dist.all_gather_into_tensor(output_tensor, local_tensor)
-
-    torch.cuda.synchronize()
-    end_time = time.perf_counter()
-
-    latency_ms = (end_time - start_time) * 1000
-
-    # Check result
-    gathered_ranks = output_tensor.tolist()
-    expected_ranks = list(range(world_size))
-
-    if sorted(gathered_ranks) == expected_ranks:
-        status = "PASSED"
-    else:
-        status = f"FAILED (Expected {expected_ranks}, got {gathered_ranks})"
-
-    if rank == 0:
-        print(f"all_gather_into_tensor: {status}")
-        print(f"Latency: {latency_ms:.4f} ms")
-
-    return status == "PASSED"
-
-
-def main():
-    rank, world_size, local_rank = setup_distributed()
-
-    if rank == 0:
-        print("Communication Health Check")
-        print(f"World Size: {world_size}")
-        print(f"Backend: {dist.get_backend()}")
-
-    try:
-        results = []
-        results.append(test_all_reduce(rank, world_size))
-        results.append(test_all_gather(rank, world_size))
-        results.append(test_all_gather_into_tensor(rank, world_size))
-
-        dist.barrier()
-
-        if rank == 0:
-            if all(results):
-                print("\n" + "=" * 40)
-                print("COMMUNICATION HEALTH: EXCELLENT")
-                print("=" * 40)
-            else:
-                print("\n" + "!" * 40)
-                print("COMMUNICATION HEALTH: ISSUES DETECTED")
-                print("!" * 40)
-
-    finally:
-        cleanup_distributed()
+    # Cleanup
+    pynvml.nvmlShutdown()
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
-    main()
+    run_diagnostics(duration_seconds=600)
