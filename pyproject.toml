@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["flash-attn>=2.8.3"]
+dev = ["flash-attn>=2.8.3", "nvidia-ml-py"]
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

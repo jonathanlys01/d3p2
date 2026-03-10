@@ -1,11 +1,3 @@
-# /// script
-# requires-python = ">=3.8"
-# dependencies = [
-#     "torch",
-#     "nvidia-ml-py",
-# ]
-# ///
-
 import os
 import time
 
@@ -86,7 +78,8 @@ def run_diagnostics(duration_seconds=600, matrix_size=8192):
     max_power = max(power_readings)
 
     print(
-        f"[GPU {local_rank}] Matmul: {tflops:.2f} TFLOPS | NCCL Bus BW: {bus_bw:.2f} GB/s | Power: {avg_power:.0f}W avg / {max_power:.0f}W max"
+        f"[GPU {local_rank}] Matmul: {tflops:.2f} TFLOPS | NCCL Bus BW: {bus_bw:.2f} GB/s \
+        | Power: {avg_power:.0f}W avg / {max_power:.0f}W max",
     )
 
     # Cleanup
