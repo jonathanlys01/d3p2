@@ -134,7 +134,7 @@ class LLADASampler(nn.Module):
     ) -> torch.Tensor:
         if self.config.confidence_eos_eot_inf:
             logits[:, :, 126348] = -torch.inf
-            logits[:, :, 126081] = -torch.inf
+            logits[:, :, 126349] = -torch.inf
 
         if self.config.remasking == "low_confidence":
             p = torch.exp(logits) if is_log_probs else F.softmax(logits, dim=-1)
@@ -229,12 +229,12 @@ class LLADASampler(nn.Module):
                     # Expand indices
                     expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
 
-                    # Expand state (index_select gives bounds-checked CPU error instead of cryptic CUDA crash)
-                    x = torch.index_select(x, 0, expanded_idx)
-                    log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
-                    mask_index = torch.index_select(mask_index, 0, expanded_idx)
-                    num_transfer_tokens = torch.index_select(num_transfer_tokens, 0, expanded_idx)
-                    prompt_index = torch.index_select(prompt_index, 0, expanded_idx)
+                    # Expand state
+                    x = x[expanded_idx]
+                    log_p_x0 = log_p_x0[expanded_idx]
+                    mask_index = mask_index[expanded_idx]
+                    num_transfer_tokens = num_transfer_tokens[expanded_idx]
+                    prompt_index = prompt_index[expanded_idx]
 
                 # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
                 x0 = self._block_sample(logits_to_sample, subsample_step)
