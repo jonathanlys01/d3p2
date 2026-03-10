@@ -11,8 +11,10 @@ Usage (example – 8 GPUs, 60 s run):
 
 import argparse
 import os
+import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import pynvml
 import torch
@@ -52,6 +54,51 @@ def _flag(dev_pct: float, warn_thresh: float = -5.0, bad_thresh: float = -10.0) 
     return "🟢"
 
 
+@dataclass
+class _PowerStats:
+    avg_watts: float
+    peak_watts: float
+    floor_watts: float
+    sample_count: int
+
+
+class _PowerSampler:
+    """Sample NVML power in the background while a workload is active."""
+
+    def __init__(self, nvml_handle: Any, interval_seconds: float = 0.05) -> None:
+        self._nvml_handle = nvml_handle
+        self._interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.samples: list[float] = []
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.samples.append(pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle) / 1000.0)
+            time.sleep(self._interval_seconds)
+
+    def __enter__(self) -> "_PowerSampler":
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval_seconds * 4)
+
+
+def _summarize_power(samples: list[float]) -> _PowerStats:
+    if not samples:
+        return _PowerStats(avg_watts=0.0, peak_watts=0.0, floor_watts=0.0, sample_count=0)
+    return _PowerStats(
+        avg_watts=sum(samples) / len(samples),
+        peak_watts=max(samples),
+        floor_watts=min(samples),
+        sample_count=len(samples),
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Benchmarks
 # ──────────────────────────────────────────────────────────────────────────────
@@ -59,11 +106,12 @@ def _flag(dev_pct: float, warn_thresh: float = -5.0, bad_thresh: float = -10.0) 
 
 def _benchmark_matmul(
     device: torch.device,
+    nvml_handle: Any,
     matrix_size: int,
     duration_seconds: float,
     warmup_iters: int = 10,
-) -> tuple[float, float]:
-    """Return (avg_tflops, cv_tflops)."""
+) -> tuple[float, float, _PowerStats]:
+    """Return (avg_tflops, cv_tflops, load_power_stats)."""
     A = torch.randn(matrix_size, matrix_size, dtype=torch.float16, device=device)
     B = torch.randn(matrix_size, matrix_size, dtype=torch.float16, device=device)
 
@@ -75,25 +123,27 @@ def _benchmark_matmul(
     per_iter: list[float] = []
     end = time.time() + duration_seconds
 
-    while time.time() < end:
-        t0 = time.time()
-        torch.matmul(A, B)
-        torch.cuda.synchronize()
-        elapsed = time.time() - t0
-        per_iter.append((flops / elapsed) / 1e12)
+    with _PowerSampler(nvml_handle) as power_sampler:
+        while time.time() < end:
+            t0 = time.time()
+            torch.matmul(A, B)
+            torch.cuda.synchronize()
+            elapsed = time.time() - t0
+            per_iter.append((flops / elapsed) / 1e12)
 
     avg = sum(per_iter) / len(per_iter)
     cv = _stdev(per_iter, avg) / avg if avg > 0 else 0.0
-    return avg, cv
+    return avg, cv, _summarize_power(power_sampler.samples)
 
 
 def _benchmark_allreduce(
     tensor: torch.Tensor,
+    nvml_handle: Any,
     world_size: int,
     duration_seconds: float,
     warmup_iters: int = 10,
-) -> tuple[float, float]:
-    """Return (avg_bus_bw_GBps, cv_bus_bw)."""
+) -> tuple[float, float, _PowerStats]:
+    """Return (avg_bus_bw_GBps, cv_bus_bw, load_power_stats)."""
     for _ in range(warmup_iters):
         dist.all_reduce(tensor.clone(), op=dist.ReduceOp.SUM)
     torch.cuda.synchronize()
@@ -102,19 +152,54 @@ def _benchmark_allreduce(
     per_iter: list[float] = []
     end = time.time() + duration_seconds
 
-    while time.time() < end:
-        buf = tensor.clone()
-        t0 = time.time()
-        dist.all_reduce(buf, op=dist.ReduceOp.SUM)
-        torch.cuda.synchronize()
-        elapsed = time.time() - t0
-        alg_bw = (data_bytes / elapsed) / 1e9
-        bus_bw = alg_bw * (2 * (world_size - 1) / world_size)
-        per_iter.append(bus_bw)
+    with _PowerSampler(nvml_handle) as power_sampler:
+        while time.time() < end:
+            buf = tensor.clone()
+            t0 = time.time()
+            dist.all_reduce(buf, op=dist.ReduceOp.SUM)
+            torch.cuda.synchronize()
+            elapsed = time.time() - t0
+            alg_bw = (data_bytes / elapsed) / 1e9
+            bus_bw = alg_bw * (2 * (world_size - 1) / world_size)
+            per_iter.append(bus_bw)
 
     avg = sum(per_iter) / len(per_iter)
     cv = _stdev(per_iter, avg) / avg if avg > 0 else 0.0
-    return avg, cv
+    return avg, cv, _summarize_power(power_sampler.samples)
+
+
+def _explore_power_envelope(
+    device: torch.device,
+    nvml_handle: Any,
+    matrix_size: int,
+    step_seconds: float,
+) -> _PowerStats:
+    """Ramp a matmul workload to expose sustained and peak draw under load."""
+    step_sizes = sorted(
+        {
+            max(1024, matrix_size // 4),
+            max(1024, matrix_size // 2),
+            max(2048, (matrix_size * 3) // 4),
+            matrix_size,
+        },
+    )
+    all_samples: list[float] = []
+
+    for step_size in step_sizes:
+        A = torch.randn(step_size, step_size, dtype=torch.float16, device=device)
+        B = torch.randn(step_size, step_size, dtype=torch.float16, device=device)
+        for _ in range(4):
+            torch.matmul(A, B)
+        torch.cuda.synchronize()
+
+        end = time.time() + step_seconds
+        with _PowerSampler(nvml_handle) as power_sampler:
+            while time.time() < end:
+                torch.matmul(A, B)
+                torch.cuda.synchronize()
+        all_samples.extend(power_sampler.samples)
+
+    return _summarize_power(all_samples)
 
 
 def _run_p2p_pair(
@@ -195,7 +280,9 @@ class _ClusterStats:
     tflops: list[float]
     bus_bw: list[float]
     cv_bw: list[float]
-    power: list[float]
+    compute_power: list[float]
+    comm_power: list[float]
+    peak_power: list[float]
 
 
 def _print_per_gpu_table(  # noqa: PLR0913
@@ -203,23 +290,31 @@ def _print_per_gpu_table(  # noqa: PLR0913
     tflops_list: list[float],
     bus_bw_list: list[float],
     cv_bw_list: list[float],
-    power_list: list[float],
+    compute_power_list: list[float],
+    comm_power_list: list[float],
+    peak_power_list: list[float],
     warn_thresh: float,
     bad_thresh: float,
 ) -> list[int]:
     """Print the per-GPU metrics table and return a list of anomalous rank IDs."""
     med_tflops = _median(tflops_list)
     med_bus_bw = _median(bus_bw_list)
-    med_power = _median(power_list)
+    med_compute_power = _median(compute_power_list)
+    med_comm_power = _median(comm_power_list)
+    med_peak_power = _median(peak_power_list)
 
     print(f"\n{'=' * 70}")
     print("  Per-GPU Metrics  (deviation from cluster median)")
-    print(f"  Median → {med_tflops:.2f} TFLOPS | {med_bus_bw:.2f} GB/s bus BW")
+    print(
+        "  Median → "
+        f"{med_tflops:.2f} TFLOPS | {med_bus_bw:.2f} GB/s bus BW | "
+        f"{med_compute_power:.1f} W compute | {med_peak_power:.1f} W peak",
+    )
     print(f"{'─' * 70}")
     hdr = (
         f"  {'GPU':>3}  {'TFLOPS':>8}  {'Dev%':>6}"
         f"  {'BusBW(GB/s)':>11}  {'Dev%':>6}"
-        f"  {'CV_bw':>5}  {'Power(W)':>8}  {'Dev%':>6}  Flags"
+        f"  {'CV_bw':>5}  {'CmpPwr':>7}  {'ComPwr':>7}  {'PeakW':>7}  Flags"
     )
     print(hdr)
     print(f"{'─' * 70}")
@@ -229,25 +324,33 @@ def _print_per_gpu_table(  # noqa: PLR0913
         tf = tflops_list[rank]
         bw = bus_bw_list[rank]
         cv = cv_bw_list[rank]
-        pw = power_list[rank]
+        compute_pw = compute_power_list[rank]
+        comm_pw = comm_power_list[rank]
+        peak_pw = peak_power_list[rank]
 
         dev_tf = _deviation_pct(tf, med_tflops)
         dev_bw = _deviation_pct(bw, med_bus_bw)
-        dev_pw = _deviation_pct(pw, med_power)
+        dev_compute_pw = _deviation_pct(compute_pw, med_compute_power)
+        dev_comm_pw = _deviation_pct(comm_pw, med_comm_power)
+        dev_peak_pw = _deviation_pct(peak_pw, med_peak_power)
 
         f_tf = _flag(dev_tf, warn_thresh, bad_thresh)
         f_bw = _flag(dev_bw, warn_thresh, bad_thresh)
-        f_pw = _flag(dev_pw, -warn_thresh, -bad_thresh)  # high power relative to peers = bad
+        f_pw = _flag(min(dev_compute_pw, dev_comm_pw, dev_peak_pw), warn_thresh, bad_thresh)
 
         flags = f"compute:{f_tf} comm:{f_bw} power:{f_pw}"
         row = (
             f"  {rank:>3}  {tf:>8.2f}  {dev_tf:>+6.1f}%"
             f"  {bw:>11.2f}  {dev_bw:>+6.1f}%"
-            f"  {cv:>5.3f}  {pw:>8.1f}  {dev_pw:>+6.1f}%  {flags}"
+            f"  {cv:>5.3f}  {compute_pw:>7.1f}  {comm_pw:>7.1f}  {peak_pw:>7.1f}  {flags}"
         )
         print(row)
 
-        if dev_tf < bad_thresh or dev_bw < bad_thresh:
+        if (
+            dev_tf < bad_thresh
+            or dev_bw < bad_thresh
+            or (dev_peak_pw < bad_thresh and (dev_tf < warn_thresh or dev_bw < warn_thresh))
+        ):
             anomalous.append(rank)
 
     print(f"{'─' * 70}")
@@ -303,11 +406,17 @@ def _print_p2p_table(
     return slow_links
 
 
-def _print_summary(
+def _print_summary(  # noqa: C901, PLR0913
     anomalous_gpus: list[int],
     slow_links: list[tuple[int, int, float]],
     cv_bw_list: list[float],
+    tflops_list: list[float],
+    bus_bw_list: list[float],
+    compute_power_list: list[float],
+    comm_power_list: list[float],
+    peak_power_list: list[float],
     med_p2p: float,
+    warn_thresh: float,
     bad_thresh: float,
 ) -> None:
     """Print the diagnosis summary section."""
@@ -327,6 +436,39 @@ def _print_summary(
             for src, dst, bw in slow_links:
                 dev = _deviation_pct(bw, med_p2p)
                 print(f"     ↳ GPU {src} ↔ GPU {dst}: {bw:.1f} GB/s ({dev:+.1f}% vs median)")
+
+    med_tf = _median(tflops_list)
+    med_bw = _median(bus_bw_list)
+    med_compute_power = _median(compute_power_list)
+    med_comm_power = _median(comm_power_list)
+    med_peak_power = _median(peak_power_list)
+
+    underpowered: list[int] = []
+    normal_power_but_slow: list[int] = []
+    for rank, (tf, bw, cpw, mpw, ppw) in enumerate(
+        zip(tflops_list, bus_bw_list, compute_power_list, comm_power_list, peak_power_list, strict=True),
+    ):
+        slow_compute = _deviation_pct(tf, med_tf) < warn_thresh
+        slow_comm = _deviation_pct(bw, med_bw) < warn_thresh
+        low_power = (
+            min(
+                _deviation_pct(cpw, med_compute_power),
+                _deviation_pct(mpw, med_comm_power),
+                _deviation_pct(ppw, med_peak_power),
+            )
+            < warn_thresh
+        )
+        if (slow_compute or slow_comm) and low_power:
+            underpowered.append(rank)
+        elif (slow_compute or slow_comm) and not low_power:
+            normal_power_but_slow.append(rank)
+
+    if underpowered:
+        print(f"  🟡 Likely underpowered GPUs: {underpowered}")
+        print("     ↳ These are slower than peers and also fail to reach comparable load/peak wattage.")
+    if normal_power_but_slow:
+        print(f"  🟡 Slow despite normal power: {normal_power_but_slow}")
+        print("     ↳ These draw expected power under load, so investigate clocks, thermals, or link issues.")
 
     high_cv = [r for r, cv in enumerate(cv_bw_list) if cv > 0.15]
     if high_cv:
@@ -365,34 +507,55 @@ def run_diagnostics(
         print(f"  Matmul: {matrix_size}×{matrix_size} fp16 | Duration: {duration_seconds}s")
         print(f"{'=' * 70}\n")
 
-    phase_dur = duration_seconds // 3
+    phase_dur = max(duration_seconds / 4, 1.0)
 
     # Phase 1: Compute (tensor cores)
     if local_rank == 0:
-        print("[1/3] Benchmarking tensor-core compute (matmul)…")
-    avg_tflops, cv_tflops = _benchmark_matmul(device, matrix_size, phase_dur)
+        print("[1/4] Benchmarking tensor-core compute (matmul with live power sampling)…")
+    avg_tflops, cv_tflops, compute_power_stats = _benchmark_matmul(
+        device,
+        nvml_handle,
+        matrix_size,
+        phase_dur,
+    )
 
     # Phase 2: Collective communication (NCCL all_reduce)
     if local_rank == 0:
-        print("[2/3] Benchmarking collective communication (all_reduce)…")
+        print("[2/4] Benchmarking collective communication (all_reduce with live power sampling)…")
     comm_tensor = torch.randn(matrix_size, matrix_size, dtype=torch.float16, device=device)
-    avg_bus_bw, cv_bus_bw = _benchmark_allreduce(comm_tensor, world_size, phase_dur)
+    avg_bus_bw, cv_bus_bw, comm_power_stats = _benchmark_allreduce(
+        comm_tensor,
+        nvml_handle,
+        world_size,
+        phase_dur,
+    )
 
-    # Phase 3: Point-to-point bandwidth
+    # Phase 3: Power exploration
     if local_rank == 0:
-        print("[3/3] Benchmarking point-to-point bandwidth…")
-    p2p_bw = _benchmark_p2p(device, local_rank, world_size, tensor_size_mb=p2p_size_mb)
+        print("[3/4] Exploring power envelope with stepped matmul load…")
+    explore_power_stats = _explore_power_envelope(
+        device,
+        nvml_handle,
+        matrix_size,
+        max(phase_dur / 4, 0.75),
+    )
 
-    # Power snapshot (sampled at end, after heavy compute phases)
-    power_samples: list[float] = []
-    for _ in range(10):
-        power_samples.append(pynvml.nvmlDeviceGetPowerUsage(nvml_handle) / 1000.0)
-        time.sleep(0.1)
-    avg_power = sum(power_samples) / len(power_samples)
+    # Phase 4: Point-to-point bandwidth
+    if local_rank == 0:
+        print("[4/4] Benchmarking point-to-point bandwidth…")
+    p2p_bw = _benchmark_p2p(device, local_rank, world_size, tensor_size_mb=p2p_size_mb)
 
     # Gather all per-GPU scalars onto rank 0
     local_stats = torch.tensor(
-        [avg_tflops, cv_tflops, avg_bus_bw, cv_bus_bw, avg_power],
+        [
+            avg_tflops,
+            cv_tflops,
+            avg_bus_bw,
+            cv_bus_bw,
+            compute_power_stats.avg_watts,
+            comm_power_stats.avg_watts,
+            max(compute_power_stats.peak_watts, comm_power_stats.peak_watts, explore_power_stats.peak_watts),
+        ],
         dtype=torch.float32,
         device=device,
     )
@@ -403,14 +566,18 @@ def run_diagnostics(
         tflops_list = [s[0].item() for s in all_stats]
         bus_bw_list = [s[2].item() for s in all_stats]
         cv_bw_list = [s[3].item() for s in all_stats]
-        power_list = [s[4].item() for s in all_stats]
+        compute_power_list = [s[4].item() for s in all_stats]
+        comm_power_list = [s[5].item() for s in all_stats]
+        peak_power_list = [s[6].item() for s in all_stats]
 
         anomalous = _print_per_gpu_table(
             world_size,
             tflops_list,
             bus_bw_list,
             cv_bw_list,
-            power_list,
+            compute_power_list,
+            comm_power_list,
+            peak_power_list,
             warn_thresh,
             bad_thresh,
         )
@@ -419,7 +586,19 @@ def run_diagnostics(
         pair_bws = [bw for (src, dst), bw in p2p_bw.items() if src < dst]
         med_p2p = _median(pair_bws) if pair_bws else 0.0
 
-        _print_summary(anomalous, slow_links, cv_bw_list, med_p2p, bad_thresh)
+        _print_summary(
+            anomalous,
+            slow_links,
+            cv_bw_list,
+            tflops_list,
+            bus_bw_list,
+            compute_power_list,
+            comm_power_list,
+            peak_power_list,
+            med_p2p,
+            warn_thresh,
+            bad_thresh,
+        )
 
     pynvml.nvmlShutdown()
     dist.destroy_process_group()
@@ -431,7 +610,7 @@ if __name__ == "__main__":
         "--duration_seconds",
         type=int,
         default=600,
-        help="Total wall-clock duration (split equally across 3 benchmark phases)",
+        help="Total wall-clock duration (split across compute, comm, power exploration, and p2p phases)",
     )
     parser.add_argument(
         "--matrix_size",
