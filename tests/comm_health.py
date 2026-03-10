@@ -12,6 +12,7 @@ Usage (example – 8 GPUs, 60 s run):
 import argparse
 import os
 import time
+from dataclasses import dataclass
 
 import pynvml
 import torch
@@ -116,7 +117,33 @@ def _benchmark_allreduce(
     return avg, cv
 
 
-def _benchmark_p2p(  # noqa: C901, PLR0912
+def _run_p2p_pair(
+    buf: torch.Tensor,
+    local_rank: int,
+    peer: int,
+    iters: int,
+    n_bytes: int,
+) -> float:
+    """Execute one timed send/recv pair; return measured BW in GB/s (0 for receiver)."""
+    # Warmup
+    for _ in range(5):
+        if local_rank < peer:
+            dist.send(buf, dst=peer)
+        else:
+            dist.recv(buf, src=peer)
+    # Timed pass
+    if local_rank < peer:
+        t0 = time.time()
+        for _ in range(iters):
+            dist.send(buf, dst=peer)
+        torch.cuda.synchronize()
+        return (n_bytes * iters / (time.time() - t0)) / 1e9
+    for _ in range(iters):
+        dist.recv(buf, src=peer)
+    return 0.0
+
+
+def _benchmark_p2p(
     device: torch.device,
     local_rank: int,
     world_size: int,
@@ -138,26 +165,9 @@ def _benchmark_p2p(  # noqa: C901, PLR0912
     for peer in range(world_size):
         if peer == local_rank:
             continue
-
-        # Warmup (paired send/recv must happen simultaneously)
-        for _ in range(5):
-            if local_rank < peer:
-                dist.send(buf, dst=peer)
-            else:
-                dist.recv(buf, src=peer)
-
-        # Timed pass: sender side measures (symmetric NVLink → same BW both ways)
-        if local_rank < peer:
-            t0 = time.time()
-            for _ in range(iters):
-                dist.send(buf, dst=peer)
-            torch.cuda.synchronize()
-            elapsed = time.time() - t0
-            bw = (n_bytes * iters / elapsed) / 1e9
+        bw = _run_p2p_pair(buf, local_rank, peer, iters, n_bytes)
+        if bw > 0:
             results[local_rank * world_size + peer] = bw
-        else:
-            for _ in range(iters):
-                dist.recv(buf, src=peer)
 
     # Each rank broadcasts its measurements to all others
     dist.all_reduce(results, op=dist.ReduceOp.SUM)
@@ -178,6 +188,14 @@ def _benchmark_p2p(  # noqa: C901, PLR0912
 # ──────────────────────────────────────────────────────────────────────────────
 # Reporting (rank-0 only)
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _ClusterStats:
+    tflops: list[float]
+    bus_bw: list[float]
+    cv_bw: list[float]
+    power: list[float]
 
 
 def _print_per_gpu_table(  # noqa: PLR0913
@@ -412,7 +430,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--duration_seconds",
         type=int,
-        default=60,
+        default=600,
         help="Total wall-clock duration (split equally across 3 benchmark phases)",
     )
     parser.add_argument(
