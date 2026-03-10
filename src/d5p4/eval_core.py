@@ -801,6 +801,7 @@ class MathEvaluator:
         self._use_math_parser = use_math_parser
         if use_math_parser:
             self._parser = MathParser()
+        self._string_metrics = StringMetrics()
 
     def _extract(self, text: str) -> str:
         """Extract a normalised numeric string from *text*."""
@@ -832,6 +833,182 @@ class MathEvaluator:
         """Fraction of *generations* that contain the correct answer."""
         scores = self.score_group(generations, answer_number)
         return sum(scores) / len(scores) if scores else 0.0
+
+    @staticmethod
+    def _pass_at_k_estimator(n: int, c: int, k: int) -> float:
+        """Unbiased pass@k estimator (Chen et al., 2021 — HumanEval).
+
+        Parameters
+        ----------
+        n : total number of samples for this problem.
+        c : number of correct samples.
+        k : the k in pass@k.
+
+        Returns the probability that at least one of *k* randomly drawn
+        (without replacement) samples is correct.
+        """
+        if n < k:
+            return float("nan")
+        if c == 0:
+            return 0.0
+        if n - c < k:
+            return 1.0
+        # 1 - prod_{i=0}^{k-1} (n-c-i) / (n-i)
+        num = 1.0
+        den = 1.0
+        for i in range(k):
+            num *= n - c - i
+            den *= n - i
+        return 1.0 - num / den
+
+    def evaluate(  # noqa: C901, PLR0912
+        self,
+        generations: list[list[str]],
+        gold_answers: list[str],
+        k_values: list[int] | None = None,
+    ) -> dict[str, float | str]:
+        """Compute comprehensive math evaluation metrics.
+
+        Parameters
+        ----------
+        generations:
+            Outer list is per-question; inner list contains the model's
+            sampled generations for that question.
+        gold_answers:
+            One gold numeric answer string per question.
+        k_values:
+            Which k's to compute pass@k for. Defaults to [1, 2, 4, 8, 16]
+            clipped to the actual group size. Duplicates and out-of-range
+            values are silently removed.
+
+        Returns
+        -------
+        Flat dict of metric_name → float, plus a ``math_metrics_summary``
+        string formatted like the ``Evaluator.evaluate()`` summaries.
+        """
+        if not generations:
+            return {}
+
+        group_size = max(len(g) for g in generations)
+
+        if k_values is None:
+            k_values = [1, 2, 4, 8, 16]
+        # Clamp to valid range and deduplicate, preserving order
+        seen: set[int] = set()
+        effective_ks: list[int] = []
+        for k in k_values:
+            if 1 <= k <= group_size and k not in seen:
+                effective_ks.append(k)
+                seen.add(k)
+
+        # ── per-question correctness ──────────────────────────────────────
+        per_question_acc: list[float] = []
+        pass_at_k_per_q: dict[int, list[float]] = {k: [] for k in effective_ks}
+
+        for gens, gold in zip(generations, gold_answers):
+            if not gens:
+                continue
+            scores = self.score_group(gens, gold)
+            n = len(scores)
+            c = sum(scores)
+            per_question_acc.append(c / n)
+            for k in effective_ks:
+                pass_at_k_per_q[k].append(self._pass_at_k_estimator(n, c, k))
+
+        metrics: dict[str, float | str] = {}
+
+        # Accuracy with full statistics (mean, CI, etc.)
+        metrics.update(compute_statistics(per_question_acc, "accuracy"))
+
+        # pass@k — report mean across questions (filter NaN from k > n cases)
+        for k in effective_ks:
+            vals = [v for v in pass_at_k_per_q[k] if not np.isnan(v)]
+            metrics[f"pass_at_{k}"] = float(np.mean(vals)) if vals else float("nan")
+
+        metrics["k"] = float(group_size)
+
+        # ── string metrics ────────────────────────────────────────────────
+        # Gold answers are the single reference for each question.
+        references: list[list[str]] = [[g] for g in gold_answers]
+        string_stats = self._string_metrics(generations, references)
+        metrics.update(string_stats)
+
+        # ── summary string ────────────────────────────────────────────────
+        summary_parts: list[str] = []
+
+        # Accuracy with CI
+        acc_mean = metrics.get("accuracy", float("nan"))
+        acc_ci = metrics.get("accuracy_ci95", float("nan"))
+        summary_parts.append(f"Acc: {_format_summary_value(acc_mean, acc_ci)}")
+
+        # pass@k values
+        for k in effective_ks:
+            val = metrics.get(f"pass_at_{k}", float("nan"))
+            if not np.isnan(val):
+                summary_parts.append(f"pass@{k}: {_format_num(val)}")
+
+        # String metrics with CI
+        for key, display_name in [
+            ("f1", "F1"),
+            ("bleu", "BLEU"),
+            ("distinct_2", "Dist-2"),
+            ("self_bleu", "S-BLEU"),
+        ]:
+            if key in metrics:
+                ci_key = f"{key}_ci95"
+                if ci_key in metrics:
+                    summary_parts.append(f"{display_name}: {_format_summary_value(metrics[key], metrics[ci_key])}")
+                else:
+                    summary_parts.append(f"{display_name}: {_format_num(metrics[key])}")
+
+        if summary_parts:
+            metrics["math_metrics_summary"] = " | ".join(summary_parts)
+
+        return metrics
+
+    def eval_from_file(
+        self,
+        file_path: str,
+        force: bool = False,
+        k_values: list[int] | None = None,
+    ) -> dict[str, float | str] | None:
+        """Load a math results JSON file (as produced by ``llada_math.py``)
+        and compute (or re-compute) evaluation metrics in-place.
+
+        The JSON must contain a top-level ``"results"`` list where each
+        entry has ``"generations"`` (list[str]) and ``"gold_answer"`` (str).
+        The computed metrics are written back as ``"math_metrics"``.
+
+        Parameters
+        ----------
+        file_path: path to the JSON file.
+        force: if False and ``"math_metrics"`` already present, skip.
+        k_values: forwarded to :meth:`evaluate`.
+        """
+        with open(file_path) as f:
+            data = json.load(f)
+
+        if not force and data.get("math_metrics") is not None:
+            return data["math_metrics"]
+
+        results = data.get("results", None)
+        if results is None:
+            return None
+
+        # Support both {"results": [...]} wrapper and a plain list
+        if isinstance(results, dict):
+            results = results.get("results", [])
+
+        generations = [r["generations"] for r in results]
+        gold_answers = [r["gold_answer"] for r in results]
+
+        math_metrics = self.evaluate(generations, gold_answers, k_values=k_values)
+        data["math_metrics"] = math_metrics
+
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=4)
+
+        return math_metrics
 
 
 def main():
