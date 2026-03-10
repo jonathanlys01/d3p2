@@ -230,11 +230,12 @@ class LLADASampler(nn.Module):
                     expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
 
                     # Expand state
-                    x = x[expanded_idx]
-                    log_p_x0 = log_p_x0[expanded_idx]
-                    mask_index = mask_index[expanded_idx]
-                    num_transfer_tokens = num_transfer_tokens[expanded_idx]
-                    prompt_index = prompt_index[expanded_idx]
+                    # Expand state (index_select gives bounds-checked CPU error instead of cryptic CUDA crash)
+                    x = torch.index_select(x, 0, expanded_idx)
+                    log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
+                    mask_index = torch.index_select(mask_index, 0, expanded_idx)
+                    num_transfer_tokens = torch.index_select(num_transfer_tokens, 0, expanded_idx)
+                    prompt_index = torch.index_select(prompt_index, 0, expanded_idx)
 
                 # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
                 x0 = self._block_sample(logits_to_sample, subsample_step)
