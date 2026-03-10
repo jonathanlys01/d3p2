@@ -97,10 +97,10 @@ line-ending = "auto"
 
 [tool.pyrefly]
 project-excludes = [
-    "src/jina_ref",
-    "src/llada_ref",
-    "src/mdlm_ref",
-    "src/mauve",
+    "src/d5p4/jina_ref",
+    "src/d5p4/llada_ref",
+    "src/d5p4/mdlm_ref",
+    "src/d5p4/mauve",
 ] # external sources
 
 [tool.pyrefly.errors]

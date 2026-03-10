@@ -39,6 +39,8 @@ mdlm_steps: 1024
 cat_temperature: 1.0
 
 # Llada parameters
+# Local CFG semantics differ from the upstream sampler:
+# `cfg_scale=1.0` is "no guidance" here, while the reference uses `cfg_scale=0.0`.
 cfg_scale: 2.5
 llada_steps: 128
 gen_length: 256

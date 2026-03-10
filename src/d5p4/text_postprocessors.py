@@ -17,6 +17,7 @@ class MathParser:
 
     # Pre-compiled regexes ───────────────────────────────────────────────────
     _BOXED_RE = re.compile(r"\\boxed{((?:[^{}]|{[^{}]*})*)}")
+    _GSM8K_FINAL_RE = re.compile(r"####\s*([\-\d,\.]+)")
     _INLINE_MATH_RE = re.compile(r"\$(.*?)\$|\\\((.*?)\\\)|\\\[(.*?)\\\]", re.DOTALL)
     _ANSWER_LINE_RE = re.compile(r"(?:^|\b)(?:final answer|answer)\s*[:=]\s*(.+)$", re.IGNORECASE)
     _SCIENTIFIC_NUMBER_RE = re.compile(r"-?(?:\d+(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?%?")
@@ -55,6 +56,10 @@ class MathParser:
     def _extract_numeric_candidates(self, text: str) -> list[str]:  # noqa: C901
         """Return candidates ordered from most to least likely."""
         candidates: list[str] = []
+
+        gsm8k_final = self._GSM8K_FINAL_RE.findall(text)
+        if gsm8k_final:
+            candidates.extend(reversed(gsm8k_final))
 
         boxed = self._BOXED_RE.findall(text)
         if boxed:

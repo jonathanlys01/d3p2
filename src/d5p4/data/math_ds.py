@@ -35,8 +35,10 @@ def _format_gsm8k_few_shot_prefix(examples: list[dict]) -> str:
     prefix = ""
     for item in examples:
         q = item["question"]
-        a = _parse_gsm8k_answer(item["answer"])
-        prefix += f"Question: {q}\nAnswer: {a}\n\n"
+        # Match benchmark-style GSM8K prompting: few-shot examples include
+        # the full worked solution, not only the final numeric answer.
+        a = item["answer"].strip()
+        prefix += f"Question: {q}\nAnswer:{a}\n\n"
     return prefix
 
 
@@ -60,25 +62,23 @@ def gsm8k(cfg: Config) -> pd.DataFrame:
     dataset = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["test"]
     dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
 
-    train_dataset = None
+    few_shot_prefix = ""
     if cfg.qa_n_shots > 0:
         train_dataset = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["train"]
+        train_dataset = train_dataset.shuffle(seed=cfg.seed)  # type: ignore
+        few_shot_examples: list[dict] = [train_dataset[idx] for idx in range(cfg.qa_n_shots)]  # type: ignore
+        few_shot_prefix = _format_gsm8k_few_shot_prefix(few_shot_examples)
 
     questions = []
     answer_strs = []
     answer_numbers = []
 
-    for i, item in enumerate(dataset):
+    for item in dataset:
         q = item["question"]
         raw_answer = item["answer"]
 
         if cfg.qa_n_shots > 0:
-            assert train_dataset is not None
-            start_idx = i * cfg.qa_n_shots
-            end_idx = (i + 1) * cfg.qa_n_shots
-            examples: list[dict] = [train_dataset[idx % len(train_dataset)] for idx in range(start_idx, end_idx)]  # type: ignore
-            prefix = _format_gsm8k_few_shot_prefix(examples)
-            questions.append(f"{prefix}{_format_gsm8k_query(q)}")
+            questions.append(f"{few_shot_prefix}{_format_gsm8k_query(q)}")
         else:
             questions.append(_format_gsm8k_query(q))
 
