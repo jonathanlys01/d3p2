@@ -1,3 +1,4 @@
+import argparse
 import os
 import time
 
@@ -88,4 +89,8 @@ def run_diagnostics(duration_seconds=600, matrix_size=8192):
 
 
 if __name__ == "__main__":
-    run_diagnostics(duration_seconds=600)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--duration_seconds", type=int, default=600)
+    parser.add_argument("--matrix_size", type=int, default=8192)
+    args = parser.parse_args()
+    run_diagnostics(duration_seconds=args.duration_seconds, matrix_size=args.matrix_size)
