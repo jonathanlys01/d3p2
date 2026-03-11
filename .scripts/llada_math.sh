@@ -4,7 +4,6 @@ ROOT=$(pwd)/src/d5p4
 
 N_QUESTIONS=${N_QUESTIONS:-100}
 NPROC=${NPROC:-gpu}
-QA_N_SHOTS=${QA_N_SHOTS:-4}
 
 cd $ROOT
 export OMP_NUM_THREADS=1
@@ -14,11 +13,8 @@ set -ex
 COMMON_ARGS=(
   --config=_default.yaml
   model=llada
-  method=baseline
-  qa_n_shots=$QA_N_SHOTS
+  qa_n_shots=4
   qa_dataset_len=$N_QUESTIONS
-  n_groups=4
-  group_size=1
   cat_temperature=1.0
   remasking=low_confidence
   logits_eos_inf=False
@@ -40,12 +36,29 @@ run_llada_math() {
 
 # Repo evaluation note for stronger GSM8K block diffusion:
 # no CFG, deterministic decoding, EOS/EOT confidence masking disabled.
+
+
+# run_llada_math \
+#   llada_steps=256 \
+#   gen_length=256 \
+#   block_length=8 \
+#   n_groups=4 \
+#   group_size=1 \
+#   method=baseline \
+#   comment="stochastic baseline" \
+#   confidence_eos_eot_inf=False 
+
+
 run_llada_math \
   llada_steps=256 \
   gen_length=256 \
   block_length=8 \
-  confidence_eos_eot_inf=False
-
+  n_groups=4 \
+  group_size=1 \
+  method=greedy_map \
+  comment="D5P4 main" \
+  _w_interaction=5.0 \
+  confidence_eos_eot_inf=False 
 
 # torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT llada_math.py --config=_default.yaml model=llada qa_n_shots=4 n_groups=2 group_size=2 qa_dataset_len=$N_QUESTIONS
 

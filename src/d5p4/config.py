@@ -115,6 +115,7 @@ class Config:
 
     # optuna
     n_trials: int = 100  # number of Optuna trials for hyperparameter sweeps
+    comment: str = ""
 
     batch_size: int = 0  # to be set in __post_init__
     interactive: bool = True
