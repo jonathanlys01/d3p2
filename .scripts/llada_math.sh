@@ -32,11 +32,11 @@ run_llada_math() {
 
 # Table 1/2 paper setting for LLaDA-Instruct on conditional generation:
 # pure diffusion, no CFG, deterministic decoding.
-run_llada_math \
-  llada_steps=512 \
-  gen_length=512 \
-  block_length=512 \
-  confidence_eos_eot_inf=True
+# run_llada_math \
+#   llada_steps=512 \
+#   gen_length=512 \
+#   block_length=512 \
+#   confidence_eos_eot_inf=True
 
 # Repo evaluation note for stronger GSM8K block diffusion:
 # no CFG, deterministic decoding, EOS/EOT confidence masking disabled.
