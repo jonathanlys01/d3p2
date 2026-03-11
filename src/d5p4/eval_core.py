@@ -793,11 +793,21 @@ class Evaluator:
         if not self.force and metrics is not None:
             return
 
-        # texts = data["text_samples"]
         texts = data.get("text_samples", None)
+
+        # Fallback: extract generations from math-style results list
+        # Supports shapes: {"results": [...]}, {"results": {"results": [...]}}, [...]
         if texts is None:
+            raw = data if isinstance(data, list) else data.get("results")
+            if isinstance(raw, dict):
+                raw = raw.get("results")
+            if isinstance(raw, list):
+                texts = [r["generations"] for r in raw if isinstance(r.get("generations"), list)]
+
+        if not texts:
             print(f"Skipping {file_path}")
             return None
+
         metrics = self.evaluate(texts, references=references)
 
         data["metrics"] = metrics
