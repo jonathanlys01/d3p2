@@ -456,6 +456,39 @@ class StringMetrics(torch.nn.Module):
 
         return sum(bleu_scores) / len(bleu_scores)
 
+    def compute_diversity_batch(
+        self,
+        texts: list[str],
+        references_for_vocab: list[str] | None = None,
+        prefix: str = "batch",
+    ) -> dict[str, float]:
+        """Compute diversity metrics (distinct-N, EAD, self-BLEU) over a flat
+        list of texts treated as a single batch, rather than averaging per-group.
+
+        Parameters
+        ----------
+        texts:
+            All texts to evaluate together (e.g. every generation flattened).
+        references_for_vocab:
+            Optional reference strings used to estimate vocabulary size for EAD.
+        prefix:
+            Key prefix for the returned metric dictionary (default ``"batch"``).
+        """
+        if not texts:
+            return {}
+
+        distinct_metrics = self.compute_distinct_metrics(
+            texts,
+            references_for_vocab=references_for_vocab,
+        )
+        self_bleu = self.compute_self_bleu(texts)
+
+        result: dict[str, float] = {}
+        for k, v in distinct_metrics.items():
+            result[f"{prefix}_{k}"] = v
+        result[f"{prefix}_self_bleu"] = self_bleu
+        return result
+
     def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
         """
         Compute F1, BLEU, Distinct-2, and Self-BLEU scores.
@@ -933,6 +966,18 @@ class MathEvaluator:
         string_stats = self._string_metrics(generations, references)
         metrics.update(string_stats)
 
+        # ── batch-level diversity ─────────────────────────────────────────
+        # Flatten all generations across questions and compute diversity over
+        # the entire batch (complements the per-group averages above).
+        all_generations_flat: list[str] = [g for group in generations for g in group]
+        all_references_flat: list[str] = [r for refs in references for r in refs]
+        batch_diversity = self._string_metrics.compute_diversity_batch(
+            all_generations_flat,
+            references_for_vocab=all_references_flat if all_references_flat else None,
+            prefix="batch",
+        )
+        metrics.update(batch_diversity)
+
         # ── summary string ────────────────────────────────────────────────
         summary_parts: list[str] = []
 
@@ -947,7 +992,7 @@ class MathEvaluator:
             if not np.isnan(val):
                 summary_parts.append(f"pass@{k}: {_format_num(val)}")
 
-        # String metrics with CI
+        # Per-group string metrics with CI
         for key, display_name in [
             ("f1", "F1"),
             ("bleu", "BLEU"),
@@ -960,6 +1005,15 @@ class MathEvaluator:
                     summary_parts.append(f"{display_name}: {_format_summary_value(metrics[key], metrics[ci_key])}")
                 else:
                     summary_parts.append(f"{display_name}: {_format_num(metrics[key])}")
+
+        # Batch-level diversity metrics (single values, no CI)
+        for key, display_name in [
+            ("batch_distinct_2", "B-Dist2"),
+            ("batch_self_bleu", "B-S-BLEU"),
+        ]:
+            val = metrics.get(key, float("nan"))
+            if not (isinstance(val, float) and np.isnan(val)):
+                summary_parts.append(f"{display_name}: {_format_num(val)}")
 
         if summary_parts:
             metrics["math_metrics_summary"] = " | ".join(summary_parts)
@@ -975,9 +1029,15 @@ class MathEvaluator:
         """Load a math results JSON file (as produced by ``llada_math.py``)
         and compute (or re-compute) evaluation metrics in-place.
 
-        The JSON must contain a top-level ``"results"`` list where each
-        entry has ``"generations"`` (list[str]) and ``"gold_answer"`` (str).
-        The computed metrics are written back as ``"math_metrics"``.
+        Supported JSON shapes
+        ---------------------
+        1. ``[{question, gold_answer, generations, ...}, ...]`` — plain list at root
+        2. ``{"results": [{...}, ...], ...}`` — normal final output
+        3. ``{"results": {"results": [...], ...}, ...}`` — temp checkpoint
+
+        Only ``generations`` (list[str]) is strictly required per entry;
+        ``gold_answer`` (str) defaults to ``""`` if absent.
+        Computed metrics are written back as ``"math_metrics"``.
 
         Parameters
         ----------
@@ -988,19 +1048,38 @@ class MathEvaluator:
         with open(file_path) as f:
             data = json.load(f)
 
-        if not force and data.get("math_metrics") is not None:
-            return data["math_metrics"]
+        # ── normalise root to a list of result dicts ──────────────────────
+        if isinstance(data, list):
+            # Shape 1: root is already a list of result dicts
+            results: list[dict] = data
+            data = {"results": results}  # re-wrap so we can write metrics back
+        else:
+            if not force and data.get("math_metrics") is not None:
+                return data["math_metrics"]
 
-        results = data.get("results", None)
-        if results is None:
+            results = data.get("results")
+            if results is None:
+                return None
+
+            # Shape 3: {"results": {"results": [...], ...}, ...}
+            if isinstance(results, dict):
+                results = results.get("results", [])
+
+        if not isinstance(results, list):
             return None
 
-        # Support both {"results": [...]} wrapper and a plain list
-        if isinstance(results, dict):
-            results = results.get("results", [])
+        # ── extract fields; only generations is strictly required ─────────
+        generations: list[list[str]] = []
+        gold_answers: list[str] = []
+        for r in results:
+            gens = r.get("generations")
+            if not isinstance(gens, list):
+                continue  # skip malformed entries
+            generations.append(gens)
+            gold_answers.append(str(r.get("gold_answer", "")))
 
-        generations = [r["generations"] for r in results]
-        gold_answers = [r["gold_answer"] for r in results]
+        if not generations:
+            return None
 
         math_metrics = self.evaluate(generations, gold_answers, k_values=k_values)
         data["math_metrics"] = math_metrics
