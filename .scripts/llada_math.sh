@@ -48,17 +48,22 @@ run_llada_math() {
 #   comment="stochastic baseline" \
 #   confidence_eos_eot_inf=False 
 
+# sweep from _winteraction = 0 to 10
 
-run_llada_math \
-  llada_steps=256 \
-  gen_length=256 \
-  block_length=8 \
-  n_groups=4 \
-  group_size=1 \
-  method=greedy_map \
-  comment="D5P4 main" \
-  _w_interaction=5.0 \
-  confidence_eos_eot_inf=False 
+list_w_interaction=(0.0 1.0 2.5 10.0)
+
+for w_interaction in "${list_w_interaction[@]}"; do
+  run_llada_math \
+    llada_steps=256 \
+    gen_length=256 \
+    block_length=8 \
+    n_groups=4 \
+    group_size=1 \
+    method=greedy_map \
+    comment="D5P4 @ w_inter=${w_interaction}" \
+    _w_interaction=$w_interaction \
+    confidence_eos_eot_inf=False 
+done
 
 # torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT llada_math.py --config=_default.yaml model=llada qa_n_shots=4 n_groups=2 group_size=2 qa_dataset_len=$N_QUESTIONS
 
