@@ -3,7 +3,7 @@
 #SBATCH --partition=Brain
 #SBATCH --cpus-per-gpu=47
 #SBATCH --gres=gpu:a100:2
-#SBATCH --time=01:00:00
+#SBATCH --time=20:00:00
 #SBATCH --qos highbrain
 #SBATCH --output=logs/%j.out
 
@@ -36,7 +36,7 @@ run_llada_math() {
   torchrun --nproc_per_node=$NPROC --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
-list_w_interaction=(0.0 1.0 2.5 10.0)
+list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 set -ex
 
 run_llada_math \
