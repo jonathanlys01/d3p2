@@ -281,13 +281,7 @@ def _assert_close_enough(baseline: Mapping[str, float | str], optimized: Mapping
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--input",
-        type=Path,
-        default=Path(
-            "/Users/jonathanlys/code/temp/math/math-20260309_164005_3cc7b5e6-d388-4700-9ad3-f9bba0c375ea.json",
-        ),
-    )
+    parser.add_argument("--input", type=Path)
     parser.add_argument("--repeat", type=int, default=7, help="Benchmark repetitions.")
     parser.add_argument("--warmup", type=int, default=1, help="Warmup iterations.")
     parser.add_argument("--repeat-groups", type=int, default=4, help="Duplicate the dataset to amplify CPU work.")
