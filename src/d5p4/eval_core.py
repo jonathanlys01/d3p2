@@ -9,13 +9,13 @@ import json
 import os
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 
 import numpy as np
 import ot
 import sacrebleu
 import torch
 import torch.nn.functional as F
-from nltk.util import ngrams
 from scipy.stats._continuous_distns import t
 from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -35,6 +35,8 @@ torch.backends.cudnn.allow_tf32 = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _STRING_METRICS_TOKENIZER: AutoTokenizer | None = None
+_STRING_METRICS_SENTENCE_BLEU: sacrebleu.metrics.BLEU | None = None
+_STRING_METRICS_CORPUS_BLEU: sacrebleu.metrics.BLEU | None = None
 
 
 def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
@@ -127,10 +129,42 @@ def _get_string_metrics_tokenizer() -> PreTrainedTokenizerBase:
     return _STRING_METRICS_TOKENIZER  # type: ignore
 
 
+def _get_sentence_bleu_metric() -> sacrebleu.metrics.BLEU:
+    global _STRING_METRICS_SENTENCE_BLEU  # noqa: PLW0603
+    if _STRING_METRICS_SENTENCE_BLEU is None:
+        _STRING_METRICS_SENTENCE_BLEU = sacrebleu.metrics.BLEU(effective_order=True)
+    return _STRING_METRICS_SENTENCE_BLEU
+
+
+def _get_corpus_bleu_metric() -> sacrebleu.metrics.BLEU:
+    global _STRING_METRICS_CORPUS_BLEU  # noqa: PLW0603
+    if _STRING_METRICS_CORPUS_BLEU is None:
+        _STRING_METRICS_CORPUS_BLEU = sacrebleu.metrics.BLEU()
+    return _STRING_METRICS_CORPUS_BLEU
+
+
+@lru_cache(maxsize=65536)
+def _cached_metric_tokenize(text: str) -> tuple[str, ...]:
+    return tuple(_get_string_metrics_tokenizer().tokenize(text))
+
+
+@lru_cache(maxsize=65536)
+def _cached_lower_split_tokens(text: str) -> tuple[str, ...]:
+    return tuple(text.lower().split())
+
+
+@lru_cache(maxsize=65536)
+def _cached_lower_split_counter(text: str) -> Counter[str]:
+    return Counter(_cached_lower_split_tokens(text))
+
+
 def _compute_f1_score(prediction: str, ground_truth: str) -> float:
-    prediction_tokens = prediction.lower().split()
-    ground_truth_tokens = ground_truth.lower().split()
-    common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+    prediction_tokens = _cached_lower_split_tokens(prediction)
+    ground_truth_tokens = _cached_lower_split_tokens(ground_truth)
+    if not prediction_tokens or not ground_truth_tokens:
+        return 0.0
+
+    common = _cached_lower_split_counter(prediction) & _cached_lower_split_counter(ground_truth)
     num_same = sum(common.values())
     if num_same == 0:
         return 0.0
@@ -147,42 +181,42 @@ def _compute_distinct_metrics_impl(
     if not texts:
         return {}
 
-    tokenizer = _get_string_metrics_tokenizer()
     if vocab_size is None and references_for_vocab is not None:
         vocab = set()
         for sentence in references_for_vocab:
-            vocab.update(tokenizer.tokenize(sentence))
+            vocab.update(_cached_metric_tokenize(sentence))
         vocab_size = len(vocab)
 
     distinct_tokens = set()
     distinct_tokens_2grams = set()
     distinct_tokens_3grams = set()
-    total_tokens = []
-    total_tokens_2grams = []
-    total_tokens_3grams = []
+    total_tokens = 0
+    total_tokens_2grams = 0
+    total_tokens_3grams = 0
 
     for prediction in texts:
-        tokens = tokenizer.tokenize(prediction)
-
-        tokens_2grams = list(ngrams(tokens, 2, pad_left=True, left_pad_symbol="<s>"))
-        tokens_3grams = list(ngrams(tokens, 3, pad_left=True, left_pad_symbol="<s>"))
-
+        tokens = _cached_metric_tokenize(prediction)
         distinct_tokens.update(tokens)
-        distinct_tokens_2grams.update(tokens_2grams)
-        distinct_tokens_3grams.update(tokens_3grams)
+        total_tokens += len(tokens)
 
-        total_tokens.extend(tokens)
-        total_tokens_2grams.extend(tokens_2grams)
-        total_tokens_3grams.extend(tokens_3grams)
+        prev_1 = "<s>"
+        prev_2 = "<s>"
+        for token in tokens:
+            distinct_tokens_2grams.add((prev_1, token))
+            distinct_tokens_3grams.add((prev_2, prev_1, token))
+            prev_2, prev_1 = prev_1, token
+
+        total_tokens_2grams += len(tokens)
+        total_tokens_3grams += len(tokens)
 
     metrics = {}
-    metrics["distinct_1"] = len(distinct_tokens) / len(total_tokens) if total_tokens else 0.0
-    metrics["distinct_2"] = len(distinct_tokens_2grams) / len(total_tokens_2grams) if total_tokens_2grams else 0.0
-    metrics["distinct_3"] = len(distinct_tokens_3grams) / len(total_tokens_3grams) if total_tokens_3grams else 0.0
+    metrics["distinct_1"] = len(distinct_tokens) / total_tokens if total_tokens else 0.0
+    metrics["distinct_2"] = len(distinct_tokens_2grams) / total_tokens_2grams if total_tokens_2grams else 0.0
+    metrics["distinct_3"] = len(distinct_tokens_3grams) / total_tokens_3grams if total_tokens_3grams else 0.0
 
-    if vocab_size is not None and len(total_tokens) > 0:
+    if vocab_size is not None and total_tokens > 0:
         try:
-            ead = len(distinct_tokens) / (vocab_size * (1 - ((vocab_size - 1) / vocab_size) ** len(total_tokens)))
+            ead = len(distinct_tokens) / (vocab_size * (1 - ((vocab_size - 1) / vocab_size) ** total_tokens))
             metrics["expectation_adjusted_distinct"] = ead
         except ZeroDivisionError:
             metrics["expectation_adjusted_distinct"] = 0.0
@@ -194,13 +228,14 @@ def _compute_self_bleu_impl(texts: list[str]) -> float:
     if len(texts) <= 1:
         return 0.0
 
+    bleu_metric = _get_sentence_bleu_metric()
     bleu_scores = []
     for i, hypothesis in enumerate(texts):
         references = [texts[j] for j in range(len(texts)) if j != i]
         if not references:
             continue
 
-        bleu = sacrebleu.sentence_bleu(hypothesis, references)
+        bleu = bleu_metric.sentence_score(hypothesis, references)
         bleu_scores.append(bleu.score)
 
     if not bleu_scores:
@@ -209,22 +244,31 @@ def _compute_self_bleu_impl(texts: list[str]) -> float:
     return sum(bleu_scores) / len(bleu_scores)
 
 
-def _group_diversity_task(args: tuple[list[str], list[str] | None]) -> tuple[dict[str, float], float]:
-    group, references_for_vocab = args
-    distinct_metrics = _compute_distinct_metrics_impl(group, references_for_vocab=references_for_vocab)
+def _group_diversity_task(args: tuple[list[str], int | None]) -> tuple[dict[str, float], float]:
+    group, vocab_size = args
+    distinct_metrics = _compute_distinct_metrics_impl(group, vocab_size=vocab_size)
     self_bleu = _compute_self_bleu_impl(group)
     return distinct_metrics, self_bleu
 
 
 def _group_reference_alignment_task(args: tuple[list[str], list[str]]) -> tuple[list[float], float, float]:
     preds, refs = args
-    f1_scores = [max([_compute_f1_score(pred, ref) for ref in refs]) if refs else 0.0 for pred in preds]
+    if not refs:
+        return [0.0 for _ in preds], 0.0, 0.0
+
+    bleu_metric = _get_sentence_bleu_metric()
+    f1_scores = []
+    for pred in preds:
+        best_f1 = 0.0
+        for ref in refs:
+            best_f1 = max(best_f1, _compute_f1_score(pred, ref))
+        f1_scores.append(best_f1)
 
     best_f1_for_question = max(f1_scores) if f1_scores else 0.0
 
     best_bleu_for_question = 0.0
     for pred in preds:
-        bleu_result = sacrebleu.sentence_bleu(pred, refs)
+        bleu_result = bleu_metric.sentence_score(pred, refs)
         best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
 
     return f1_scores, best_f1_for_question, best_bleu_for_question
@@ -502,7 +546,7 @@ class StringMetrics(torch.nn.Module):
 
         vocab = set()
         for sentence in references_for_vocab:
-            vocab.update(self.tokenizer.tokenize(sentence))
+            vocab.update(_cached_metric_tokenize(sentence))
         return len(vocab)
 
     def compute_distinct_metrics(
@@ -526,6 +570,7 @@ class StringMetrics(torch.nn.Module):
         texts: list[str],
         references_for_vocab: list[str] | None = None,
         prefix: str = "batch",
+        vocab_size: int | None = None,
     ) -> dict[str, float]:
         """Compute lexical diversity metrics over a single set of texts.
 
@@ -543,6 +588,7 @@ class StringMetrics(torch.nn.Module):
 
         distinct_metrics = self.compute_distinct_metrics(
             texts,
+            vocab_size=vocab_size,
             references_for_vocab=references_for_vocab,
         )
         self_bleu = self.compute_self_bleu(texts)
@@ -569,11 +615,12 @@ class StringMetrics(torch.nn.Module):
 
         valid_groups = [group for group in predictions if group]
         references_for_vocab = vocab_ref_tokens if vocab_ref_tokens else None
+        vocab_size = self._vocab_size_from_references(references_for_vocab)
         distinct_metrics_list = []
         self_bleu_scores = []
         worker_count = _resolve_num_workers(len(valid_groups), num_workers)
         if worker_count > 1:
-            tasks = [(group, references_for_vocab) for group in valid_groups]
+            tasks = [(group, vocab_size) for group in valid_groups]
             with ProcessPoolExecutor(max_workers=worker_count) as executor:
                 for d_metrics, self_bleu in executor.map(_group_diversity_task, tasks):
                     distinct_metrics_list.append(d_metrics)
@@ -582,7 +629,7 @@ class StringMetrics(torch.nn.Module):
             for group in valid_groups:
                 d_metrics = self.compute_distinct_metrics(
                     group,
-                    references_for_vocab=references_for_vocab,
+                    vocab_size=vocab_size,
                 )
                 distinct_metrics_list.append(d_metrics)
                 self_bleu_scores.append(self.compute_self_bleu(group))
@@ -608,13 +655,16 @@ class StringMetrics(torch.nn.Module):
             return {}
 
         references_for_vocab = None
+        vocab_size = None
         if references and any(refs for refs in references):
             references_for_vocab = [r for refs in references for r in refs]
+            vocab_size = self._vocab_size_from_references(references_for_vocab)
 
         return self.diversity_set(
             all_generations_flat,
-            references_for_vocab=references_for_vocab,
+            references_for_vocab=None,
             prefix=prefix,
+            vocab_size=vocab_size,
         )
 
     def reference_alignment(  # noqa: C901, PLR0912
@@ -668,7 +718,7 @@ class StringMetrics(torch.nn.Module):
                         ref_list.append(refs[0])  # duplicate first if fewer refs
                 formatted_refs.append(ref_list)
 
-            bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
+            bleu = _get_corpus_bleu_metric().corpus_score(flattened_predictions, formatted_refs)
             bleu_score = bleu.score
 
         all_metrics["bleu"] = bleu_score
