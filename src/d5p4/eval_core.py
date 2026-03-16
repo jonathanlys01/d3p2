@@ -1135,6 +1135,30 @@ class MathEvaluator:
         return math_metrics
 
 
+def _is_math_results_file(file_path: str) -> bool:
+    """Heuristically detect math-eval result files written by llada_math.py."""
+    try:
+        with open(file_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    raw = data
+    if isinstance(raw, dict):
+        raw = raw.get("results", raw)
+        if isinstance(raw, dict):
+            raw = raw.get("results", [])
+
+    if not isinstance(raw, list) or not raw:
+        return False
+
+    first = raw[0]
+    if not isinstance(first, dict):
+        return False
+
+    return isinstance(first.get("generations"), list) and "gold_answer" in first
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate text samples.")
     parser.add_argument(
@@ -1156,12 +1180,20 @@ def main():
     args = parser.parse_args()
 
     files = [f for f in os.listdir(args.folder_path) if f.endswith(".json") and not f.startswith("temp")]
-    evaluator = Evaluator(args.batch_size, args.force, args.ppl_model_id, args.cos_model_id)
+    evaluator: Evaluator | None = None
+    math_evaluator: MathEvaluator | None = None
     pbar = tqdm(files, desc="Evaluating files")
 
     for file_name in pbar:
         file_path = os.path.join(args.folder_path, file_name)
-        evaluator.eval_from_file(file_path)
+        if _is_math_results_file(file_path):
+            if math_evaluator is None:
+                math_evaluator = MathEvaluator()
+            math_evaluator.eval_from_file(file_path, force=args.force)
+        else:
+            if evaluator is None:
+                evaluator = Evaluator(args.batch_size, args.force, args.ppl_model_id, args.cos_model_id)
+            evaluator.eval_from_file(file_path)
 
 
 if __name__ == "__main__":

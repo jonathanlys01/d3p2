@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from d5p4.eval_core import MathEvaluator, StringMetrics
+from d5p4.eval_core import MathEvaluator, StringMetrics, _is_math_results_file
 
 
 class _FakeTokenizer:
@@ -103,6 +103,8 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
             file_path = os.path.join(tmpdir, "math-results.json")
             with open(file_path, "w") as f:
                 json.dump(payload, f, indent=4)
+
+            self.assertTrue(_is_math_results_file(file_path))
 
             math_metrics = evaluator.eval_from_file(file_path, force=True, k_values=[1, 2, 3])
 
