@@ -31,7 +31,7 @@ def save(results: dict, config: Config, uid: uuid.UUID, rank: int = 0) -> None:
         json.dump(payload, f, indent=4)
 
 
-def main() -> None:  # noqa: PLR0912
+def main() -> None:  # noqa: PLR0912, PLR0915
     config = Config()
 
     model = LLADASampler(config)
@@ -97,7 +97,9 @@ def main() -> None:  # noqa: PLR0912
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} qs with ≥1 correct)")
 
     all_generations: list[list[str]] = [r["generations"] for r in results]
-    math_metrics = evaluator.evaluate(all_generations, answer_numbers) if results else {}
+    num_workers = min(8, os.cpu_count() or 1)
+    print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
+    math_metrics = evaluator.evaluate(all_generations, answer_numbers, num_workers=num_workers) if results else {}
     math_metrics_summary = math_metrics.get("math_metrics_summary")
     if math_metrics_summary:
         print(f"math metrics: {math_metrics_summary}")

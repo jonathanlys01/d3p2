@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import ot
@@ -31,6 +32,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_STRING_METRICS_TOKENIZER: AutoTokenizer | None = None
 
 
 def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
@@ -106,6 +108,135 @@ def _format_summary_value(mean: float, ci95: float, sig_figs: int = 4) -> str:
 def _format_asymmetric_ci(mean: float, lower: float, upper: float, sig_figs: int = 4) -> str:
     """Format a mean and asymmetric CI bounds."""
     return f"{_format_num(mean, sig_figs)} [{_format_num(lower, sig_figs)}, {_format_num(upper, sig_figs)}]"
+
+
+def _resolve_num_workers(num_items: int, num_workers: int) -> int:
+    if num_items <= 1:
+        return 1
+    if num_workers <= 1:
+        return 1
+    return min(num_workers, num_items)
+
+
+def _get_string_metrics_tokenizer() -> PreTrainedTokenizerBase:
+    global _STRING_METRICS_TOKENIZER  # noqa: PLW0603
+    if _STRING_METRICS_TOKENIZER is None:
+        _STRING_METRICS_TOKENIZER = AutoTokenizer.from_pretrained("bert-base-uncased")
+    return _STRING_METRICS_TOKENIZER  # type: ignore
+
+
+def _compute_f1_score(prediction: str, ground_truth: str) -> float:
+    prediction_tokens = prediction.lower().split()
+    ground_truth_tokens = ground_truth.lower().split()
+    common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+    num_same = sum(common.values())
+    if num_same == 0:
+        return 0.0
+    precision = 1.0 * num_same / len(prediction_tokens)
+    recall = 1.0 * num_same / len(ground_truth_tokens)
+    return (2 * precision * recall) / (precision + recall)
+
+
+def _compute_distinct_metrics_impl(
+    texts: list[str],
+    vocab_size: int | None = None,
+    references_for_vocab: list[str] | None = None,
+) -> dict[str, float]:
+    if not texts:
+        return {}
+
+    tokenizer = _get_string_metrics_tokenizer()
+    if vocab_size is None and references_for_vocab is not None:
+        vocab = set()
+        for sentence in references_for_vocab:
+            vocab.update(tokenizer.tokenize(sentence))
+        vocab_size = len(vocab)
+
+    distinct_tokens = set()
+    distinct_tokens_2grams = set()
+    distinct_tokens_3grams = set()
+    total_tokens = []
+    total_tokens_2grams = []
+    total_tokens_3grams = []
+
+    for prediction in texts:
+        tokens = tokenizer.tokenize(prediction)
+
+        tokens_2grams = list(ngrams(tokens, 2, pad_left=True, left_pad_symbol="<s>"))
+        tokens_3grams = list(ngrams(tokens, 3, pad_left=True, left_pad_symbol="<s>"))
+
+        distinct_tokens.update(tokens)
+        distinct_tokens_2grams.update(tokens_2grams)
+        distinct_tokens_3grams.update(tokens_3grams)
+
+        total_tokens.extend(tokens)
+        total_tokens_2grams.extend(tokens_2grams)
+        total_tokens_3grams.extend(tokens_3grams)
+
+    metrics = {}
+    metrics["distinct_1"] = len(distinct_tokens) / len(total_tokens) if total_tokens else 0.0
+    metrics["distinct_2"] = len(distinct_tokens_2grams) / len(total_tokens_2grams) if total_tokens_2grams else 0.0
+    metrics["distinct_3"] = len(distinct_tokens_3grams) / len(total_tokens_3grams) if total_tokens_3grams else 0.0
+
+    if vocab_size is not None and len(total_tokens) > 0:
+        try:
+            ead = len(distinct_tokens) / (vocab_size * (1 - ((vocab_size - 1) / vocab_size) ** len(total_tokens)))
+            metrics["expectation_adjusted_distinct"] = ead
+        except ZeroDivisionError:
+            metrics["expectation_adjusted_distinct"] = 0.0
+
+    return metrics
+
+
+def _compute_self_bleu_impl(texts: list[str]) -> float:
+    if len(texts) <= 1:
+        return 0.0
+
+    bleu_scores = []
+    for i, hypothesis in enumerate(texts):
+        references = [texts[j] for j in range(len(texts)) if j != i]
+        if not references:
+            continue
+
+        bleu = sacrebleu.sentence_bleu(hypothesis, references)
+        bleu_scores.append(bleu.score)
+
+    if not bleu_scores:
+        return 0.0
+
+    return sum(bleu_scores) / len(bleu_scores)
+
+
+def _group_diversity_task(args: tuple[list[str], list[str] | None]) -> tuple[dict[str, float], float]:
+    group, references_for_vocab = args
+    distinct_metrics = _compute_distinct_metrics_impl(group, references_for_vocab=references_for_vocab)
+    self_bleu = _compute_self_bleu_impl(group)
+    return distinct_metrics, self_bleu
+
+
+def _group_reference_alignment_task(args: tuple[list[str], list[str]]) -> tuple[list[float], float, float]:
+    preds, refs = args
+    f1_scores = [max([_compute_f1_score(pred, ref) for ref in refs]) if refs else 0.0 for pred in preds]
+
+    best_f1_for_question = max(f1_scores) if f1_scores else 0.0
+
+    best_bleu_for_question = 0.0
+    for pred in preds:
+        bleu_result = sacrebleu.sentence_bleu(pred, refs)
+        best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
+
+    return f1_scores, best_f1_for_question, best_bleu_for_question
+
+
+def _math_group_task(args: tuple[list[str], str, list[int], bool]) -> tuple[float, dict[int, float]]:
+    generations, gold_answer, effective_ks, use_math_parser = args
+    evaluator = MathEvaluator(use_math_parser=use_math_parser)
+    scores = evaluator.score_group(generations, gold_answer)
+    n = len(scores)
+    c = sum(scores)
+    per_question_acc = c / n
+    pass_at_k = {k: evaluator._pass_at_k_estimator(n, c, k) for k in effective_ks}
+    return per_question_acc, pass_at_k
 
 
 class Perplexity(torch.nn.Module):
@@ -358,19 +489,10 @@ class WassersteinDistance(torch.nn.Module):
 class StringMetrics(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = _get_string_metrics_tokenizer()
 
     def _compute_f1(self, prediction: str, ground_truth: str) -> float:
-        prediction_tokens = prediction.lower().split()
-        ground_truth_tokens = ground_truth.lower().split()
-        common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
-        num_same = sum(common.values())
-        if num_same == 0:
-            return 0.0
-        precision = 1.0 * num_same / len(prediction_tokens)
-        recall = 1.0 * num_same / len(ground_truth_tokens)
-        f1 = (2 * precision * recall) / (precision + recall)
-        return f1
+        return _compute_f1_score(prediction, ground_truth)
 
     def _vocab_size_from_references(self, references_for_vocab: list[str] | None) -> int | None:
         if references_for_vocab is None:
@@ -390,77 +512,12 @@ class StringMetrics(torch.nn.Module):
         """
         Calculate robust distinct metrics including EAD, Dist-1, Dist-2, Dist-3.
         """
-        if not texts:
-            return {}
-
-        # Determine vocab size if EAD is needed
         if vocab_size is None:
             vocab_size = self._vocab_size_from_references(references_for_vocab)
-
-        # If vocab_size is still None, we can't compute EAD, but we can compute others.
-        # But for now let's assume if it is None we just skip EAD or use a default?
-        # The user code raises error if dataForVocabCal is None.
-        # But we want to be robust. If no refs, maybe skip EAD?
-
-        distinct_tokens = set()
-        distinct_tokens_2grams = set()
-        distinct_tokens_3grams = set()
-        total_tokens = []
-        total_tokens_2grams = []
-        total_tokens_3grams = []
-
-        for prediction in texts:
-            tokens = self.tokenizer.tokenize(prediction)
-
-            # NLTK ngrams yields generator, convert to list
-            tokens_2grams = list(ngrams(tokens, 2, pad_left=True, left_pad_symbol="<s>"))
-            tokens_3grams = list(ngrams(tokens, 3, pad_left=True, left_pad_symbol="<s>"))
-
-            distinct_tokens.update(tokens)
-            distinct_tokens_2grams.update(tokens_2grams)
-            distinct_tokens_3grams.update(tokens_3grams)
-
-            total_tokens.extend(tokens)
-            total_tokens_2grams.extend(tokens_2grams)
-            total_tokens_3grams.extend(tokens_3grams)
-
-        metrics = {}
-        metrics["distinct_1"] = len(distinct_tokens) / len(total_tokens) if total_tokens else 0.0
-        metrics["distinct_2"] = len(distinct_tokens_2grams) / len(total_tokens_2grams) if total_tokens_2grams else 0.0
-        metrics["distinct_3"] = len(distinct_tokens_3grams) / len(total_tokens_3grams) if total_tokens_3grams else 0.0
-
-        if vocab_size is not None and len(total_tokens) > 0:
-            try:
-                ead = len(distinct_tokens) / (vocab_size * (1 - ((vocab_size - 1) / vocab_size) ** len(total_tokens)))
-                metrics["expectation_adjusted_distinct"] = ead
-            except ZeroDivisionError:
-                metrics["expectation_adjusted_distinct"] = 0.0
-
-        return metrics
+        return _compute_distinct_metrics_impl(texts, vocab_size=vocab_size, references_for_vocab=references_for_vocab)
 
     def compute_self_bleu(self, texts: list[str]) -> float:
-        """
-        Calculate Self-BLEU: for each string, compute its BLEU score using all other strings as references.
-        Returns the average score across all strings.
-        """
-        if len(texts) <= 1:
-            return 0.0
-
-        bleu_scores = []
-        for i, hypothesis in enumerate(texts):
-            # Use all other texts as references
-            references = [texts[j] for j in range(len(texts)) if j != i]
-            if not references:
-                continue
-
-            # Calculate sentence BLEU with all other texts as references
-            bleu = sacrebleu.sentence_bleu(hypothesis, references)
-            bleu_scores.append(bleu.score)
-
-        if not bleu_scores:
-            return 0.0
-
-        return sum(bleu_scores) / len(bleu_scores)
+        return _compute_self_bleu_impl(texts)
 
     def diversity_set(
         self,
@@ -498,6 +555,7 @@ class StringMetrics(torch.nn.Module):
         self,
         predictions: list[list[str]],
         references: list[list[str]] | None = None,
+        num_workers: int = 1,
     ) -> dict[str, float]:
         """Compute set-level lexical diversity per group, then aggregate across groups."""
         all_metrics = {}
@@ -507,13 +565,22 @@ class StringMetrics(torch.nn.Module):
             for sublist in references:
                 vocab_ref_tokens.extend(sublist)
 
+        valid_groups = [group for group in predictions if group]
+        references_for_vocab = vocab_ref_tokens if vocab_ref_tokens else None
         distinct_metrics_list = []
         self_bleu_scores = []
-        for group in predictions:
-            if group:
+        worker_count = _resolve_num_workers(len(valid_groups), num_workers)
+        if worker_count > 1:
+            tasks = [(group, references_for_vocab) for group in valid_groups]
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for d_metrics, self_bleu in executor.map(_group_diversity_task, tasks):
+                    distinct_metrics_list.append(d_metrics)
+                    self_bleu_scores.append(self_bleu)
+        else:
+            for group in valid_groups:
                 d_metrics = self.compute_distinct_metrics(
                     group,
-                    references_for_vocab=vocab_ref_tokens if vocab_ref_tokens else None,
+                    references_for_vocab=references_for_vocab,
                 )
                 distinct_metrics_list.append(d_metrics)
                 self_bleu_scores.append(self.compute_self_bleu(group))
@@ -552,6 +619,7 @@ class StringMetrics(torch.nn.Module):
         self,
         predictions: list[list[str]],
         references: list[list[str]] | None = None,
+        num_workers: int = 1,
     ) -> dict[str, float]:
         """Compute lexical overlap metrics against references."""
         all_metrics = {}
@@ -559,17 +627,29 @@ class StringMetrics(torch.nn.Module):
         if not (references and any(refs for refs in references)):
             return all_metrics
 
-        flattened_predictions = []
-        flattened_references = []
-        for preds, refs in zip(predictions, references):
-            for pred in preds:
-                flattened_predictions.append(pred)
-                flattened_references.append(refs)
+        grouped_pairs = [(preds, refs) for preds, refs in zip(predictions, references) if preds and refs]
+        flattened_predictions = [pred for preds, _ in grouped_pairs for pred in preds]
+        flattened_references = [refs for preds, refs in grouped_pairs for _ in preds]
 
         f1_scores = []
-        for pred, refs in zip(flattened_predictions, flattened_references):
-            best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
-            f1_scores.append(best_f1)
+        f1_at_k_scores = []
+        bleu_at_k_scores = []
+        worker_count = _resolve_num_workers(len(grouped_pairs), num_workers)
+        if worker_count > 1:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for group_f1_scores, best_f1_for_question, best_bleu_for_question in executor.map(
+                    _group_reference_alignment_task,
+                    grouped_pairs,
+                ):
+                    f1_scores.extend(group_f1_scores)
+                    f1_at_k_scores.append(best_f1_for_question)
+                    bleu_at_k_scores.append(best_bleu_for_question)
+        else:
+            for pair in grouped_pairs:
+                group_f1_scores, best_f1_for_question, best_bleu_for_question = _group_reference_alignment_task(pair)
+                f1_scores.extend(group_f1_scores)
+                f1_at_k_scores.append(best_f1_for_question)
+                bleu_at_k_scores.append(best_bleu_for_question)
 
         all_metrics.update(compute_statistics(f1_scores, "f1"))
 
@@ -595,39 +675,23 @@ class StringMetrics(torch.nn.Module):
         all_metrics["k"] = float(k)
 
         if k > 0:
-            f1_at_k_scores = []
-            for preds, refs in zip(predictions, references):
-                if not preds or not refs:
-                    continue
-                best_f1_for_question = 0.0
-                for pred in preds:
-                    f1_for_pred = max([self._compute_f1(pred, ref) for ref in refs])
-                    best_f1_for_question = max(best_f1_for_question, f1_for_pred)
-                f1_at_k_scores.append(best_f1_for_question)
-
             all_metrics.update(compute_statistics(f1_at_k_scores, "f1_at_k"))
-
-            bleu_at_k_scores = []
-            for preds, refs in zip(predictions, references):
-                if not preds or not refs:
-                    continue
-                best_bleu_for_question = 0.0
-                for pred in preds:
-                    bleu_result = sacrebleu.sentence_bleu(pred, refs)
-                    best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
-                bleu_at_k_scores.append(best_bleu_for_question)
-
             all_metrics.update(compute_statistics(bleu_at_k_scores, "bleu_at_k"))
 
         return all_metrics
 
-    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
+    def forward(
+        self,
+        predictions: list[list[str]],
+        references: list[list[str]] | None = None,
+        num_workers: int = 1,
+    ) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
         """
         Backward-compatible wrapper returning reference alignment and grouped diversity metrics.
         """
         return {
-            **self.reference_alignment(predictions, references),
-            **self.diversity_grouped(predictions, references),
+            **self.reference_alignment(predictions, references, num_workers=num_workers),
+            **self.diversity_grouped(predictions, references, num_workers=num_workers),
         }
 
 
@@ -937,11 +1001,12 @@ class MathEvaluator:
             den *= n - i
         return 1.0 - num / den
 
-    def evaluate(  # noqa: C901, PLR0912
+    def evaluate(  # noqa: C901, PLR0912, PLR0915
         self,
         generations: list[list[str]],
         gold_answers: list[str],
         k_values: list[int] | None = None,
+        num_workers: int = 1,
     ) -> dict[str, float | str]:
         """Compute comprehensive math evaluation metrics.
 
@@ -981,15 +1046,23 @@ class MathEvaluator:
         per_question_acc: list[float] = []
         pass_at_k_per_q: dict[int, list[float]] = {k: [] for k in effective_ks}
 
-        for gens, gold in zip(generations, gold_answers):
-            if not gens:
-                continue
-            scores = self.score_group(gens, gold)
-            n = len(scores)
-            c = sum(scores)
-            per_question_acc.append(c / n)
-            for k in effective_ks:
-                pass_at_k_per_q[k].append(self._pass_at_k_estimator(n, c, k))
+        valid_groups = [(gens, gold) for gens, gold in zip(generations, gold_answers) if gens]
+        worker_count = _resolve_num_workers(len(valid_groups), num_workers)
+        if worker_count > 1:
+            tasks = [(gens, gold, effective_ks, self._use_math_parser) for gens, gold in valid_groups]
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for acc, pass_at_k in executor.map(_math_group_task, tasks):
+                    per_question_acc.append(acc)
+                    for k in effective_ks:
+                        pass_at_k_per_q[k].append(pass_at_k[k])
+        else:
+            for gens, gold in valid_groups:
+                scores = self.score_group(gens, gold)
+                n = len(scores)
+                c = sum(scores)
+                per_question_acc.append(c / n)
+                for k in effective_ks:
+                    pass_at_k_per_q[k].append(self._pass_at_k_estimator(n, c, k))
 
         metrics: dict[str, float | str] = {}
 
@@ -1009,8 +1082,8 @@ class MathEvaluator:
         # Gold answers are the single reference for each question.
         references: list[list[str]] = [[g] for g in gold_answers]
         string_stats = {
-            **self._string_metrics.reference_alignment(generations, references),
-            **self._string_metrics.diversity_grouped(generations, references),
+            **self._string_metrics.reference_alignment(generations, references, num_workers=num_workers),
+            **self._string_metrics.diversity_grouped(generations, references, num_workers=num_workers),
         }
         metrics.update(string_stats)
 
@@ -1070,6 +1143,7 @@ class MathEvaluator:
         file_path: str,
         force: bool = False,
         k_values: list[int] | None = None,
+        num_workers: int = 1,
     ) -> dict[str, float | str] | None:
         """Load a math results JSON file (as produced by ``llada_math.py``)
         and compute (or re-compute) evaluation metrics in-place.
@@ -1126,7 +1200,7 @@ class MathEvaluator:
         if not generations:
             return None
 
-        math_metrics = self.evaluate(generations, gold_answers, k_values=k_values)
+        math_metrics = self.evaluate(generations, gold_answers, k_values=k_values, num_workers=num_workers)
         data["math_metrics"] = math_metrics
 
         with open(file_path, "w") as f:
@@ -1160,6 +1234,10 @@ def _is_math_results_file(file_path: str) -> bool:
 
 
 def main():
+    n_cpus = os.cpu_count()
+    assert n_cpus is not None
+    num_workers = n_cpus // 2
+
     parser = argparse.ArgumentParser(description="Evaluate text samples.")
     parser.add_argument(
         "--folder_path",
@@ -1176,6 +1254,12 @@ def main():
         help="Model ID for cosine similarity calculation.",
     )
     parser.add_argument("--batch_size", "-b", type=int, default=0, help="Batch size for evaluation.")
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=num_workers,
+        help="CPU workers for math/string metric aggregation.",
+    )
     parser.add_argument("--force", action="store_true", help="Force re-evaluation even if metrics exist.")
     args = parser.parse_args()
 
@@ -1189,7 +1273,7 @@ def main():
         if _is_math_results_file(file_path):
             if math_evaluator is None:
                 math_evaluator = MathEvaluator()
-            math_evaluator.eval_from_file(file_path, force=args.force)
+            math_evaluator.eval_from_file(file_path, force=args.force, num_workers=args.num_workers)
         else:
             if evaluator is None:
                 evaluator = Evaluator(args.batch_size, args.force, args.ppl_model_id, args.cos_model_id)
