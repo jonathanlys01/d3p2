@@ -28,6 +28,8 @@ from d5p4.utils import print as u_print
 from d5p4.utils import process_model_args, tqdm
 
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
