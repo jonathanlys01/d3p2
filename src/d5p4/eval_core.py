@@ -125,6 +125,20 @@ def _resolve_num_workers(num_items: int, num_workers: int) -> int:
     return min(num_workers, num_items)
 
 
+def _map_tasks(fn, tasks: list, num_workers: int):
+    """Run *fn* over *tasks*, in parallel when num_workers > 1, else sequentially.
+
+    Yields results in input order (same guarantee as ``executor.map``).
+    """
+    worker_count = _resolve_num_workers(len(tasks), num_workers)
+    if worker_count > 1:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            yield from executor.map(fn, tasks)
+    else:
+        for task in tasks:
+            yield fn(task)
+
+
 def _time_call(fn, *args, **kwargs):
     start = perf_counter()
     result = fn(*args, **kwargs)
@@ -585,38 +599,20 @@ class WassersteinDistance(torch.nn.Module):
         return x.cpu()
 
 
+def _vocab_size_from_refs(references_for_vocab: list[str] | None) -> int | None:
+    """Return the number of distinct tokens across all reference strings, or None."""
+    if references_for_vocab is None:
+        return None
+    vocab: set[str] = set()
+    for sentence in references_for_vocab:
+        vocab.update(_cached_metric_tokenize(sentence))
+    return len(vocab)
+
+
 class StringMetrics(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.tokenizer = _get_string_metrics_tokenizer()
-
-    def _compute_f1(self, prediction: str, ground_truth: str) -> float:
-        return _compute_f1_score(prediction, ground_truth)
-
-    def _vocab_size_from_references(self, references_for_vocab: list[str] | None) -> int | None:
-        if references_for_vocab is None:
-            return None
-
-        vocab = set()
-        for sentence in references_for_vocab:
-            vocab.update(_cached_metric_tokenize(sentence))
-        return len(vocab)
-
-    def compute_distinct_metrics(
-        self,
-        texts: list[str],
-        vocab_size: int | None = None,
-        references_for_vocab: list[str] | None = None,
-    ) -> dict[str, float]:
-        """
-        Calculate robust distinct metrics including EAD, Dist-1, Dist-2, Dist-3.
-        """
-        if vocab_size is None:
-            vocab_size = self._vocab_size_from_references(references_for_vocab)
-        return _compute_distinct_metrics_impl(texts, vocab_size=vocab_size, references_for_vocab=references_for_vocab)
-
-    def compute_self_bleu(self, texts: list[str]) -> float:
-        return _compute_self_bleu_impl(texts)
 
     def diversity_set(
         self,
@@ -640,18 +636,12 @@ class StringMetrics(torch.nn.Module):
         if not texts:
             return {}
 
-        distinct_metrics = self.compute_distinct_metrics(
-            texts,
-            vocab_size=vocab_size,
-            references_for_vocab=references_for_vocab,
-        )
-        self_bleu = _compute_self_bleu_bounded_impl(texts) if bounded_self_bleu else self.compute_self_bleu(texts)
+        if vocab_size is None:
+            vocab_size = _vocab_size_from_refs(references_for_vocab)
+        distinct_metrics = _compute_distinct_metrics_impl(texts, vocab_size=vocab_size)
+        self_bleu = _compute_self_bleu_bounded_impl(texts) if bounded_self_bleu else _compute_self_bleu_impl(texts)
 
-        result: dict[str, float] = {}
-        for k, v in distinct_metrics.items():
-            result[f"{prefix}_{k}"] = v
-        result[f"{prefix}_self_bleu"] = self_bleu
-        return result
+        return {f"{prefix}_{k}": v for k, v in distinct_metrics.items()} | {f"{prefix}_self_bleu": self_bleu}
 
     def diversity_grouped(
         self,
@@ -660,41 +650,23 @@ class StringMetrics(torch.nn.Module):
         num_workers: int = 1,
     ) -> dict[str, float]:
         """Compute set-level lexical diversity per group, then aggregate across groups."""
-        all_metrics = {}
-
-        vocab_ref_tokens = []
-        if references and any(refs for refs in references):
-            for sublist in references:
-                vocab_ref_tokens.extend(sublist)
-
+        ref_tokens = [s for refs in references for s in refs] if references and any(references) else None
+        vocab_size = _vocab_size_from_refs(ref_tokens)
         valid_groups = [group for group in predictions if group]
-        references_for_vocab = vocab_ref_tokens if vocab_ref_tokens else None
-        vocab_size = self._vocab_size_from_references(references_for_vocab)
-        distinct_metrics_list = []
-        self_bleu_scores = []
-        worker_count = _resolve_num_workers(len(valid_groups), num_workers)
-        if worker_count > 1:
-            tasks = [(group, vocab_size) for group in valid_groups]
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                for d_metrics, self_bleu in executor.map(_group_diversity_task, tasks):
-                    distinct_metrics_list.append(d_metrics)
-                    self_bleu_scores.append(self_bleu)
-        else:
-            for group in valid_groups:
-                d_metrics = self.compute_distinct_metrics(
-                    group,
-                    vocab_size=vocab_size,
-                )
-                distinct_metrics_list.append(d_metrics)
-                self_bleu_scores.append(self.compute_self_bleu(group))
 
+        distinct_metrics_list: list[dict[str, float]] = []
+        self_bleu_scores: list[float] = []
+        tasks = [(group, vocab_size) for group in valid_groups]
+        for d_metrics, self_bleu in _map_tasks(_group_diversity_task, tasks, num_workers):
+            distinct_metrics_list.append(d_metrics)
+            self_bleu_scores.append(self_bleu)
+
+        all_metrics: dict[str, float] = {}
         if distinct_metrics_list:
-            keys = distinct_metrics_list[0].keys()
-            for key in keys:
+            for key in distinct_metrics_list[0]:
                 values = [m[key] for m in distinct_metrics_list if key in m]
                 all_metrics.update(compute_statistics(values, key))
         all_metrics.update(compute_statistics(self_bleu_scores, "self_bleu"))
-
         return all_metrics
 
     def diversity_corpus(
@@ -708,79 +680,58 @@ class StringMetrics(torch.nn.Module):
         if not all_generations_flat:
             return {}
 
-        references_for_vocab = None
         vocab_size = None
         if references and any(refs for refs in references):
-            references_for_vocab = [r for refs in references for r in refs]
-            vocab_size = self._vocab_size_from_references(references_for_vocab)
+            vocab_size = _vocab_size_from_refs([r for refs in references for r in refs])
 
         return self.diversity_set(
             all_generations_flat,
-            references_for_vocab=None,
             prefix=prefix,
             vocab_size=vocab_size,
             bounded_self_bleu=len(all_generations_flat) > _BATCH_SELF_BLEU_EXACT_THRESHOLD,
         )
 
-    def reference_alignment(  # noqa: C901, PLR0912
+    def reference_alignment(
         self,
         predictions: list[list[str]],
         references: list[list[str]] | None = None,
         num_workers: int = 1,
     ) -> dict[str, float]:
         """Compute lexical overlap metrics against references."""
-        all_metrics = {}
-
         if not (references and any(refs for refs in references)):
-            return all_metrics
+            return {}
 
         grouped_pairs = [(preds, refs) for preds, refs in zip(predictions, references) if preds and refs]
         flattened_predictions = [pred for preds, _ in grouped_pairs for pred in preds]
         flattened_references = [refs for preds, refs in grouped_pairs for _ in preds]
 
-        f1_scores = []
-        f1_at_k_scores = []
-        bleu_at_k_scores = []
-        worker_count = _resolve_num_workers(len(grouped_pairs), num_workers)
-        if worker_count > 1:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                for group_f1_scores, best_f1_for_question, best_bleu_for_question in executor.map(
-                    _group_reference_alignment_task,
-                    grouped_pairs,
-                ):
-                    f1_scores.extend(group_f1_scores)
-                    f1_at_k_scores.append(best_f1_for_question)
-                    bleu_at_k_scores.append(best_bleu_for_question)
-        else:
-            for pair in grouped_pairs:
-                group_f1_scores, best_f1_for_question, best_bleu_for_question = _group_reference_alignment_task(pair)
-                f1_scores.extend(group_f1_scores)
-                f1_at_k_scores.append(best_f1_for_question)
-                bleu_at_k_scores.append(best_bleu_for_question)
+        f1_scores: list[float] = []
+        f1_at_k_scores: list[float] = []
+        bleu_at_k_scores: list[float] = []
+        for group_f1_scores, best_f1, best_bleu in _map_tasks(
+            _group_reference_alignment_task,
+            grouped_pairs,
+            num_workers,
+        ):
+            f1_scores.extend(group_f1_scores)
+            f1_at_k_scores.append(best_f1)
+            bleu_at_k_scores.append(best_bleu)
 
+        all_metrics: dict[str, float] = {}
         all_metrics.update(compute_statistics(f1_scores, "f1"))
 
         bleu_score = 0.0
-        if len(flattened_references) > 0:
+        if flattened_references:
             max_refs = max(len(refs) for refs in flattened_references)
-            formatted_refs = []
-            for i in range(max_refs):
-                ref_list = []
-                for refs in flattened_references:
-                    if i < len(refs):
-                        ref_list.append(refs[i])
-                    else:
-                        ref_list.append(refs[0])  # duplicate first if fewer refs
-                formatted_refs.append(ref_list)
-
-            bleu = _get_corpus_bleu_metric().corpus_score(flattened_predictions, formatted_refs)
-            bleu_score = bleu.score
+            # Transpose ragged list: group by reference index, padding with first ref
+            formatted_refs = [
+                [refs[i] if i < len(refs) else refs[0] for refs in flattened_references] for i in range(max_refs)
+            ]
+            bleu_score = _get_corpus_bleu_metric().corpus_score(flattened_predictions, formatted_refs).score
 
         all_metrics["bleu"] = bleu_score
-
         k = len(predictions[0]) if predictions and predictions[0] else 0
         all_metrics["k"] = float(k)
-
         if k > 0:
             all_metrics.update(compute_statistics(f1_at_k_scores, "f1_at_k"))
             all_metrics.update(compute_statistics(bleu_at_k_scores, "bleu_at_k"))
@@ -985,13 +936,9 @@ class Evaluator:
 
             unflattened_scores = []
             for group_cands, group_refs in zip(full_sequences, references):
-                group_f1 = []
-                for cand in group_cands:
-                    # Max F1 against any reference for this question
-                    best_f1 = (
-                        max([self.string_metrics._compute_f1(cand, ref) for ref in group_refs]) if group_refs else 0.0
-                    )
-                    group_f1.append(best_f1)
+                group_f1 = [
+                    max((_compute_f1_score(cand, ref) for ref in group_refs), default=0.0) for cand in group_cands
+                ]
                 unflattened_scores.append(group_f1)
 
             reverse_sort = True  # Higher is better
@@ -1178,39 +1125,24 @@ class MathEvaluator:
 
         timings: list[tuple[str, float]] = []
 
-        def _compute_correctness() -> tuple[list[float], dict[int, list[float]]]:
-            per_question_acc: list[float] = []
-            pass_at_k_per_q: dict[int, list[float]] = {k: [] for k in effective_ks}
+        # ── correctness / pass@k ──────────────────────────────────────────
+        per_question_acc: list[float] = []
+        pass_at_k_per_q: dict[int, list[float]] = {k: [] for k in effective_ks}
+        valid_groups = [(gens, gold) for gens, gold in zip(generations, gold_answers) if gens]
 
-            valid_groups = [(gens, gold) for gens, gold in zip(generations, gold_answers) if gens]
-            worker_count = _resolve_num_workers(len(valid_groups), num_workers)
-            if worker_count > 1:
-                tasks = [(gens, gold, effective_ks, self._use_math_parser) for gens, gold in valid_groups]
-                with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                    for acc, pass_at_k in executor.map(_math_group_task, tasks):
-                        per_question_acc.append(acc)
-                        for k in effective_ks:
-                            pass_at_k_per_q[k].append(pass_at_k[k])
-            else:
-                for gens, gold in valid_groups:
-                    scores = self.score_group(gens, gold)
-                    n = len(scores)
-                    c = sum(scores)
-                    per_question_acc.append(c / n)
-                    for k in effective_ks:
-                        pass_at_k_per_q[k].append(self._pass_at_k_estimator(n, c, k))
+        def _run_correctness() -> None:
+            tasks = [(gens, gold, effective_ks, self._use_math_parser) for gens, gold in valid_groups]
+            for acc, pass_at_k in _map_tasks(_math_group_task, tasks, num_workers):
+                per_question_acc.append(acc)
+                for k in effective_ks:
+                    pass_at_k_per_q[k].append(pass_at_k[k])
 
-            return per_question_acc, pass_at_k_per_q
-
-        (per_question_acc, pass_at_k_per_q), elapsed = _time_call(_compute_correctness)
+        _, elapsed = _time_call(_run_correctness)
         timings.append(("correctness_pass@k", elapsed))
 
         metrics: dict[str, float | str] = {}
-
-        # Accuracy with full statistics (mean, CI, etc.)
         metrics.update(compute_statistics(per_question_acc, "accuracy"))
 
-        # pass@k — report mean across questions (filter NaN from k > n cases)
         for k in effective_ks:
             vals = [v for v in pass_at_k_per_q[k] if not np.isnan(v)]
             pass_k = float(np.mean(vals)) if vals else float("nan")
@@ -1220,16 +1152,13 @@ class MathEvaluator:
         metrics["k"] = float(group_size)
 
         # ── string metrics ────────────────────────────────────────────────
-        # Gold answers are the single reference for each question.
         references: list[list[str]] = [[g] for g in gold_answers]
-
-        def _compute_string_stats() -> dict[str, float]:
-            return {
+        string_stats, elapsed = _time_call(
+            lambda: {
                 **self._string_metrics.reference_alignment(generations, references, num_workers=num_workers),
                 **self._string_metrics.diversity_grouped(generations, references, num_workers=num_workers),
-            }
-
-        string_stats, elapsed = _time_call(_compute_string_stats)
+            },
+        )
         timings.append(("string_metrics", elapsed))
         metrics.update(string_stats)
 
