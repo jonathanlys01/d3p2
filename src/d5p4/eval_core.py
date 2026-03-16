@@ -38,6 +38,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _STRING_METRICS_TOKENIZER: AutoTokenizer | None = None
 _STRING_METRICS_SENTENCE_BLEU: sacrebleu.metrics.BLEU | None = None
 _STRING_METRICS_CORPUS_BLEU: sacrebleu.metrics.BLEU | None = None
+_BATCH_SELF_BLEU_REFERENCE_CAP = 128
+_BATCH_SELF_BLEU_EXACT_THRESHOLD = 256
 
 
 def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
@@ -256,6 +258,43 @@ def _compute_self_bleu_impl(texts: list[str]) -> float:
         return 0.0
 
     return sum(bleu_scores) / len(bleu_scores)
+
+
+def _select_self_bleu_references(texts: list[str], hypothesis_index: int, max_refs: int) -> list[str]:
+    n = len(texts)
+    available = n - 1
+    if available <= max_refs:
+        return [texts[j] for j in range(n) if j != hypothesis_index]
+
+    # Evenly sample across the remaining corpus with a deterministic circular stride.
+    stride = max(1, available // max_refs)
+    refs = []
+    seen: set[int] = set()
+    cursor = (hypothesis_index + 1) % n
+    while len(refs) < max_refs:
+        if cursor != hypothesis_index and cursor not in seen:
+            refs.append(texts[cursor])
+            seen.add(cursor)
+        cursor = (cursor + stride) % n
+    return refs
+
+
+def _compute_self_bleu_bounded_impl(
+    texts: list[str],
+    max_refs_per_hypothesis: int = _BATCH_SELF_BLEU_REFERENCE_CAP,
+) -> float:
+    if len(texts) <= 1:
+        return 0.0
+    if len(texts) - 1 <= max_refs_per_hypothesis:
+        return _compute_self_bleu_impl(texts)
+
+    bleu_metric = _get_sentence_bleu_metric()
+    bleu_scores = []
+    for i, hypothesis in enumerate(texts):
+        references = _select_self_bleu_references(texts, i, max_refs_per_hypothesis)
+        bleu_scores.append(bleu_metric.sentence_score(hypothesis, references).score)
+
+    return sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0.0
 
 
 def _group_diversity_task(args: tuple[list[str], int | None]) -> tuple[dict[str, float], float]:
@@ -585,6 +624,7 @@ class StringMetrics(torch.nn.Module):
         references_for_vocab: list[str] | None = None,
         prefix: str = "batch",
         vocab_size: int | None = None,
+        bounded_self_bleu: bool = False,
     ) -> dict[str, float]:
         """Compute lexical diversity metrics over a single set of texts.
 
@@ -605,7 +645,7 @@ class StringMetrics(torch.nn.Module):
             vocab_size=vocab_size,
             references_for_vocab=references_for_vocab,
         )
-        self_bleu = self.compute_self_bleu(texts)
+        self_bleu = _compute_self_bleu_bounded_impl(texts) if bounded_self_bleu else self.compute_self_bleu(texts)
 
         result: dict[str, float] = {}
         for k, v in distinct_metrics.items():
@@ -679,6 +719,7 @@ class StringMetrics(torch.nn.Module):
             references_for_vocab=None,
             prefix=prefix,
             vocab_size=vocab_size,
+            bounded_self_bleu=len(all_generations_flat) > _BATCH_SELF_BLEU_EXACT_THRESHOLD,
         )
 
     def reference_alignment(  # noqa: C901, PLR0912
