@@ -10,6 +10,7 @@ import os
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
+from time import perf_counter
 
 import numpy as np
 import ot
@@ -120,6 +121,19 @@ def _resolve_num_workers(num_items: int, num_workers: int) -> int:
     if num_workers <= 1:
         return 1
     return min(num_workers, num_items)
+
+
+def _time_call(fn, *args, **kwargs):
+    start = perf_counter()
+    result = fn(*args, **kwargs)
+    return result, perf_counter() - start
+
+
+def _emit_timing_summary(scope: str, timings: list[tuple[str, float]]) -> None:
+    if not timings:
+        return
+    formatted = " | ".join(f"{name}: {seconds:.3f}s" for name, seconds in timings)
+    u_print(f"[timing] {scope} | {formatted}")
 
 
 def _get_string_metrics_tokenizer() -> PreTrainedTokenizerBase:
@@ -754,6 +768,7 @@ class Evaluator:
         force: bool = False,
         ppl_model_id: str = "gpt2",
         cos_model_id: str = "jinaai/jina-embeddings-v2-base-en",
+        show_timings: bool = False,
     ):
         ppl_models_args = process_model_args(ppl_model_id, cache_dir=CACHE_DIR)
         if "llama" in ppl_model_id:
@@ -773,24 +788,37 @@ class Evaluator:
 
         self.batch_size = batch_size
         self.force = force
+        self.show_timings = show_timings
 
     def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:
-        # Compute all metrics
-        ppl_stats = self.perplexity_model(texts, batch_size=self.batch_size)
-        cos_stats = self.cosine_model(texts)
-        string_stats = self.compute_string_metrics(texts, references=references)
+        timings: list[tuple[str, float]] = []
+
+        ppl_stats, elapsed = _time_call(self.perplexity_model, texts, batch_size=self.batch_size)
+        timings.append(("perplexity", elapsed))
+
+        cos_stats, elapsed = _time_call(self.cosine_model, texts)
+        timings.append(("cosine_similarity", elapsed))
+
+        string_stats, elapsed = _time_call(self.compute_string_metrics, texts, references=references)
+        timings.append(("string_metrics", elapsed))
 
         # Compute Wasserstein Distance if references are provided
         wd_stats = {}
         if references and any(refs for refs in references):
-            wd_scores = []
-            for group_gen, group_ref in zip(texts, references):
-                if not group_gen or not group_ref:
-                    continue
-                # We only have "good" references in this context usually
-                wd_good, _ = self.wasserstein_model(group_gen, group_ref, bad_references=None)
-                wd_scores.append(wd_good)
-            wd_stats = compute_statistics(wd_scores, "wasserstein_distance")
+
+            def _compute_wd_stats() -> dict[str, float]:
+                wd_scores = []
+                assert references is not None
+                for group_gen, group_ref in zip(texts, references):
+                    if not group_gen or not group_ref:
+                        continue
+                    # We only have "good" references in this context usually
+                    wd_good, _ = self.wasserstein_model(group_gen, group_ref, bad_references=None)
+                    wd_scores.append(wd_good)
+                return compute_statistics(wd_scores, "wasserstein_distance")
+
+            wd_stats, elapsed = _time_call(_compute_wd_stats)
+            timings.append(("wasserstein_distance", elapsed))
 
         # Merge all metrics
         metrics = {**ppl_stats, **cos_stats, **string_stats, **wd_stats}
@@ -824,6 +852,9 @@ class Evaluator:
         if summary_parts:
             metrics["metrics_summary"] = " | ".join(summary_parts)
 
+        if self.show_timings:
+            _emit_timing_summary("evaluator", timings)
+
         return metrics
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
@@ -843,15 +874,24 @@ class Evaluator:
         predictions: list[list[str]],
         references: list[list[str]] | None = None,
     ) -> dict[str, float]:
-        metrics = {
-            **self.string_metrics.reference_alignment(predictions, references),
-            **self.string_metrics.diversity_grouped(predictions, references),
-        }
+        timings: list[tuple[str, float]] = []
+
+        reference_metrics, elapsed = _time_call(self.string_metrics.reference_alignment, predictions, references)
+        timings.append(("reference_alignment", elapsed))
+
+        diversity_metrics, elapsed = _time_call(self.string_metrics.diversity_grouped, predictions, references)
+        timings.append(("diversity_grouped", elapsed))
+
+        metrics = {**reference_metrics, **diversity_metrics}
 
         # Compute cos@k: max cosine alignment between predictions and references
         if references and any(refs for refs in references):
-            cos_at_k_scores = self.cosine_model.compute_max_alignment(predictions, references)
+            cos_at_k_scores, elapsed = _time_call(self.cosine_model.compute_max_alignment, predictions, references)
+            timings.append(("cos_at_k", elapsed))
             metrics.update(compute_statistics(cos_at_k_scores, "cos_at_k"))
+
+        if self.show_timings:
+            _emit_timing_summary("string_metrics", timings)
 
         return metrics
 
@@ -983,7 +1023,7 @@ class MathEvaluator:
     0
     """
 
-    def __init__(self, use_math_parser: bool = True):
+    def __init__(self, use_math_parser: bool = True, show_timings: bool = False):
         """Parameters
         ----------
         use_math_parser:
@@ -994,6 +1034,7 @@ class MathEvaluator:
         if use_math_parser:
             self._parser = MathParser()
         self._string_metrics = StringMetrics()
+        self.show_timings = show_timings
 
     def _extract(self, text: str) -> str:
         """Extract a normalised numeric string from *text*."""
@@ -1094,27 +1135,34 @@ class MathEvaluator:
                 effective_ks.append(k)
                 seen.add(k)
 
-        # ── per-question correctness ──────────────────────────────────────
-        per_question_acc: list[float] = []
-        pass_at_k_per_q: dict[int, list[float]] = {k: [] for k in effective_ks}
+        timings: list[tuple[str, float]] = []
 
-        valid_groups = [(gens, gold) for gens, gold in zip(generations, gold_answers) if gens]
-        worker_count = _resolve_num_workers(len(valid_groups), num_workers)
-        if worker_count > 1:
-            tasks = [(gens, gold, effective_ks, self._use_math_parser) for gens, gold in valid_groups]
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                for acc, pass_at_k in executor.map(_math_group_task, tasks):
-                    per_question_acc.append(acc)
+        def _compute_correctness() -> tuple[list[float], dict[int, list[float]]]:
+            per_question_acc: list[float] = []
+            pass_at_k_per_q: dict[int, list[float]] = {k: [] for k in effective_ks}
+
+            valid_groups = [(gens, gold) for gens, gold in zip(generations, gold_answers) if gens]
+            worker_count = _resolve_num_workers(len(valid_groups), num_workers)
+            if worker_count > 1:
+                tasks = [(gens, gold, effective_ks, self._use_math_parser) for gens, gold in valid_groups]
+                with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                    for acc, pass_at_k in executor.map(_math_group_task, tasks):
+                        per_question_acc.append(acc)
+                        for k in effective_ks:
+                            pass_at_k_per_q[k].append(pass_at_k[k])
+            else:
+                for gens, gold in valid_groups:
+                    scores = self.score_group(gens, gold)
+                    n = len(scores)
+                    c = sum(scores)
+                    per_question_acc.append(c / n)
                     for k in effective_ks:
-                        pass_at_k_per_q[k].append(pass_at_k[k])
-        else:
-            for gens, gold in valid_groups:
-                scores = self.score_group(gens, gold)
-                n = len(scores)
-                c = sum(scores)
-                per_question_acc.append(c / n)
-                for k in effective_ks:
-                    pass_at_k_per_q[k].append(self._pass_at_k_estimator(n, c, k))
+                        pass_at_k_per_q[k].append(self._pass_at_k_estimator(n, c, k))
+
+            return per_question_acc, pass_at_k_per_q
+
+        (per_question_acc, pass_at_k_per_q), elapsed = _time_call(_compute_correctness)
+        timings.append(("correctness_pass@k", elapsed))
 
         metrics: dict[str, float | str] = {}
 
@@ -1133,19 +1181,26 @@ class MathEvaluator:
         # ── string metrics ────────────────────────────────────────────────
         # Gold answers are the single reference for each question.
         references: list[list[str]] = [[g] for g in gold_answers]
-        string_stats = {
-            **self._string_metrics.reference_alignment(generations, references, num_workers=num_workers),
-            **self._string_metrics.diversity_grouped(generations, references, num_workers=num_workers),
-        }
+
+        def _compute_string_stats() -> dict[str, float]:
+            return {
+                **self._string_metrics.reference_alignment(generations, references, num_workers=num_workers),
+                **self._string_metrics.diversity_grouped(generations, references, num_workers=num_workers),
+            }
+
+        string_stats, elapsed = _time_call(_compute_string_stats)
+        timings.append(("string_metrics", elapsed))
         metrics.update(string_stats)
 
         # ── batch-level diversity ─────────────────────────────────────────
         # Compute diversity over the entire flattened corpus as a separate scope.
-        batch_diversity = self._string_metrics.diversity_corpus(
+        batch_diversity, elapsed = _time_call(
+            self._string_metrics.diversity_corpus,
             generations,
             references=references,
             prefix="batch",
         )
+        timings.append(("batch_diversity", elapsed))
         metrics.update(batch_diversity)
 
         # ── summary string ────────────────────────────────────────────────
@@ -1187,6 +1242,9 @@ class MathEvaluator:
 
         if summary_parts:
             metrics["math_metrics_summary"] = " | ".join(summary_parts)
+
+        if self.show_timings:
+            _emit_timing_summary("math_evaluator", timings)
 
         return metrics
 
@@ -1324,11 +1382,17 @@ def main():
         file_path = os.path.join(args.folder_path, file_name)
         if _is_math_results_file(file_path):
             if math_evaluator is None:
-                math_evaluator = MathEvaluator()
+                math_evaluator = MathEvaluator(show_timings=True)
             math_evaluator.eval_from_file(file_path, force=args.force, num_workers=args.num_workers)
         else:
             if evaluator is None:
-                evaluator = Evaluator(args.batch_size, args.force, args.ppl_model_id, args.cos_model_id)
+                evaluator = Evaluator(
+                    args.batch_size,
+                    args.force,
+                    args.ppl_model_id,
+                    args.cos_model_id,
+                    show_timings=True,
+                )
             evaluator.eval_from_file(file_path)
 
 
