@@ -372,6 +372,15 @@ class StringMetrics(torch.nn.Module):
         f1 = (2 * precision * recall) / (precision + recall)
         return f1
 
+    def _vocab_size_from_references(self, references_for_vocab: list[str] | None) -> int | None:
+        if references_for_vocab is None:
+            return None
+
+        vocab = set()
+        for sentence in references_for_vocab:
+            vocab.update(self.tokenizer.tokenize(sentence))
+        return len(vocab)
+
     def compute_distinct_metrics(
         self,
         texts: list[str],
@@ -385,11 +394,8 @@ class StringMetrics(torch.nn.Module):
             return {}
 
         # Determine vocab size if EAD is needed
-        if vocab_size is None and references_for_vocab is not None:
-            vocab = set()
-            for sentence in references_for_vocab:
-                vocab.update(self.tokenizer.tokenize(sentence))
-            vocab_size = len(vocab)
+        if vocab_size is None:
+            vocab_size = self._vocab_size_from_references(references_for_vocab)
 
         # If vocab_size is still None, we can't compute EAD, but we can compute others.
         # But for now let's assume if it is None we just skip EAD or use a default?
@@ -456,23 +462,22 @@ class StringMetrics(torch.nn.Module):
 
         return sum(bleu_scores) / len(bleu_scores)
 
-    def compute_diversity_batch(
+    def diversity_set(
         self,
         texts: list[str],
         references_for_vocab: list[str] | None = None,
         prefix: str = "batch",
     ) -> dict[str, float]:
-        """Compute diversity metrics (distinct-N, EAD, self-BLEU) over a flat
-        list of texts treated as a single batch, rather than averaging per-group.
+        """Compute lexical diversity metrics over a single set of texts.
 
         Parameters
         ----------
         texts:
-            All texts to evaluate together (e.g. every generation flattened).
+            Texts to evaluate as one set.
         references_for_vocab:
             Optional reference strings used to estimate vocabulary size for EAD.
         prefix:
-            Key prefix for the returned metric dictionary (default ``"batch"``).
+            Key prefix for the returned metric dictionary.
         """
         if not texts:
             return {}
@@ -489,86 +494,14 @@ class StringMetrics(torch.nn.Module):
         result[f"{prefix}_self_bleu"] = self_bleu
         return result
 
-    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
-        """
-        Compute F1, BLEU, Distinct-2, and Self-BLEU scores.
-        predictions is a list of lists of strings (multiple generations per question).
-        references is a list of lists of strings (multiple possible answers per question).
-        If references is None or empty, only diversity metrics are computed.
-        """
+    def diversity_grouped(
+        self,
+        predictions: list[list[str]],
+        references: list[list[str]] | None = None,
+    ) -> dict[str, float]:
+        """Compute set-level lexical diversity per group, then aggregate across groups."""
         all_metrics = {}
 
-        # Compute reference-based metrics (F1 and BLEU) if references are provided
-        if references and any(refs for refs in references):
-            flattened_predictions = []
-            flattened_references = []
-            for preds, refs in zip(predictions, references):
-                for pred in preds:
-                    flattened_predictions.append(pred)
-                    flattened_references.append(refs)
-
-            f1_scores = []
-            for pred, refs in zip(flattened_predictions, flattened_references):
-                best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
-                f1_scores.append(best_f1)
-
-            # Compute stats for F1
-            all_metrics.update(compute_statistics(f1_scores, "f1"))
-
-            bleu_score = 0.0
-            if len(flattened_references) > 0:
-                max_refs = max(len(refs) for refs in flattened_references)
-                formatted_refs = []
-                for i in range(max_refs):
-                    ref_list = []
-                    for refs in flattened_references:
-                        if i < len(refs):
-                            ref_list.append(refs[i])
-                        else:
-                            ref_list.append(refs[0])  # duplicate first if fewer refs
-                    formatted_refs.append(ref_list)
-
-                bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
-                bleu_score = bleu.score
-
-            all_metrics["bleu"] = bleu_score
-
-            # Compute metric@k variants: max F1 and max BLEU across k predictions per question
-            k = len(predictions[0]) if predictions and predictions[0] else 0
-            all_metrics["k"] = float(k)
-
-            if k > 0:
-                # F1@k: for each question, find the prediction with the best F1 against references
-                f1_at_k_scores = []
-                for preds, refs in zip(predictions, references):
-                    if not preds or not refs:
-                        continue
-                    # Compute F1 for each prediction against all references, take max
-                    best_f1_for_question = 0.0
-                    for pred in preds:
-                        f1_for_pred = max([self._compute_f1(pred, ref) for ref in refs])
-                        best_f1_for_question = max(best_f1_for_question, f1_for_pred)
-                    f1_at_k_scores.append(best_f1_for_question)
-
-                all_metrics.update(compute_statistics(f1_at_k_scores, "f1_at_k"))
-
-                # BLEU@k: for each question, find the prediction with best sentence BLEU
-                bleu_at_k_scores = []
-                for preds, refs in zip(predictions, references):
-                    if not preds or not refs:
-                        continue
-                    # Compute sentence BLEU for each prediction against references, take max
-                    best_bleu_for_question = 0.0
-                    for pred in preds:
-                        bleu_result = sacrebleu.sentence_bleu(pred, refs)
-                        best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
-                    bleu_at_k_scores.append(best_bleu_for_question)
-
-                all_metrics.update(compute_statistics(bleu_at_k_scores, "bleu_at_k"))
-
-        # Compute Distinct-N and EAD per group
-        # Prepare vocab (using all references if clear, or maybe just group refs?
-        # Usually EAD is about the 'language' vocab, so all refs is better)
         vocab_ref_tokens = []
         if references and any(refs for refs in references):
             for sublist in references:
@@ -578,19 +511,13 @@ class StringMetrics(torch.nn.Module):
         self_bleu_scores = []
         for group in predictions:
             if group:
-                # We can calculate vocab size purely from references if available
-                # Passing all references as a proxy for 'language vocabulary'
                 d_metrics = self.compute_distinct_metrics(
                     group,
                     references_for_vocab=vocab_ref_tokens if vocab_ref_tokens else None,
                 )
                 distinct_metrics_list.append(d_metrics)
+                self_bleu_scores.append(self.compute_self_bleu(group))
 
-                # Compute Self-BLEU for the group
-                sb_score = self.compute_self_bleu(group)
-                self_bleu_scores.append(sb_score)
-
-        # Aggregate dicts
         if distinct_metrics_list:
             keys = distinct_metrics_list[0].keys()
             for key in keys:
@@ -599,6 +526,109 @@ class StringMetrics(torch.nn.Module):
         all_metrics.update(compute_statistics(self_bleu_scores, "self_bleu"))
 
         return all_metrics
+
+    def diversity_corpus(
+        self,
+        predictions: list[list[str]],
+        references: list[list[str]] | None = None,
+        prefix: str = "batch",
+    ) -> dict[str, float]:
+        """Compute set-level lexical diversity over the whole flattened generations corpus."""
+        all_generations_flat = [g for group in predictions for g in group]
+        if not all_generations_flat:
+            return {}
+
+        references_for_vocab = None
+        if references and any(refs for refs in references):
+            references_for_vocab = [r for refs in references for r in refs]
+
+        return self.diversity_set(
+            all_generations_flat,
+            references_for_vocab=references_for_vocab,
+            prefix=prefix,
+        )
+
+    def reference_alignment(  # noqa: C901, PLR0912
+        self,
+        predictions: list[list[str]],
+        references: list[list[str]] | None = None,
+    ) -> dict[str, float]:
+        """Compute lexical overlap metrics against references."""
+        all_metrics = {}
+
+        if not (references and any(refs for refs in references)):
+            return all_metrics
+
+        flattened_predictions = []
+        flattened_references = []
+        for preds, refs in zip(predictions, references):
+            for pred in preds:
+                flattened_predictions.append(pred)
+                flattened_references.append(refs)
+
+        f1_scores = []
+        for pred, refs in zip(flattened_predictions, flattened_references):
+            best_f1 = max([self._compute_f1(pred, ref) for ref in refs]) if refs else 0.0
+            f1_scores.append(best_f1)
+
+        all_metrics.update(compute_statistics(f1_scores, "f1"))
+
+        bleu_score = 0.0
+        if len(flattened_references) > 0:
+            max_refs = max(len(refs) for refs in flattened_references)
+            formatted_refs = []
+            for i in range(max_refs):
+                ref_list = []
+                for refs in flattened_references:
+                    if i < len(refs):
+                        ref_list.append(refs[i])
+                    else:
+                        ref_list.append(refs[0])  # duplicate first if fewer refs
+                formatted_refs.append(ref_list)
+
+            bleu = sacrebleu.corpus_bleu(flattened_predictions, formatted_refs)
+            bleu_score = bleu.score
+
+        all_metrics["bleu"] = bleu_score
+
+        k = len(predictions[0]) if predictions and predictions[0] else 0
+        all_metrics["k"] = float(k)
+
+        if k > 0:
+            f1_at_k_scores = []
+            for preds, refs in zip(predictions, references):
+                if not preds or not refs:
+                    continue
+                best_f1_for_question = 0.0
+                for pred in preds:
+                    f1_for_pred = max([self._compute_f1(pred, ref) for ref in refs])
+                    best_f1_for_question = max(best_f1_for_question, f1_for_pred)
+                f1_at_k_scores.append(best_f1_for_question)
+
+            all_metrics.update(compute_statistics(f1_at_k_scores, "f1_at_k"))
+
+            bleu_at_k_scores = []
+            for preds, refs in zip(predictions, references):
+                if not preds or not refs:
+                    continue
+                best_bleu_for_question = 0.0
+                for pred in preds:
+                    bleu_result = sacrebleu.sentence_bleu(pred, refs)
+                    best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
+                bleu_at_k_scores.append(best_bleu_for_question)
+
+            all_metrics.update(compute_statistics(bleu_at_k_scores, "bleu_at_k"))
+
+        return all_metrics
+
+    def forward(self, predictions: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
+        """
+        Backward-compatible wrapper returning reference alignment and grouped diversity metrics.
+        """
+        return {
+            **self.reference_alignment(predictions, references),
+            **self.diversity_grouped(predictions, references),
+        }
 
 
 class Evaluator:
@@ -697,7 +727,10 @@ class Evaluator:
         predictions: list[list[str]],
         references: list[list[str]] | None = None,
     ) -> dict[str, float]:
-        metrics = self.string_metrics(predictions, references)
+        metrics = {
+            **self.string_metrics.reference_alignment(predictions, references),
+            **self.string_metrics.diversity_grouped(predictions, references),
+        }
 
         # Compute cos@k: max cosine alignment between predictions and references
         if references and any(refs for refs in references):
@@ -973,17 +1006,17 @@ class MathEvaluator:
         # ── string metrics ────────────────────────────────────────────────
         # Gold answers are the single reference for each question.
         references: list[list[str]] = [[g] for g in gold_answers]
-        string_stats = self._string_metrics(generations, references)
+        string_stats = {
+            **self._string_metrics.reference_alignment(generations, references),
+            **self._string_metrics.diversity_grouped(generations, references),
+        }
         metrics.update(string_stats)
 
         # ── batch-level diversity ─────────────────────────────────────────
-        # Flatten all generations across questions and compute diversity over
-        # the entire batch (complements the per-group averages above).
-        all_generations_flat: list[str] = [g for group in generations for g in group]
-        all_references_flat: list[str] = [r for refs in references for r in refs]
-        batch_diversity = self._string_metrics.compute_diversity_batch(
-            all_generations_flat,
-            references_for_vocab=all_references_flat if all_references_flat else None,
+        # Compute diversity over the entire flattened corpus as a separate scope.
+        batch_diversity = self._string_metrics.diversity_corpus(
+            generations,
+            references=references,
             prefix="batch",
         )
         metrics.update(batch_diversity)
