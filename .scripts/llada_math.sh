@@ -57,8 +57,8 @@ for w_interaction in "${list_w_interaction[@]}"; do
     llada_steps=256 \
     gen_length=256 \
     block_length=8 \
-    n_groups=4 \
-    group_size=1 \
+    n_groups=2 \
+    group_size=2 \
     method=greedy_map \
     comment="D5P4 @ w_inter=${w_interaction}" \
     _w_interaction=$w_interaction \
