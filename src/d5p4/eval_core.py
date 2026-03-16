@@ -999,7 +999,9 @@ class MathEvaluator:
         # pass@k — report mean across questions (filter NaN from k > n cases)
         for k in effective_ks:
             vals = [v for v in pass_at_k_per_q[k] if not np.isnan(v)]
-            metrics[f"pass_at_{k}"] = float(np.mean(vals)) if vals else float("nan")
+            pass_k = float(np.mean(vals)) if vals else float("nan")
+            metrics[f"pass_at_{k}"] = pass_k
+            metrics[f"pass@{k}"] = pass_k
 
         metrics["k"] = float(group_size)
 

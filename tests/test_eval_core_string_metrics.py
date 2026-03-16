@@ -111,6 +111,8 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
             print("\nMath evaluator metrics:")
             pprint(math_metrics)
             self.assertIn("accuracy", math_metrics)
+            self.assertIn("pass@1", math_metrics)
+            self.assertIn("pass@2", math_metrics)
             self.assertIn("pass_at_1", math_metrics)
             self.assertIn("pass_at_2", math_metrics)
             self.assertIn("f1", math_metrics)

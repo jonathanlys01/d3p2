@@ -96,9 +96,16 @@ def main() -> None:  # noqa: PLR0912
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} qs with ≥1 correct)")
 
+    all_generations: list[list[str]] = [r["generations"] for r in results]
+    math_metrics = evaluator.evaluate(all_generations, answer_numbers) if results else {}
+    math_metrics_summary = math_metrics.get("math_metrics_summary")
+    if math_metrics_summary:
+        print(f"math metrics: {math_metrics_summary}")
+
     payload = {
         "results": results,
         "overall_accuracy": overall_acc,
+        "math_metrics": math_metrics,
         "config": asdict(config),
         "experiment_id": str(unique_id),
     }
