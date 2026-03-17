@@ -51,6 +51,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
     prompts: list[str] = [row.question for row in rows]  # type: ignore[union-attr]
+    answer_strings: list[str] = [row.answer_str for row in rows]  # type: ignore[union-attr]
     answer_numbers: list[str] = [row.answer_number for row in rows]  # type: ignore[union-attr]
 
     # ── evaluator ────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     # ── generation + evaluation loop ─────────────────────────────────────────
     results: list[dict] = []  # one entry per question
 
-    for i, (prompt, gold) in enumerate(zip(prompts, answer_numbers)):
+    for i, (prompt, gold, answer_str) in enumerate(zip(prompts, answer_numbers, answer_strings)):
         print(f"Sampling {i + 1}/{len(prompts)}  (gold={gold!r})...")
 
         raw_samples = model.sample(prompt=prompt)
@@ -83,6 +84,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             {
                 "question": prompt,
                 "gold_answer": gold,
+                "answer_str": answer_str,
                 "generations": generations,
                 "scores": scores,
                 "accuracy": acc,
@@ -99,7 +101,17 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     all_generations: list[list[str]] = [r["generations"] for r in results]
     num_workers = min(8, os.cpu_count() or 1)
     print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
-    math_metrics = evaluator.evaluate(all_generations, answer_numbers, num_workers=num_workers) if results else {}
+    string_references = [[answer_str] for answer_str in answer_strings]
+    math_metrics = (
+        evaluator.evaluate(
+            all_generations,
+            answer_numbers,
+            string_references=string_references,
+            num_workers=num_workers,
+        )
+        if results
+        else {}
+    )
     math_metrics_summary = math_metrics.get("math_metrics_summary")
     if math_metrics_summary:
         print(f"math metrics: {math_metrics_summary}")

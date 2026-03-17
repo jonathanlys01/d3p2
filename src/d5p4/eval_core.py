@@ -1086,6 +1086,7 @@ class MathEvaluator:
         self,
         generations: list[list[str]],
         gold_answers: list[str],
+        string_references: list[list[str]] | None = None,
         k_values: list[int] | None = None,
         num_workers: int = 1,
     ) -> dict[str, float | str]:
@@ -1098,6 +1099,9 @@ class MathEvaluator:
             sampled generations for that question.
         gold_answers:
             One gold numeric answer string per question.
+        string_references:
+            Optional per-question reference strings for overlap metrics such
+            as F1 and BLEU. If omitted, falls back to ``gold_answers``.
         k_values:
             Which k's to compute pass@k for. Defaults to [1, 2, 4, 8, 16]
             clipped to the actual group size. Duplicates and out-of-range
@@ -1152,7 +1156,7 @@ class MathEvaluator:
         metrics["k"] = float(group_size)
 
         # ── string metrics ────────────────────────────────────────────────
-        references: list[list[str]] = [[g] for g in gold_answers]
+        references = string_references if string_references is not None else [[g] for g in gold_answers]
         string_stats, elapsed = _time_call(
             lambda: {
                 **self._string_metrics.reference_alignment(generations, references, num_workers=num_workers),
@@ -1270,17 +1274,29 @@ class MathEvaluator:
         # ── extract fields; only generations is strictly required ─────────
         generations: list[list[str]] = []
         gold_answers: list[str] = []
+        string_references: list[list[str]] = []
         for r in results:
             gens = r.get("generations")
             if not isinstance(gens, list):
                 continue  # skip malformed entries
             generations.append(gens)
             gold_answers.append(str(r.get("gold_answer", "")))
+            answer_str = r.get("answer_str")
+            if isinstance(answer_str, str) and answer_str:
+                string_references.append([answer_str])
+            else:
+                string_references.append([str(r.get("gold_answer", ""))])
 
         if not generations:
             return None
 
-        math_metrics = self.evaluate(generations, gold_answers, k_values=k_values, num_workers=num_workers)
+        math_metrics = self.evaluate(
+            generations,
+            gold_answers,
+            string_references=string_references,
+            k_values=k_values,
+            num_workers=num_workers,
+        )
         data["math_metrics"] = math_metrics
 
         with open(file_path, "w") as f:
