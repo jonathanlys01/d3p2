@@ -991,7 +991,15 @@ def main():
     assert n_cpus is not None
 
     parser = argparse.ArgumentParser(description="Evaluate text samples.")
-    parser.add_argument("--folder_path", "-f", type=str, required=True, help="Folder containing result JSON files.")
+    parser.add_argument(
+        "--input_path",
+        "--folder_path",
+        "-i",
+        "-f",
+        type=str,
+        required=True,
+        help="Path to folder or single JSON file containing result samples.",
+    )
     parser.add_argument("--ppl_model_id", type=str, default="gpt2", help="Model ID for perplexity calculation.")
     parser.add_argument(
         "--cos_model_id",
@@ -1008,13 +1016,23 @@ def main():
     )
     parser.add_argument("--force", action="store_true", help="Re-evaluate even when metrics already exist.")
     args = parser.parse_args()
+    input_path = args.input_path
+    if os.path.isfile(input_path):
+        files = [input_path]
+    elif os.path.isdir(input_path):
+        files = [
+            os.path.join(input_path, f)
+            for f in os.listdir(input_path)
+            if f.endswith(".json") and not f.startswith("temp")
+        ]
+    else:
+        print(f"Error: {input_path} is not a valid file or directory.")
+        return
 
-    files = [f for f in os.listdir(args.folder_path) if f.endswith(".json") and not f.startswith("temp")]
     evaluator: Evaluator | None = None
     math_evaluator: MathEvaluator | None = None
 
-    for file_name in tqdm(files, desc="Evaluating files"):
-        file_path = os.path.join(args.folder_path, file_name)
+    for file_path in tqdm(files, desc="Evaluating files"):
         if _is_math_results_file(file_path):
             if math_evaluator is None:
                 math_evaluator = MathEvaluator(
