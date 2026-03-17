@@ -9,21 +9,20 @@
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
 N_QUESTIONS=${N_QUESTIONS:-100}
-
 export OMP_NUM_THREADS=1
-cd "$(git rev-parse --show-toplevel)"
-mkdir -p logs
 
 # Node-local scratch for this job
 JOB_ROOT="${SCRATCH}/uv-${SLURM_JOB_NAME}"
 mkdir -p "${JOB_ROOT}"
 
-# Put both the env and uv cache on the same fast filesystem
+# uv caches (env)
 export UV_PROJECT_ENVIRONMENT="${JOB_ROOT}/venv"
-
-# Optional: keep uv-managed Python on scratch too
 export UV_PYTHON_INSTALL_DIR="${JOB_ROOT}/python"
 uv sync -n
+
+# torch.compile / inductor / triton caches
+export TORCHINDUCTOR_CACHE_DIR="${JOB_ROOT}/torchinductor"
+export TRITON_CACHE_DIR="${JOB_ROOT}/triton"
 
 source $UV_PROJECT_ENVIRONMENT/bin/activate
 
@@ -35,11 +34,11 @@ COMMON_ARGS=(
   cat_temperature=1.0
   remasking=low_confidence
   logits_eos_inf=False
-  cfg_scale=1.0
+  cfg_scale=2.0
   llada_steps=256
   gen_length=256
-  block_length=8
-  confidence_eos_eot_inf=False
+  block_length=256
+  confidence_eos_eot_inf=False 
   qa_dataset=gsm8k
 )
 
@@ -48,17 +47,27 @@ run_llada_math() {
   torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
-ROOT=$(pwd)/src/d5p4
-cd $ROOT
+TOP_DIR=$(git rev-parse --show-toplevel)
+cd $TOP_DIR/src/d5p4
 
 list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 set -ex
+
+# derisk
+run_llada_math \
+    method=greedy_map \
+    n_groups=2 \
+    group_size=2 \
+    subsample_end=128 \
+    comment="derisk" \
+    qa_dataset_len=5
+
 
 run_llada_math \
     method=baseline \
     n_groups=4 \
     group_size=1 \
-    comment="Independent baseline"
+    comment="[hcfg] Independent pure baseline"
 
 
 for w_interaction in "${list_w_interaction[@]}"; do
@@ -66,10 +75,10 @@ for w_interaction in "${list_w_interaction[@]}"; do
     method=greedy_map \
     n_groups=2 \
     group_size=2 \
-    comment="D5P4 (fixed grp) @ w_inter=${w_interaction}" \
+    subsample_end=128 \
+    comment="[hcfg] D5P4 pure partial @ w_inter=${w_interaction}" \
     _w_interaction=$w_interaction
 done
 
-echo Cleanup
-rm -rf $JOB_ROOT
+
 echo All done
