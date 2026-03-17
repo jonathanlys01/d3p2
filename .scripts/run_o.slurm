@@ -8,6 +8,8 @@
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
+N_QUESTIONS=${N_QUESTIONS:-100}
+
 export OMP_NUM_THREADS=1
 cd "$(git rev-parse --show-toplevel)"
 mkdir -p logs
