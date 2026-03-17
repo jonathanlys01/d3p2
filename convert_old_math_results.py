@@ -124,8 +124,6 @@ def load_config_from_sources(saved_config: Any, config_file: Path | None) -> Con
     cfg_kwargs["disable_sys_args"] = True
 
     config = Config(**cfg_kwargs)
-    if config.qa_dataset != "gsm8k":
-        raise ValueError(f"Expected a GSM8K config, found qa_dataset={config.qa_dataset!r}.")
     return config
 
 
@@ -194,7 +192,7 @@ def convert_file(path: Path, args: argparse.Namespace) -> tuple[Path, int]:
 
     if len(results) > len(rows):
         raise ValueError(
-            f"Results file has {len(results)} entries but GSM8K with the resolved config only produced {len(rows)} rows."
+            f"Results file has {len(results)} entries but GSM8K with the resolved config only produced {len(rows)} rows.",
         )
 
     injected = 0

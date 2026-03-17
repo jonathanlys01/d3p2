@@ -33,6 +33,7 @@ def save(results: dict, config: Config, uid: uuid.UUID, rank: int = 0) -> None:
 
 def main() -> None:  # noqa: PLR0912, PLR0915
     config = Config()
+    assert config.qa_dataset == "gsm8k"
 
     model = LLADASampler(config)
     model.model = compile_model(model.model, config, dynamic=True)
