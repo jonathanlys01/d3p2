@@ -66,7 +66,7 @@ run_llada_math \
     method=baseline \
     n_groups=4 \
     group_size=1 \
-    comment="[hcfg] Independent pure baseline"
+    comment="hcfg Independent pure baseline"
 
 
 for w_interaction in "${list_w_interaction[@]}"; do
@@ -75,7 +75,7 @@ for w_interaction in "${list_w_interaction[@]}"; do
     n_groups=2 \
     group_size=2 \
     subsample_end=128 \
-    comment="[hcfg] D5P4 pure partial @ w_inter=${w_interaction}" \
+    comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}" \
     _w_interaction=$w_interaction
 done
 
