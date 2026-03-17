@@ -1,28 +1,48 @@
 """
-Core evaluation module for calculating text generation metrics.
-Includes implementations for Perplexity, MAUVE, SacreBLEU, and
-Cosine Similarity (Jina BERT).
+Core evaluation module for text generation metrics.
+
+Metric classes: Perplexity, AverageCosineSimilarity, MAUVE,
+WassersteinDistance, StringMetrics.
+
+High-level evaluators: Evaluator (generation quality), MathEvaluator
+(math correctness + string overlap).
+
+Utility helpers live in eval_utils.py.
 """
 
 import argparse
 import json
 import os
-from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
-from functools import lru_cache
-from time import perf_counter
 
 import numpy as np
 import ot
-import sacrebleu
 import torch
 import torch.nn.functional as F
-from scipy.stats._continuous_distns import t
 from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from d5p4 import mauve
 from d5p4.config import CACHE_DIR
+from d5p4.eval_utils import (
+    _BATCH_SELF_BLEU_EXACT_THRESHOLD,
+    _compute_distinct_metrics_impl,
+    _compute_f1_score,
+    _compute_self_bleu_bounded_impl,
+    _compute_self_bleu_impl,
+    _emit_timing_summary,
+    _format_asymmetric_ci,
+    _format_num,
+    _format_summary_value,
+    _get_corpus_bleu_metric,
+    _group_diversity_task,
+    _group_reference_alignment_task,
+    _is_math_results_file,
+    _map_tasks,
+    _math_group_task,
+    _time_call,
+    _vocab_size_from_refs,
+    compute_statistics,
+)
 from d5p4.jina_ref.modeling_bert import JinaBertModel
 from d5p4.text_postprocessors import MathParser, universal_math_postprocess
 from d5p4.utils import print as u_print
@@ -35,321 +55,11 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-_STRING_METRICS_TOKENIZER: AutoTokenizer | None = None
-_STRING_METRICS_SENTENCE_BLEU: sacrebleu.metrics.BLEU | None = None
-_STRING_METRICS_CORPUS_BLEU: sacrebleu.metrics.BLEU | None = None
-_BATCH_SELF_BLEU_REFERENCE_CAP = 128
-_BATCH_SELF_BLEU_EXACT_THRESHOLD = 256
 
 
-def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
-    """
-    Compute comprehensive statistics for a list of values.
-    Returns dictionary with keys formatted as {prefix}_{stat}.
-    The main value (mean) is also returned as {prefix} for backward compatibility.
-    """
-    # Filter valid values (finite numbers)
-    valid_values = [v for v in values if isinstance(v, (int, float)) and np.isfinite(v)]
-
-    stats = {}
-    n = len(valid_values)
-
-    if n == 0:
-        # Return NaNs for empty/invalid input
-        keys = ["mean", "median", "min", "max", "std", "mad", "stderr", "ci95"]
-        for k in keys:
-            stats[f"{prefix}_{k}"] = float("nan")
-        stats[prefix] = float("nan")
-        stats[f"{prefix}_count"] = 0.0
-        return stats
-
-    data = np.array(valid_values)
-    mean_val = np.mean(data).item()
-    median_val = np.median(data).item()
-    min_val = np.min(data).item()
-    max_val = np.max(data).item()
-    std_val = np.std(data, ddof=1).item() if n > 1 else 0.0
-    mad_val = np.mean(np.abs(data - median_val)).item()
-
-    stderr_val = std_val / np.sqrt(n) if n > 0 else 0.0
-
-    # Determine critical value for 95% CI using student-t distribution
-    if 1 < n < 30:
-        critical_value = float(t.ppf(0.975, df=n - 1))
-    elif n >= 30:
-        critical_value = 1.96
-    else:
-        # For n=1, stderr is 0.0, so CI is 0.0
-        critical_value = 0.0
-
-    ci95_val = critical_value * stderr_val  # 95% Confidence Interval
-
-    stats[prefix] = mean_val
-    stats[f"{prefix}_mean"] = mean_val
-    stats[f"{prefix}_median"] = median_val
-    stats[f"{prefix}_min"] = min_val
-    stats[f"{prefix}_max"] = max_val
-    stats[f"{prefix}_std"] = std_val
-    stats[f"{prefix}_mad"] = mad_val
-    stats[f"{prefix}_stderr"] = stderr_val
-    stats[f"{prefix}_ci95"] = ci95_val
-    stats[f"{prefix}_count"] = float(n)
-
-    return stats
-
-
-def _format_num(x: float, sig_figs: int = 4) -> str:
-    """Format a number with specified significant figures."""
-    if x == 0:
-        return "0"
-    if np.isnan(x):
-        return "NaN"
-    return f"{x:.{sig_figs}g}"
-
-
-def _format_summary_value(mean: float, ci95: float, sig_figs: int = 4) -> str:
-    """Format a mean and symmetric CI value."""
-    return f"{_format_num(mean, sig_figs)} pm {_format_num(ci95, sig_figs)}"
-
-
-def _format_asymmetric_ci(mean: float, lower: float, upper: float, sig_figs: int = 4) -> str:
-    """Format a mean and asymmetric CI bounds."""
-    return f"{_format_num(mean, sig_figs)} [{_format_num(lower, sig_figs)}, {_format_num(upper, sig_figs)}]"
-
-
-def _resolve_num_workers(num_items: int, num_workers: int) -> int:
-    if num_items <= 1:
-        return 1
-    if num_workers <= 1:
-        return 1
-    return min(num_workers, num_items)
-
-
-def _map_tasks(fn, tasks: list, num_workers: int):
-    """Run *fn* over *tasks*, in parallel when num_workers > 1, else sequentially.
-
-    Yields results in input order (same guarantee as ``executor.map``).
-    """
-    worker_count = _resolve_num_workers(len(tasks), num_workers)
-    if worker_count > 1:
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            yield from executor.map(fn, tasks)
-    else:
-        for task in tasks:
-            yield fn(task)
-
-
-def _time_call(fn, *args, **kwargs):
-    start = perf_counter()
-    result = fn(*args, **kwargs)
-    return result, perf_counter() - start
-
-
-def _emit_timing_summary(scope: str, timings: list[tuple[str, float]]) -> None:
-    if not timings:
-        return
-    formatted = " | ".join(f"{name}: {seconds:.3f}s" for name, seconds in timings)
-    u_print(f"[timing] {scope} | {formatted}")
-
-
-def _get_string_metrics_tokenizer() -> PreTrainedTokenizerBase:
-    global _STRING_METRICS_TOKENIZER  # noqa: PLW0603
-    if _STRING_METRICS_TOKENIZER is None:
-        _STRING_METRICS_TOKENIZER = AutoTokenizer.from_pretrained("bert-base-uncased")
-    return _STRING_METRICS_TOKENIZER  # type: ignore
-
-
-def _get_sentence_bleu_metric() -> sacrebleu.metrics.BLEU:
-    global _STRING_METRICS_SENTENCE_BLEU  # noqa: PLW0603
-    if _STRING_METRICS_SENTENCE_BLEU is None:
-        _STRING_METRICS_SENTENCE_BLEU = sacrebleu.metrics.BLEU(effective_order=True)
-    return _STRING_METRICS_SENTENCE_BLEU
-
-
-def _get_corpus_bleu_metric() -> sacrebleu.metrics.BLEU:
-    global _STRING_METRICS_CORPUS_BLEU  # noqa: PLW0603
-    if _STRING_METRICS_CORPUS_BLEU is None:
-        _STRING_METRICS_CORPUS_BLEU = sacrebleu.metrics.BLEU()
-    return _STRING_METRICS_CORPUS_BLEU
-
-
-@lru_cache(maxsize=65536)
-def _cached_metric_tokenize(text: str) -> tuple[str, ...]:
-    return tuple(_get_string_metrics_tokenizer().tokenize(text))
-
-
-@lru_cache(maxsize=65536)
-def _cached_lower_split_tokens(text: str) -> tuple[str, ...]:
-    return tuple(text.lower().split())
-
-
-@lru_cache(maxsize=65536)
-def _cached_lower_split_counter(text: str) -> Counter[str]:
-    return Counter(_cached_lower_split_tokens(text))
-
-
-def _compute_f1_score(prediction: str, ground_truth: str) -> float:
-    prediction_tokens = _cached_lower_split_tokens(prediction)
-    ground_truth_tokens = _cached_lower_split_tokens(ground_truth)
-    if not prediction_tokens or not ground_truth_tokens:
-        return 0.0
-
-    common = _cached_lower_split_counter(prediction) & _cached_lower_split_counter(ground_truth)
-    num_same = sum(common.values())
-    if num_same == 0:
-        return 0.0
-    precision = 1.0 * num_same / len(prediction_tokens)
-    recall = 1.0 * num_same / len(ground_truth_tokens)
-    return (2 * precision * recall) / (precision + recall)
-
-
-def _compute_distinct_metrics_impl(
-    texts: list[str],
-    vocab_size: int | None = None,
-    references_for_vocab: list[str] | None = None,
-) -> dict[str, float]:
-    if not texts:
-        return {}
-
-    if vocab_size is None and references_for_vocab is not None:
-        vocab = set()
-        for sentence in references_for_vocab:
-            vocab.update(_cached_metric_tokenize(sentence))
-        vocab_size = len(vocab)
-
-    distinct_tokens = set()
-    distinct_tokens_2grams = set()
-    distinct_tokens_3grams = set()
-    total_tokens = 0
-    total_tokens_2grams = 0
-    total_tokens_3grams = 0
-
-    for prediction in texts:
-        tokens = _cached_metric_tokenize(prediction)
-        distinct_tokens.update(tokens)
-        total_tokens += len(tokens)
-
-        prev_1 = "<s>"
-        prev_2 = "<s>"
-        for token in tokens:
-            distinct_tokens_2grams.add((prev_1, token))
-            distinct_tokens_3grams.add((prev_2, prev_1, token))
-            prev_2, prev_1 = prev_1, token
-
-        total_tokens_2grams += len(tokens)
-        total_tokens_3grams += len(tokens)
-
-    metrics = {}
-    metrics["distinct_1"] = len(distinct_tokens) / total_tokens if total_tokens else 0.0
-    metrics["distinct_2"] = len(distinct_tokens_2grams) / total_tokens_2grams if total_tokens_2grams else 0.0
-    metrics["distinct_3"] = len(distinct_tokens_3grams) / total_tokens_3grams if total_tokens_3grams else 0.0
-
-    if vocab_size is not None and total_tokens > 0:
-        try:
-            ead = len(distinct_tokens) / (vocab_size * (1 - ((vocab_size - 1) / vocab_size) ** total_tokens))
-            metrics["expectation_adjusted_distinct"] = ead
-        except ZeroDivisionError:
-            metrics["expectation_adjusted_distinct"] = 0.0
-
-    return metrics
-
-
-def _compute_self_bleu_impl(texts: list[str]) -> float:
-    if len(texts) <= 1:
-        return 0.0
-
-    bleu_metric = _get_sentence_bleu_metric()
-    bleu_scores = []
-    for i, hypothesis in enumerate(texts):
-        references = [texts[j] for j in range(len(texts)) if j != i]
-        if not references:
-            continue
-
-        bleu = bleu_metric.sentence_score(hypothesis, references)
-        bleu_scores.append(bleu.score)
-
-    if not bleu_scores:
-        return 0.0
-
-    return sum(bleu_scores) / len(bleu_scores)
-
-
-def _select_self_bleu_references(texts: list[str], hypothesis_index: int, max_refs: int) -> list[str]:
-    n = len(texts)
-    available = n - 1
-    if available <= max_refs:
-        return [texts[j] for j in range(n) if j != hypothesis_index]
-
-    # Evenly sample across the remaining corpus with a deterministic circular stride.
-    stride = max(1, available // max_refs)
-    refs = []
-    seen: set[int] = set()
-    cursor = (hypothesis_index + 1) % n
-    while len(refs) < max_refs:
-        if cursor != hypothesis_index and cursor not in seen:
-            refs.append(texts[cursor])
-            seen.add(cursor)
-        cursor = (cursor + stride) % n
-    return refs
-
-
-def _compute_self_bleu_bounded_impl(
-    texts: list[str],
-    max_refs_per_hypothesis: int = _BATCH_SELF_BLEU_REFERENCE_CAP,
-) -> float:
-    if len(texts) <= 1:
-        return 0.0
-    if len(texts) - 1 <= max_refs_per_hypothesis:
-        return _compute_self_bleu_impl(texts)
-
-    bleu_metric = _get_sentence_bleu_metric()
-    bleu_scores = []
-    for i, hypothesis in enumerate(texts):
-        references = _select_self_bleu_references(texts, i, max_refs_per_hypothesis)
-        bleu_scores.append(bleu_metric.sentence_score(hypothesis, references).score)
-
-    return sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0.0
-
-
-def _group_diversity_task(args: tuple[list[str], int | None]) -> tuple[dict[str, float], float]:
-    group, vocab_size = args
-    distinct_metrics = _compute_distinct_metrics_impl(group, vocab_size=vocab_size)
-    self_bleu = _compute_self_bleu_impl(group)
-    return distinct_metrics, self_bleu
-
-
-def _group_reference_alignment_task(args: tuple[list[str], list[str]]) -> tuple[list[float], float, float]:
-    preds, refs = args
-    if not refs:
-        return [0.0 for _ in preds], 0.0, 0.0
-
-    bleu_metric = _get_sentence_bleu_metric()
-    f1_scores = []
-    for pred in preds:
-        best_f1 = 0.0
-        for ref in refs:
-            best_f1 = max(best_f1, _compute_f1_score(pred, ref))
-        f1_scores.append(best_f1)
-
-    best_f1_for_question = max(f1_scores) if f1_scores else 0.0
-
-    best_bleu_for_question = 0.0
-    for pred in preds:
-        bleu_result = bleu_metric.sentence_score(pred, refs)
-        best_bleu_for_question = max(best_bleu_for_question, bleu_result.score)
-
-    return f1_scores, best_f1_for_question, best_bleu_for_question
-
-
-def _math_group_task(args: tuple[list[str], str, list[int], bool]) -> tuple[float, dict[int, float]]:
-    generations, gold_answer, effective_ks, use_math_parser = args
-    evaluator = MathEvaluator(use_math_parser=use_math_parser)
-    scores = evaluator.score_group(generations, gold_answer)
-    n = len(scores)
-    c = sum(scores)
-    per_question_acc = c / n
-    pass_at_k = {k: evaluator._pass_at_k_estimator(n, c, k) for k in effective_ks}
-    return per_question_acc, pass_at_k
+# ---------------------------------------------------------------------------
+# Metric modules
+# ---------------------------------------------------------------------------
 
 
 class Perplexity(torch.nn.Module):
@@ -363,18 +73,17 @@ class Perplexity(torch.nn.Module):
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=self.tokenizer.pad_token_id)
-        self.loss = None
 
         if isinstance(self.model, GPT2Model):
             self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
             self.lm_head.weight = self.model.wte.weight  # tie weights
         elif isinstance(self.model, LlamaForCausalLM):
-            self.lm_head = self.model.lm_head  # reference model's existing lm_head
+            self.lm_head = self.model.lm_head
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
     def _forward(self, texts: list[str]) -> list[float] | None:
-        """Compute per-sample mean NLL (loss) values. Statistics should be computed in this space."""
+        """Compute per-sample mean NLL values. Statistics should be computed in this space."""
         texts = [t.strip() for t in texts]
 
         inputs = self.tokenizer(
@@ -385,7 +94,6 @@ class Perplexity(torch.nn.Module):
             add_special_tokens=False,
         ).to(device)
 
-        # Skip forward pass if inputs are empty (0 tokens) to avoid reshape errors
         if inputs["input_ids"].numel() == 0:
             return None
 
@@ -403,41 +111,32 @@ class Perplexity(torch.nn.Module):
             shift_labels = inputs["input_ids"][..., 1:].contiguous()
             attention_mask = inputs["attention_mask"][..., 1:].contiguous()
 
-            loss = self.loss_fn(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-            )
+            loss = self.loss_fn(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             loss = loss.view(shift_labels.size())
 
-        loss = loss.clamp(max=15.0)
-        loss = loss * attention_mask
+        loss = loss.clamp(max=15.0) * attention_mask
         token_counts = attention_mask.sum(dim=1).clamp(min=1)
         mean_loss = loss.sum(dim=1) / token_counts
         mean_loss = torch.nan_to_num(mean_loss, nan=15.0, posinf=15.0, neginf=0.0)
-
         return mean_loss.cpu().tolist()
 
     def forward(self, texts: list[list[str]], batch_size: int = 0) -> dict[str, float]:
-        """
-        Compute perplexity statistics. Statistics are computed in NLL (loss) space,
-        then transformed to perplexity space via exp().
+        """Compute perplexity statistics.
+
+        Statistics are computed in NLL space, then transformed via ``exp()``.
         """
         flattened_texts = [text for sublist in texts for text in sublist]
         batch_size = batch_size or len(flattened_texts)
 
-        # Collect per-sample NLL values
-        nlls = []
+        nlls: list[float] = []
         for start in range(0, len(flattened_texts), batch_size):
-            batch = flattened_texts[start : start + batch_size]
-            result = self._forward(batch)
+            result = self._forward(flattened_texts[start : start + batch_size])
             if result is not None:
                 nlls.extend(result)
 
-        # Compute statistics in NLL space
         nll_stats = compute_statistics(nlls, "nll")
 
-        # Transform to perplexity space: PPL = exp(NLL)
-        ppl_stats = {
+        return {
             "perplexity": np.exp(nll_stats["nll"]),
             "perplexity_mean": np.exp(nll_stats["nll_mean"]),
             "perplexity_median": np.exp(nll_stats["nll_median"]),
@@ -448,8 +147,6 @@ class Perplexity(torch.nn.Module):
             "perplexity_count": nll_stats["nll_count"],
         }
 
-        return ppl_stats
-
 
 class AverageCosineSimilarity(torch.nn.Module):
     def __init__(self, model: JinaBertModel):
@@ -457,11 +154,11 @@ class AverageCosineSimilarity(torch.nn.Module):
         self.model = model
 
     def _encode(self, texts: list[str]) -> torch.Tensor:
-        """Encode texts to normalized embeddings."""
+        """Encode texts to L2-normalised embeddings."""
         self.model.to(device)
         with torch.inference_mode():
             embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
-            x = embeddings.reshape(len(texts), -1)  # n_samples x D
+            x = embeddings.reshape(len(texts), -1)
             x = F.normalize(x, p=2, dim=-1)
         return x
 
@@ -469,59 +166,34 @@ class AverageCosineSimilarity(torch.nn.Module):
         if isinstance(texts, str):
             texts = [texts]
 
-        x = self._encode(texts)  # [n_samples, D], already normalized
-        S = torch.mm(x, x.t())  # cosine similarity matrix (since x is normalized)
-
-        S = S - torch.eye(len(texts), device=S.device)  # remove self-similarity
+        x = self._encode(texts)
+        S = torch.mm(x, x.t()) - torch.eye(len(texts), device=x.device)
 
         n = S.size(0)
         if n <= 1:
             return 0.0
-        avg_cos_sim = S.sum() / (n * (n - 1))  # unbiased average
-
-        return avg_cos_sim.item()
+        return (S.sum() / (n * (n - 1))).item()
 
     def compute_max_alignment(
         self,
         predictions: list[list[str]],
         references: list[list[str]],
     ) -> list[float]:
-        """
-        For each question (group), compute max cosine similarity between any prediction and any reference.
-        Returns a list of max alignment scores (one per question).
-        """
+        """For each group, compute the max cosine similarity between any prediction and any reference."""
         max_alignments = []
         for preds, refs in zip(predictions, references):
             if not preds or not refs:
                 max_alignments.append(0.0)
                 continue
-
-            # Encode all predictions and references for this question
-            all_texts = preds + refs
-            embeddings = self._encode(all_texts)
-
-            pred_embs = embeddings[: len(preds)]  # [num_preds, D]
-            ref_embs = embeddings[len(preds) :]  # [num_refs, D]
-
-            # Compute cosine similarity matrix: [num_preds, num_refs]
-            sim_matrix = torch.mm(pred_embs, ref_embs.t())
-
-            # Take max across all pred-ref pairs
-            max_sim = sim_matrix.max().item()
-            max_alignments.append(max_sim)
-
+            embeddings = self._encode(preds + refs)
+            pred_embs = embeddings[: len(preds)]
+            ref_embs = embeddings[len(preds) :]
+            max_alignments.append(torch.mm(pred_embs, ref_embs.t()).max().item())
         return max_alignments
 
     def forward(self, texts: list[list[str]]) -> dict[str, float]:
-        """
-        Compute average cosine similarity statistics for a list of texts of groups.
-        """
-
-        avg_cos_sims = []
-        for group in texts:
-            avg_cos_sim = self._forward(group)
-            avg_cos_sims.append(avg_cos_sim)
-
+        """Compute average cosine similarity statistics across groups."""
+        avg_cos_sims = [self._forward(group) for group in texts]
         return compute_statistics(avg_cos_sims, "cosine_similarity")
 
 
@@ -532,25 +204,26 @@ class MAUVE(torch.nn.Module):
         self.tokenizer = tokenizer
 
     def forward(self, p_text: list[str], q_text: list[str]):
-        """
-        Compute MAUVE score for a list of texts using the mauve package.
-        """
-
-        out = mauve.compute_mauve(
+        """Compute MAUVE score using the mauve package."""
+        return mauve.compute_mauve(
             p_text=p_text,
             q_text=q_text,
             models=(self.model, self.tokenizer),
             device_id=0 if torch.cuda.is_available() else -1,
         )
 
-        return out
-
 
 class WassersteinDistance(torch.nn.Module):
     def __init__(self, model: JinaBertModel):
         super().__init__()
-
         self.model = model
+
+    def _encode(self, texts: list[str]) -> torch.Tensor:
+        with torch.inference_mode():
+            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
+            x = embeddings.reshape(len(texts), -1)
+            x = F.normalize(x, p=2, dim=-1)
+        return x.cpu()
 
     def forward(
         self,
@@ -558,61 +231,34 @@ class WassersteinDistance(torch.nn.Module):
         good_references: list[str],
         bad_references: list[str] | None = None,
     ) -> tuple[float, float]:
-        n_good = len(good_references)
         n_gen = len(generations)
+        n_good = len(good_references)
 
-        all_texts = generations + good_references
-        if bad_references:
-            n_bad = len(bad_references)
-            all_texts += bad_references
-        else:
-            n_bad = 0
+        all_texts = generations + good_references + (bad_references or [])
+        embeddings = self._encode(all_texts).numpy()
 
-        embeddings = self._forward(all_texts).numpy()
+        gen_embs = embeddings[:n_gen]
+        good_embs = embeddings[n_gen : n_gen + n_good]
 
-        gen_embeddings = embeddings[0:n_gen]
-        good_embeddings = embeddings[n_gen : n_gen + n_good]
-
-        # Compute cost matrices
-        cost_good = ot.dist(gen_embeddings, good_embeddings, metric="euclidean")
-
-        # Uniform distributions
-        p_gen = np.ones((n_gen,)) / n_gen
-        p_good = np.ones((n_good,)) / n_good
-
-        wasserstein_good: float = ot.emd2(p_gen, p_good, cost_good)  # type: ignore
+        p_gen = np.ones(n_gen) / n_gen
+        p_good = np.ones(n_good) / n_good
+        wasserstein_good: float = ot.emd2(p_gen, p_good, ot.dist(gen_embs, good_embs, metric="euclidean"))  # type: ignore
 
         wasserstein_bad = float("nan")
-        if bad_references and n_bad > 0:
-            bad_embeddings = embeddings[n_gen + n_good :]
-            cost_bad = ot.dist(gen_embeddings, bad_embeddings, metric="euclidean")
-            p_bad = np.ones((n_bad,)) / n_bad
-            wasserstein_bad: float = ot.emd2(p_gen, p_bad, cost_bad)  # type: ignore
+        if bad_references:
+            n_bad = len(bad_references)
+            bad_embs = embeddings[n_gen + n_good :]
+            p_bad = np.ones(n_bad) / n_bad
+            wasserstein_bad: float = ot.emd2(p_gen, p_bad, ot.dist(gen_embs, bad_embs, metric="euclidean"))  # type: ignore
 
         return wasserstein_good, wasserstein_bad
 
-    def _forward(self, texts: list[str]) -> torch.Tensor:
-        with torch.inference_mode():
-            embeddings: torch.Tensor = self.model.encode(texts, convert_to_tensor=True, device=device)  # type: ignore
-            x = embeddings.reshape(len(texts), -1)  # n_samples x D
-            x = F.normalize(x, p=2, dim=-1)
-        return x.cpu()
-
-
-def _vocab_size_from_refs(references_for_vocab: list[str] | None) -> int | None:
-    """Return the number of distinct tokens across all reference strings, or None."""
-    if references_for_vocab is None:
-        return None
-    vocab: set[str] = set()
-    for sentence in references_for_vocab:
-        vocab.update(_cached_metric_tokenize(sentence))
-    return len(vocab)
-
 
 class StringMetrics(torch.nn.Module):
+    """Lexical string metrics: distinct-n, self-BLEU, F1, BLEU vs references."""
+
     def __init__(self):
         super().__init__()
-        self.tokenizer = _get_string_metrics_tokenizer()
 
     def diversity_set(
         self,
@@ -622,16 +268,19 @@ class StringMetrics(torch.nn.Module):
         vocab_size: int | None = None,
         bounded_self_bleu: bool = False,
     ) -> dict[str, float]:
-        """Compute lexical diversity metrics over a single set of texts.
+        """Compute lexical diversity metrics over a single flat set of texts.
 
         Parameters
         ----------
         texts:
-            Texts to evaluate as one set.
+            Texts to evaluate.
         references_for_vocab:
-            Optional reference strings used to estimate vocabulary size for EAD.
+            Optional strings used to estimate vocabulary size for EAD.
         prefix:
             Key prefix for the returned metric dictionary.
+        bounded_self_bleu:
+            When ``True``, uses a reference-capped approximation of self-BLEU
+            suitable for large corpora.
         """
         if not texts:
             return {}
@@ -649,7 +298,7 @@ class StringMetrics(torch.nn.Module):
         references: list[list[str]] | None = None,
         num_workers: int = 1,
     ) -> dict[str, float]:
-        """Compute set-level lexical diversity per group, then aggregate across groups."""
+        """Compute per-group lexical diversity, then aggregate statistics across groups."""
         ref_tokens = [s for refs in references for s in refs] if references and any(references) else None
         vocab_size = _vocab_size_from_refs(ref_tokens)
         valid_groups = [group for group in predictions if group]
@@ -675,7 +324,7 @@ class StringMetrics(torch.nn.Module):
         references: list[list[str]] | None = None,
         prefix: str = "batch",
     ) -> dict[str, float]:
-        """Compute set-level lexical diversity over the whole flattened generations corpus."""
+        """Compute lexical diversity over the full flattened generations corpus."""
         all_generations_flat = [g for group in predictions for g in group]
         if not all_generations_flat:
             return {}
@@ -697,7 +346,7 @@ class StringMetrics(torch.nn.Module):
         references: list[list[str]] | None = None,
         num_workers: int = 1,
     ) -> dict[str, float]:
-        """Compute lexical overlap metrics against references."""
+        """Compute lexical overlap metrics against references (F1, BLEU)."""
         if not (references and any(refs for refs in references)):
             return {}
 
@@ -723,7 +372,6 @@ class StringMetrics(torch.nn.Module):
         bleu_score = 0.0
         if flattened_references:
             max_refs = max(len(refs) for refs in flattened_references)
-            # Transpose ragged list: group by reference index, padding with first ref
             formatted_refs = [
                 [refs[i] if i < len(refs) else refs[0] for refs in flattened_references] for i in range(max_refs)
             ]
@@ -743,17 +391,23 @@ class StringMetrics(torch.nn.Module):
         predictions: list[list[str]],
         references: list[list[str]] | None = None,
         num_workers: int = 1,
-    ) -> dict[str, float]:  # noqa: C901, PLR0912, PLR0915
-        """
-        Backward-compatible wrapper returning reference alignment and grouped diversity metrics.
-        """
+    ) -> dict[str, float]:
+        """Backward-compatible wrapper: reference alignment + grouped diversity."""
         return {
             **self.reference_alignment(predictions, references, num_workers=num_workers),
             **self.diversity_grouped(predictions, references, num_workers=num_workers),
         }
 
 
+# ---------------------------------------------------------------------------
+# High-level evaluators
+# ---------------------------------------------------------------------------
+
+
 class Evaluator:
+    """Generation-quality evaluator wrapping Perplexity, CosineSimilarity,
+    MAUVE, WassersteinDistance, and StringMetrics."""
+
     def __init__(
         self,
         batch_size: int = 0,
@@ -770,17 +424,21 @@ class Evaluator:
 
         ppl_tokenizer = AutoTokenizer.from_pretrained(**ppl_models_args)
         self.perplexity_model = Perplexity(ppl_model, ppl_tokenizer)
-        self.mauve_model = MAUVE(ppl_model, ppl_tokenizer)  # reuse PPL model for MAUVE (gpt2)
+        self.mauve_model = MAUVE(ppl_model, ppl_tokenizer)  # reuse PPL model for MAUVE
 
         cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
         cos_model = JinaBertModel.from_pretrained(**cos_models_args)
         self.cosine_model = AverageCosineSimilarity(cos_model)
-        self.wasserstein_model = WassersteinDistance(cos_model)  # reuse COS model for WD
+        self.wasserstein_model = WassersteinDistance(cos_model)  # reuse embedding model for WD
         self.string_metrics = StringMetrics()
 
         self.batch_size = batch_size
         self.force = force
         self.show_timings = show_timings
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:
         timings: list[tuple[str, float]] = []
@@ -794,8 +452,7 @@ class Evaluator:
         string_stats, elapsed = _time_call(self.compute_string_metrics, texts, references=references)
         timings.append(("string_metrics", elapsed))
 
-        # Compute Wasserstein Distance if references are provided
-        wd_stats = {}
+        wd_stats: dict[str, float] = {}
         if references and any(refs for refs in references):
 
             def _compute_wd_stats() -> dict[str, float]:
@@ -804,7 +461,6 @@ class Evaluator:
                 for group_gen, group_ref in zip(texts, references):
                     if not group_gen or not group_ref:
                         continue
-                    # We only have "good" references in this context usually
                     wd_good, _ = self.wasserstein_model(group_gen, group_ref, bad_references=None)
                     wd_scores.append(wd_good)
                 return compute_statistics(wd_scores, "wasserstein_distance")
@@ -812,13 +468,9 @@ class Evaluator:
             wd_stats, elapsed = _time_call(_compute_wd_stats)
             timings.append(("wasserstein_distance", elapsed))
 
-        # Merge all metrics
         metrics = {**ppl_stats, **cos_stats, **string_stats, **wd_stats}
 
-        # create a summary string
-        summary_parts = []
-
-        # Define metrics to include in summary with display names
+        # Build human-readable summary
         summary_targets = [
             ("perplexity", "PPL"),
             ("cosine_similarity", "CosSim"),
@@ -827,9 +479,8 @@ class Evaluator:
             ("self_bleu", "S-BLEU"),
             ("cos_at_k", "Cos@k"),
         ]
-
+        summary_parts = []
         for key, display_name in summary_targets:
-            # Handle asymmetric CIs (perplexity) and symmetric CIs (other metrics)
             if key == "perplexity" and f"{key}_ci95_lower" in metrics:
                 val_str = _format_asymmetric_ci(
                     metrics[key],
@@ -838,8 +489,7 @@ class Evaluator:
                 )
                 summary_parts.append(f"{display_name}: {val_str}")
             elif key in metrics and f"{key}_ci95" in metrics:
-                val_str = _format_summary_value(metrics[key], metrics[f"{key}_ci95"])
-                summary_parts.append(f"{display_name}: {val_str}")
+                summary_parts.append(f"{display_name}: {_format_summary_value(metrics[key], metrics[f'{key}_ci95'])}")
 
         if summary_parts:
             metrics["metrics_summary"] = " | ".join(summary_parts)
@@ -850,8 +500,7 @@ class Evaluator:
         return metrics
 
     def compute_mauve(self, references: list[str], generations: list[str]) -> float:
-        out = self.mauve_model(references, generations)
-        return out.mauve
+        return self.mauve_model(references, generations).mauve
 
     def compute_wasserstein_distance(
         self,
@@ -876,7 +525,6 @@ class Evaluator:
 
         metrics = {**reference_metrics, **diversity_metrics}
 
-        # Compute cos@k: max cosine alignment between predictions and references
         if references and any(refs for refs in references):
             cos_at_k_scores, elapsed = _time_call(self.cosine_model.compute_max_alignment, predictions, references)
             timings.append(("cos_at_k", elapsed))
@@ -894,76 +542,60 @@ class Evaluator:
         k: int,
         references: list[list[str]] | None = None,
     ) -> list[list[str]]:
-        """
-        Evaluate and select the k best sequences across different groups based on a metric.
-        Supported metrics:
-        - "ppl": Lower is better.
-        - "f1": Higher is better. Requires references.
+        """Select the *k* best sequences per group according to *metric*.
+
+        Supported metrics
+        -----------------
+        ``"ppl"``
+            Lower is better.
+        ``"f1"``
+            Higher is better. Requires *references*.
         """
         flattened_texts = [text for sublist in full_sequences for text in sublist]
         group_sizes = [len(sublist) for sublist in full_sequences]
 
-        # Unflatten helper
-        def unflatten(flat_list):
-            unflattened = []
-            cursor = 0
+        def unflatten(flat_list: list) -> list[list]:
+            out, cursor = [], 0
             for size in group_sizes:
-                unflattened.append(flat_list[cursor : cursor + size])
+                out.append(flat_list[cursor : cursor + size])
                 cursor += size
-            return unflattened
+            return out
 
         if metric.lower() == "ppl":
             batch_size = self.batch_size or len(flattened_texts)
-            nlls = []
+            nlls: list[float] = []
             for start in range(0, len(flattened_texts), batch_size):
-                batch = flattened_texts[start : start + batch_size]
-                result = self.perplexity_model._forward(batch)
+                result = self.perplexity_model._forward(flattened_texts[start : start + batch_size])
                 if result is not None:
                     nlls.extend(result)
                 else:
-                    u_print("Skipping batch of empty texts", batch)
-
+                    u_print("Skipping batch of empty texts", flattened_texts[start : start + batch_size])
             unflattened_scores = unflatten(nlls)
-            reverse_sort = False  # Lower is better
+            reverse_sort = False
 
         elif metric.lower() == "f1":
             if references is None:
-                raise ValueError("References must be provided for f1 metric.")
-
-            # references are [group1_refs, group2_refs, ...]
-            # full_sequences are [group1_cands, group2_cands, ...]
-            # We compute F1 for each candidate in group i against group i refs
-
-            unflattened_scores = []
-            for group_cands, group_refs in zip(full_sequences, references):
-                group_f1 = [
-                    max((_compute_f1_score(cand, ref) for ref in group_refs), default=0.0) for cand in group_cands
-                ]
-                unflattened_scores.append(group_f1)
-
-            reverse_sort = True  # Higher is better
+                raise ValueError("References must be provided for the f1 metric.")
+            unflattened_scores = [
+                [max((_compute_f1_score(cand, ref) for ref in group_refs), default=0.0) for cand in group_cands]
+                for group_cands, group_refs in zip(full_sequences, references)
+            ]
+            reverse_sort = True
 
         else:
-            raise ValueError(
-                f"Metric {metric} not implemented for evaluate_baseline. Only 'ppl' and 'f1' are supported.",
-            )
+            raise ValueError(f"Metric '{metric}' not supported. Choose 'ppl' or 'f1'.")
 
-        # Select k best from each group
         selected_sequences = []
         for group_texts, group_scores in zip(full_sequences, unflattened_scores):
-            # Sort by score
-            indexed_scores = sorted(enumerate(group_scores), key=lambda x: x[1], reverse=reverse_sort)
-            top_k_indices = [idx for idx, _ in indexed_scores[:k]]
-
-            # Preserve original order for selected items (optional, but cleaner)
-            top_k_indices.sort()
-
+            top_k_indices = sorted(
+                [idx for idx, _ in sorted(enumerate(group_scores), key=lambda x: x[1], reverse=reverse_sort)[:k]],
+            )
             selected_sequences.append([group_texts[idx] for idx in top_k_indices])
 
         return selected_sequences
 
     def eval_from_file(self, file_path: str, references: list[list[str]] | None = None) -> dict[str, float] | None:
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             data = json.load(f)
 
         metrics = data.get("metrics", None)
@@ -972,8 +604,6 @@ class Evaluator:
 
         texts = data.get("text_samples", None)
 
-        # Fallback: extract generations from math-style results list
-        # Supports shapes: {"results": [...]}, {"results": {"results": [...]}}, [...]
         if texts is None:
             raw = data if isinstance(data, list) else data.get("results")
             if isinstance(raw, dict):
@@ -986,7 +616,6 @@ class Evaluator:
             return None
 
         metrics = self.evaluate(texts, references=references)
-
         data["metrics"] = metrics
 
         with open(file_path, "w") as f:
@@ -996,11 +625,10 @@ class Evaluator:
 
 
 class MathEvaluator:
-    """Checks model generations against a known numeric answer.
+    """Check model generations against a known numeric answer.
 
     Uses a robust math/LaTeX post-processor to extract and canonicalize
-    numeric answers from raw generations, then compares them against the
-    expected answer.
+    numeric answers, then compares them against the expected answer.
 
     Example
     -------
@@ -1012,10 +640,11 @@ class MathEvaluator:
     """
 
     def __init__(self, use_math_parser: bool = True, show_timings: bool = False):
-        """Parameters
+        """
+        Parameters
         ----------
         use_math_parser:
-            If *True*, use the class-based universal parser. When *False*,
+            If ``True``, use the class-based universal parser. When ``False``,
             fall back to the module-level universal helper.
         """
         self._use_math_parser = use_math_parser
@@ -1024,6 +653,10 @@ class MathEvaluator:
         self._string_metrics = StringMetrics()
         self.show_timings = show_timings
 
+    # ------------------------------------------------------------------
+    # Low-level correctness checks
+    # ------------------------------------------------------------------
+
     def _extract(self, text: str) -> str:
         """Extract a normalised numeric string from *text*."""
         if self._use_math_parser:
@@ -1031,15 +664,7 @@ class MathEvaluator:
         return universal_math_postprocess(text)
 
     def check(self, generation: str, answer_number: str) -> int:
-        """Return 1 if *generation* contains *answer_number*, else 0.
-
-        Parameters
-        ----------
-        generation:
-            Raw text produced by the model.
-        answer_number:
-            The expected numeric answer (string, commas already stripped).
-        """
+        """Return 1 if *generation* contains the correct answer, else 0."""
         extracted = self._extract(generation)
         expected = self._extract(answer_number)
         if expected == "NULL":
@@ -1047,7 +672,7 @@ class MathEvaluator:
         return int(extracted == expected)
 
     def score_group(self, generations: list[str], answer_number: str) -> list[int]:
-        """Check a list of generations and return a list of 0/1 scores."""
+        """Return a 0/1 score for each generation."""
         return [self.check(g, answer_number) for g in generations]
 
     def accuracy(self, generations: list[str], answer_number: str) -> float:
@@ -1057,16 +682,13 @@ class MathEvaluator:
 
     @staticmethod
     def _pass_at_k_estimator(n: int, c: int, k: int) -> float:
-        """Unbiased pass@k estimator (Chen et al., 2021 — HumanEval).
+        """Unbiased pass@k estimator (Chen et al., 2021).
 
         Parameters
         ----------
-        n : total number of samples for this problem.
-        c : number of correct samples.
-        k : the k in pass@k.
-
-        Returns the probability that at least one of *k* randomly drawn
-        (without replacement) samples is correct.
+        n: total samples for this problem.
+        c: number of correct samples.
+        k: the k in pass@k.
         """
         if n < k:
             return float("nan")
@@ -1074,13 +696,15 @@ class MathEvaluator:
             return 0.0
         if n - c < k:
             return 1.0
-        # 1 - prod_{i=0}^{k-1} (n-c-i) / (n-i)
-        num = 1.0
-        den = 1.0
+        num, den = 1.0, 1.0
         for i in range(k):
             num *= n - c - i
             den *= n - i
         return 1.0 - num / den
+
+    # ------------------------------------------------------------------
+    # Full evaluation
+    # ------------------------------------------------------------------
 
     def evaluate(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -1095,22 +719,19 @@ class MathEvaluator:
         Parameters
         ----------
         generations:
-            Outer list is per-question; inner list contains the model's
-            sampled generations for that question.
+            Per-question list of sampled model outputs.
         gold_answers:
             One gold numeric answer string per question.
         string_references:
-            Optional per-question reference strings for overlap metrics such
-            as F1 and BLEU. If omitted, falls back to ``gold_answers``.
+            Optional per-question reference strings for F1/BLEU.
+            Falls back to ``gold_answers`` when omitted.
         k_values:
-            Which k's to compute pass@k for. Defaults to [1, 2, 4, 8, 16]
-            clipped to the actual group size. Duplicates and out-of-range
-            values are silently removed.
+            Which k values to compute pass@k for. Defaults to [1, 2, 4, 8, 16],
+            clamped to the actual group size.
 
         Returns
         -------
-        Flat dict of metric_name → float, plus a ``math_metrics_summary``
-        string formatted like the ``Evaluator.evaluate()`` summaries.
+        Flat ``dict`` of metric → value, plus a ``math_metrics_summary`` string.
         """
         if not generations:
             return {}
@@ -1119,7 +740,6 @@ class MathEvaluator:
 
         if k_values is None:
             k_values = [1, 2, 4, 8, 16]
-        # Clamp to valid range and deduplicate, preserving order
         seen: set[int] = set()
         effective_ks: list[int] = []
         for k in k_values:
@@ -1167,7 +787,6 @@ class MathEvaluator:
         metrics.update(string_stats)
 
         # ── batch-level diversity ─────────────────────────────────────────
-        # Compute diversity over the entire flattened corpus as a separate scope.
         batch_diversity, elapsed = _time_call(
             self._string_metrics.diversity_corpus,
             generations,
@@ -1180,24 +799,16 @@ class MathEvaluator:
         # ── summary string ────────────────────────────────────────────────
         summary_parts: list[str] = []
 
-        # Accuracy with CI
         acc_mean = metrics.get("accuracy", float("nan"))
         acc_ci = metrics.get("accuracy_ci95", float("nan"))
         summary_parts.append(f"Acc: {_format_summary_value(acc_mean, acc_ci)}")
 
-        # pass@k values
         for k in effective_ks:
             val = metrics.get(f"pass_at_{k}", float("nan"))
             if not np.isnan(val):
                 summary_parts.append(f"pass@{k}: {_format_num(val)}")
 
-        # Per-group string metrics with CI
-        for key, display_name in [
-            ("f1", "F1"),
-            ("bleu", "BLEU"),
-            ("distinct_2", "Dist-2"),
-            ("self_bleu", "S-BLEU"),
-        ]:
+        for key, display_name in [("f1", "F1"), ("bleu", "BLEU"), ("distinct_2", "Dist-2"), ("self_bleu", "S-BLEU")]:
             if key in metrics:
                 ci_key = f"{key}_ci95"
                 if ci_key in metrics:
@@ -1205,11 +816,7 @@ class MathEvaluator:
                 else:
                     summary_parts.append(f"{display_name}: {_format_num(metrics[key])}")
 
-        # Batch-level diversity metrics (single values, no CI)
-        for key, display_name in [
-            ("batch_distinct_2", "B-Dist2"),
-            ("batch_self_bleu", "B-S-BLEU"),
-        ]:
+        for key, display_name in [("batch_distinct_2", "B-Dist2"), ("batch_self_bleu", "B-S-BLEU")]:
             val = metrics.get(key, float("nan"))
             if not (isinstance(val, float) and np.isnan(val)):
                 summary_parts.append(f"{display_name}: {_format_num(val)}")
@@ -1229,8 +836,7 @@ class MathEvaluator:
         k_values: list[int] | None = None,
         num_workers: int = 1,
     ) -> dict[str, float | str] | None:
-        """Load a math results JSON file (as produced by ``llada_math.py``)
-        and compute (or re-compute) evaluation metrics in-place.
+        """Load a math results JSON file and compute (or refresh) metrics in-place.
 
         Supported JSON shapes
         ---------------------
@@ -1238,54 +844,39 @@ class MathEvaluator:
         2. ``{"results": [{...}, ...], ...}`` — normal final output
         3. ``{"results": {"results": [...], ...}, ...}`` — temp checkpoint
 
-        Only ``generations`` (list[str]) is strictly required per entry;
-        ``gold_answer`` (str) defaults to ``""`` if absent.
         Computed metrics are written back as ``"math_metrics"``.
-
-        Parameters
-        ----------
-        file_path: path to the JSON file.
-        force: if False and ``"math_metrics"`` already present, skip.
-        k_values: forwarded to :meth:`evaluate`.
         """
         with open(file_path) as f:
             data = json.load(f)
 
-        # ── normalise root to a list of result dicts ──────────────────────
         if isinstance(data, list):
-            # Shape 1: root is already a list of result dicts
             results: list[dict] = data
-            data = {"results": results}  # re-wrap so we can write metrics back
+            data = {"results": results}
         else:
             if not force and data.get("math_metrics") is not None:
                 return data["math_metrics"]
-
             results = data.get("results")
             if results is None:
                 return None
-
-            # Shape 3: {"results": {"results": [...], ...}, ...}
             if isinstance(results, dict):
                 results = results.get("results", [])
 
         if not isinstance(results, list):
             return None
 
-        # ── extract fields; only generations is strictly required ─────────
         generations: list[list[str]] = []
         gold_answers: list[str] = []
         string_references: list[list[str]] = []
         for r in results:
             gens = r.get("generations")
             if not isinstance(gens, list):
-                continue  # skip malformed entries
+                continue
             generations.append(gens)
             gold_answers.append(str(r.get("gold_answer", "")))
             answer_str = r.get("answer_str")
-            if isinstance(answer_str, str) and answer_str:
-                string_references.append([answer_str])
-            else:
-                string_references.append([str(r.get("gold_answer", ""))])
+            string_references.append(
+                [answer_str] if isinstance(answer_str, str) and answer_str else [str(r.get("gold_answer", ""))],
+            )
 
         if not generations:
             return None
@@ -1305,66 +896,39 @@ class MathEvaluator:
         return math_metrics
 
 
-def _is_math_results_file(file_path: str) -> bool:
-    """Heuristically detect math-eval result files written by llada_math.py."""
-    try:
-        with open(file_path) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return False
-
-    raw = data
-    if isinstance(raw, dict):
-        raw = raw.get("results", raw)
-        if isinstance(raw, dict):
-            raw = raw.get("results", [])
-
-    if not isinstance(raw, list) or not raw:
-        return False
-
-    first = raw[0]
-    if not isinstance(first, dict):
-        return False
-
-    return isinstance(first.get("generations"), list) and "gold_answer" in first
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 
 def main():
     n_cpus = os.cpu_count()
     assert n_cpus is not None
-    num_workers = n_cpus // 2
 
     parser = argparse.ArgumentParser(description="Evaluate text samples.")
-    parser.add_argument(
-        "--folder_path",
-        "-f",
-        type=str,
-        required=True,
-        help="Path to the folder containing text samples.",
-    )
+    parser.add_argument("--folder_path", "-f", type=str, required=True, help="Folder containing result JSON files.")
     parser.add_argument("--ppl_model_id", type=str, default="gpt2", help="Model ID for perplexity calculation.")
     parser.add_argument(
         "--cos_model_id",
         type=str,
         default="jinaai/jina-embeddings-v2-base-en",
-        help="Model ID for cosine similarity calculation.",
+        help="Model ID for cosine similarity.",
     )
-    parser.add_argument("--batch_size", "-b", type=int, default=0, help="Batch size for evaluation.")
+    parser.add_argument("--batch_size", "-b", type=int, default=0, help="Batch size for perplexity evaluation.")
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=num_workers,
-        help="CPU workers for math/string metric aggregation.",
+        default=n_cpus // 2,
+        help="CPU workers for string/math metric aggregation.",
     )
-    parser.add_argument("--force", action="store_true", help="Force re-evaluation even if metrics exist.")
+    parser.add_argument("--force", action="store_true", help="Re-evaluate even when metrics already exist.")
     args = parser.parse_args()
 
     files = [f for f in os.listdir(args.folder_path) if f.endswith(".json") and not f.startswith("temp")]
     evaluator: Evaluator | None = None
     math_evaluator: MathEvaluator | None = None
-    pbar = tqdm(files, desc="Evaluating files")
 
-    for file_name in pbar:
+    for file_name in tqdm(files, desc="Evaluating files"):
         file_path = os.path.join(args.folder_path, file_name)
         if _is_math_results_file(file_path):
             if math_evaluator is None:
