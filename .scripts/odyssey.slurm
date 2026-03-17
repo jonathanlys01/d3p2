@@ -3,7 +3,6 @@
 #SBATCH --partition=Odyssey
 #SBATCH --cpus-per-gpu=47
 #SBATCH --gres=gpu:h200:2
-#SBATCH --time=01:00:00
 #SBATCH --qos normal
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
