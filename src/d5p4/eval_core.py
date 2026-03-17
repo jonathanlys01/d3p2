@@ -639,19 +639,51 @@ class MathEvaluator:
     0
     """
 
-    def __init__(self, use_math_parser: bool = True, show_timings: bool = False):
+    def __init__(
+        self,
+        use_math_parser: bool = True,
+        show_timings: bool = False,
+        ppl_model_id: str | None = None,
+        cos_model_id: str | None = None,
+        batch_size: int = 0,
+    ):
         """
         Parameters
         ----------
         use_math_parser:
             If ``True``, use the class-based universal parser. When ``False``,
             fall back to the module-level universal helper.
+        ppl_model_id:
+            When provided, perplexity is computed over all generations.
+        cos_model_id:
+            When provided, per-group cosine similarity and cos@k vs references
+            are computed.
+        batch_size:
+            Batch size for perplexity forward passes.
         """
         self._use_math_parser = use_math_parser
         if use_math_parser:
             self._parser = MathParser()
         self._string_metrics = StringMetrics()
         self.show_timings = show_timings
+        self.batch_size = batch_size
+
+        self._perplexity_model: Perplexity | None = None
+        self._cosine_model: AverageCosineSimilarity | None = None
+
+        if ppl_model_id is not None:
+            ppl_models_args = process_model_args(ppl_model_id, cache_dir=CACHE_DIR)
+            if "llama" in ppl_model_id:
+                ppl_model = LlamaForCausalLM.from_pretrained(**ppl_models_args)
+            else:
+                ppl_model = AutoModel.from_pretrained(**ppl_models_args)
+            ppl_tokenizer = AutoTokenizer.from_pretrained(**ppl_models_args)
+            self._perplexity_model = Perplexity(ppl_model, ppl_tokenizer)
+
+        if cos_model_id is not None:
+            cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
+            cos_model = JinaBertModel.from_pretrained(**cos_models_args)
+            self._cosine_model = AverageCosineSimilarity(cos_model)
 
     # ------------------------------------------------------------------
     # Low-level correctness checks
@@ -706,13 +738,14 @@ class MathEvaluator:
     # Full evaluation
     # ------------------------------------------------------------------
 
-    def evaluate(  # noqa: C901, PLR0912, PLR0915
+    def evaluate(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         generations: list[list[str]],
         gold_answers: list[str],
         string_references: list[list[str]] | None = None,
         k_values: list[int] | None = None,
         num_workers: int = 1,
+        batch_size: int | None = None,
     ) -> dict[str, float | str]:
         """Compute comprehensive math evaluation metrics.
 
@@ -728,6 +761,8 @@ class MathEvaluator:
         k_values:
             Which k values to compute pass@k for. Defaults to [1, 2, 4, 8, 16],
             clamped to the actual group size.
+        batch_size:
+            Override the instance-level batch size for this call.
 
         Returns
         -------
@@ -796,6 +831,31 @@ class MathEvaluator:
         timings.append(("batch_diversity", elapsed))
         metrics.update(batch_diversity)
 
+        # ── neural metrics (perplexity + cosine) ──────────────────────────
+        _batch_size = batch_size if batch_size is not None else self.batch_size
+        if self._perplexity_model is not None:
+            ppl_stats, elapsed = _time_call(
+                self._perplexity_model,
+                generations,
+                batch_size=_batch_size,
+            )
+            timings.append(("perplexity", elapsed))
+            metrics.update(ppl_stats)
+
+        if self._cosine_model is not None:
+            cos_stats, elapsed = _time_call(self._cosine_model, generations)
+            timings.append(("cosine_similarity", elapsed))
+            metrics.update(cos_stats)
+
+            if references and any(refs for refs in references):
+                cos_at_k_scores, elapsed = _time_call(
+                    self._cosine_model.compute_max_alignment,
+                    generations,
+                    references,
+                )
+                timings.append(("cos_at_k", elapsed))
+                metrics.update(compute_statistics(cos_at_k_scores, "cos_at_k"))
+
         # ── summary string ────────────────────────────────────────────────
         summary_parts: list[str] = []
 
@@ -807,6 +867,31 @@ class MathEvaluator:
             val = metrics.get(f"pass_at_{k}", float("nan"))
             if not np.isnan(val):
                 summary_parts.append(f"pass@{k}: {_format_num(val)}")
+
+        # Perplexity (asymmetric CI in PPL space)
+        if "perplexity" in metrics and "perplexity_ci95_lower" in metrics:
+            ppl_mean = metrics["perplexity"]
+            ppl_lower = metrics["perplexity_ci95_lower"]
+            ppl_upper = metrics["perplexity_ci95_upper"]
+            assert isinstance(ppl_mean, float) and isinstance(ppl_lower, float) and isinstance(ppl_upper, float)
+            val_str = _format_asymmetric_ci(
+                ppl_mean,
+                ppl_lower,
+                ppl_upper,
+            )
+            summary_parts.append(f"PPL: {val_str}")
+
+        # Cosine similarity (per-group)
+        if "cosine_similarity" in metrics and "cosine_similarity_ci95" in metrics:
+            summary_parts.append(
+                f"CosSim: {_format_summary_value(metrics['cosine_similarity'], metrics['cosine_similarity_ci95'])}",
+            )
+
+        # Cos@k (vs references)
+        if "cos_at_k" in metrics and "cos_at_k_ci95" in metrics:
+            summary_parts.append(
+                f"Cos@k: {_format_summary_value(metrics['cos_at_k'], metrics['cos_at_k_ci95'])}",
+            )
 
         for key, display_name in [("f1", "F1"), ("bleu", "BLEU"), ("distinct_2", "Dist-2"), ("self_bleu", "S-BLEU")]:
             if key in metrics:
@@ -932,7 +1017,12 @@ def main():
         file_path = os.path.join(args.folder_path, file_name)
         if _is_math_results_file(file_path):
             if math_evaluator is None:
-                math_evaluator = MathEvaluator(show_timings=True)
+                math_evaluator = MathEvaluator(
+                    show_timings=True,
+                    ppl_model_id=args.ppl_model_id,
+                    cos_model_id=args.cos_model_id,
+                    batch_size=args.batch_size,
+                )
             math_evaluator.eval_from_file(file_path, force=args.force, num_workers=args.num_workers)
         else:
             if evaluator is None:
