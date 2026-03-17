@@ -45,6 +45,9 @@ run_llada_math() {
   torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
+ROOT=$(pwd)/src/d5p4
+cd $ROOT
+
 list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 set -ex
 
