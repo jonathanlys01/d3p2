@@ -42,7 +42,7 @@ COMMON_ARGS=(
 
 run_llada_math() {
   MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-  torchrun --nproc_per_node=$NPROC --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
+  torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
 list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
