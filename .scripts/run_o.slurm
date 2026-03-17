@@ -5,13 +5,25 @@
 #SBATCH --gres=gpu:h200:2
 #SBATCH --time=01:00:00
 #SBATCH --qos normal
-#SBATCH --output=/Brain/private/j21lys/logs/%j.out
+#SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
+#SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
 export OMP_NUM_THREADS=1
 cd "$(git rev-parse --show-toplevel)"
+mkdir -p logs
 
+# Node-local scratch for this job
+JOB_ROOT="${SCRATCH}/uv-${SLURM_JOB_NAME}"
+mkdir -p "${JOB_ROOT}"
+
+# Put both the env and uv cache on the same fast filesystem
+export UV_PROJECT_ENVIRONMENT="${JOB_ROOT}/venv"
+
+# Optional: keep uv-managed Python on scratch too
+export UV_PYTHON_INSTALL_DIR="${JOB_ROOT}/python"
 uv sync -n
-source .venv/bin/activate
+
+source $UV_PROJECT_ENVIRONMENT/bin/activate
 
 COMMON_ARGS=(
   --config=_default.yaml
@@ -28,13 +40,12 @@ COMMON_ARGS=(
   confidence_eos_eot_inf=False 
 )
 
-
 run_llada_math() {
   MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
   torchrun --nproc_per_node=$NPROC --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
-list_w_interaction=(0.0 1.0 2.5 10.0)
+list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 set -ex
 
 run_llada_math \
@@ -52,3 +63,7 @@ for w_interaction in "${list_w_interaction[@]}"; do
     comment="D5P4 (fixed grp) @ w_inter=${w_interaction}" \
     _w_interaction=$w_interaction
 done
+
+echo Cleanup
+rm -rf $JOB_ROOT
+echo All done

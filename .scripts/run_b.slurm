@@ -2,18 +2,29 @@
 #SBATCH --job-name=llada-test
 #SBATCH --partition=Brain
 #SBATCH --cpus-per-gpu=47
-#SBATCH --gres=gpu:a100:2
+#SBATCH --gres=gpu:a100:1
 #SBATCH --time=20:00:00
-#SBATCH --qos highbrain
-#SBATCH --output=logs/%j.out
+#SBATCH --qos lowbrain
+#SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
+#SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
 export OMP_NUM_THREADS=1
 cd "$(git rev-parse --show-toplevel)"
 mkdir -p logs
 
 
+# Node-local scratch for this job
+JOB_ROOT="${SCRATCH}/uv-${SLURM_JOB_NAME}"
+mkdir -p "${JOB_ROOT}"
+
+# Put both the env and uv cache on the same fast filesystem
+export UV_PROJECT_ENVIRONMENT="${JOB_ROOT}/venv"
+
+# Optional: keep uv-managed Python on scratch too
+export UV_PYTHON_INSTALL_DIR="${JOB_ROOT}/python"
 uv sync -n
-source .venv/bin/activate
+
+source $UV_PROJECT_ENVIRONMENT/bin/activate
 
 COMMON_ARGS=(
   --config=_default.yaml
@@ -54,3 +65,7 @@ for w_interaction in "${list_w_interaction[@]}"; do
     comment="D5P4 (fixed grp) @ w_inter=${w_interaction}" \
     _w_interaction=$w_interaction
 done
+
+echo Cleanup
+rm -rf $JOB_ROOT
+echo All done
