@@ -41,6 +41,7 @@ COMMON_ARGS=(
   gen_length=256
   block_length=8
   confidence_eos_eot_inf=False 
+  qa_dataset=gsm8k
 )
 
 

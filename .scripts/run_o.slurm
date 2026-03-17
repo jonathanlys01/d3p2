@@ -39,7 +39,8 @@ COMMON_ARGS=(
   llada_steps=256
   gen_length=256
   block_length=8
-  confidence_eos_eot_inf=False 
+  confidence_eos_eot_inf=False
+  qa_dataset=gsm8k
 )
 
 run_llada_math() {
