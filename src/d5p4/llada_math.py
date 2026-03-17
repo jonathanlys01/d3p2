@@ -74,10 +74,6 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
             generations.append(gen_text)
 
-        # Deduplicate expanded groups (same logic as single_run_llada.py)
-        if config.group_size > 1 and len(generations) != config.n_groups:
-            generations = generations[:: config.group_size]
-
         scores = evaluator.score_group(generations, gold)
         acc = evaluator.accuracy(generations, gold)
 

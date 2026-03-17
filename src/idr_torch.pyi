@@ -11,4 +11,6 @@ local_rank: int
 world_size: int
 size: int
 
+IdrTorchWarning: type[Warning]
+
 def __getattr__(name: str) -> Any: ...

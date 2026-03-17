@@ -25,12 +25,6 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
-
-REPO_ROOT = Path(__file__).resolve().parent
-SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 from d5p4.config import Config
 from d5p4.data.math_ds import gsm8k
 from d5p4.eval_core import MathEvaluator, _is_math_results_file
@@ -114,7 +108,7 @@ def load_config_from_sources(saved_config: Any, config_file: Path | None) -> Con
         loaded = OmegaConf.to_container(OmegaConf.load(config_file), resolve=True)
         if not isinstance(loaded, dict):
             raise ValueError(f"Config file did not resolve to a mapping: {config_file}")
-        merged.update(loaded)
+        merged.update(loaded)  # type: ignore
 
     if isinstance(saved_config, dict):
         merged.update(saved_config)
@@ -192,7 +186,7 @@ def convert_file(path: Path, args: argparse.Namespace) -> tuple[Path, int]:
 
     if len(results) > len(rows):
         raise ValueError(
-            f"Results file has {len(results)} entries but GSM8K with the resolved config only produced {len(rows)} rows.",
+            f"Results file has {len(results)} entries but GSM8K with the config only produced {len(rows)} rows.",
         )
 
     injected = 0
