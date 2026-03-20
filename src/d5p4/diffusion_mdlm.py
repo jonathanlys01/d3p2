@@ -10,7 +10,7 @@ from torch import nn
 from d5p4.config import Cache, Config
 from d5p4.mdlm_ref.modeling_mdlm import MDLM, MDLMConfig
 from d5p4.subsample import get_subsample_selector
-from d5p4.utils import get_initial_data, get_tokenizer, process_model_args, sample_categorical, tqdm
+from d5p4.utils import configure_runtime, get_initial_data, get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
 NEG_INFINITY = -1_000_000.0
@@ -23,6 +23,7 @@ class MDLMSampler(nn.Module):
 
     def __init__(self, config: Config):
         super().__init__()
+        configure_runtime(config)
 
         model_args = process_model_args(config.mdlm_model_path, cache_dir=config.cache_dir)
         self.model = MDLM.from_pretrained(**model_args)
@@ -42,6 +43,7 @@ class MDLMSampler(nn.Module):
 
     def update_config(self, config: Config):
         """Update model and selector config (for reusing model across sweep trials)."""
+        configure_runtime(config)
         self.config = config
         self.selector.config = config
 

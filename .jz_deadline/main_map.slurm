@@ -38,6 +38,7 @@ shift
 set -ex
 srun python d5p4/single_run_llada.py \
     --config=d5p4/_jz.yaml \
+    minimal_log=true \
     model=llada \
     n_groups=2 \
     group_size=4 \

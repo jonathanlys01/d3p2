@@ -35,7 +35,7 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python d5p4/exps/main.py --config=d5p4/_jz.yaml n_runs=2 method=greedy_map _w_interaction=5.0
+srun python d5p4/exps/main.py --config=d5p4/_jz.yaml minimal_log=true n_runs=2 method=greedy_map _w_interaction=5.0
 
 # divide the estimated CI by 4 = sqrt(16) (true run is with n_runs = 32)
 

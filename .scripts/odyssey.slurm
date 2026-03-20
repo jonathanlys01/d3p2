@@ -27,6 +27,7 @@ source $UV_PROJECT_ENVIRONMENT/bin/activate
 
 COMMON_ARGS=(
   --config=_default.yaml
+  minimal_log=true
   model=llada
   qa_n_shots=4
   qa_dataset_len=$N_QUESTIONS

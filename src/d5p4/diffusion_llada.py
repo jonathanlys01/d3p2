@@ -18,7 +18,7 @@ from d5p4.config import Cache, Config
 from d5p4.data import get_qa_dataset
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from d5p4.subsample import get_subsample_selector
-from d5p4.utils import get_tokenizer, process_model_args, sample_categorical, tqdm
+from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
 MASK_TOKEN_ID = 126336
@@ -29,6 +29,7 @@ class LLADASampler(nn.Module):
 
     def __init__(self, config: Config):
         super().__init__()
+        configure_runtime(config)
 
         model_args = process_model_args(config.llada_model_path, cache_dir=config.cache_dir, dtype="auto")
         self.model = LLaDAModelLM.from_pretrained(**model_args)
@@ -50,6 +51,7 @@ class LLADASampler(nn.Module):
 
     def update_config(self, config: Config):
         """Update model and selector config (for reusing model across sweep trials)."""
+        configure_runtime(config)
         self.config = config
         self.selector.config = config
 

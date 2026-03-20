@@ -3,8 +3,8 @@ import warnings
 from builtins import print as bprint
 from collections.abc import Iterable, Iterator, Sized
 from datetime import datetime
-from typing import TypeVar
 from time import monotonic
+from typing import TypeVar
 
 import numpy as np
 import torch
@@ -31,6 +31,15 @@ def _format_duration(seconds: float) -> str:
     if hours:
         return f"{hours:d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+MINIMAL_LOG: bool = False
+
+
+def configure_runtime(cfg: Config):
+    global INTERACTIVE, MINIMAL_LOG  # noqa: PLW0603
+    INTERACTIVE = cfg.interactive
+    MINIMAL_LOG = cfg.minimal_log
 
 
 class _MinimalProgress(Iterator[T]):
@@ -101,7 +110,7 @@ class _MinimalProgress(Iterator[T]):
 
 
 def tqdm(it: Iterable[T], **kwargs) -> Iterable[T]:
-    minimal = kwargs.pop("minimal", not INTERACTIVE)
+    minimal = kwargs.pop("minimal", MINIMAL_LOG)
     if minimal:
         return _MinimalProgress(it, **kwargs)
 

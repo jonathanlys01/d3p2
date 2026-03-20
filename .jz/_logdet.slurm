@@ -32,6 +32,6 @@ cd $ROOT
 set -ex
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python d5p4/exps/sweeps/logdet.py --config=d5p4/_jz.yaml
+srun python d5p4/exps/sweeps/logdet.py --config=d5p4/_jz.yaml minimal_log=true
 
 echo "Job ended at $(date)"

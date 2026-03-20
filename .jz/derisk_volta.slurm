@@ -34,7 +34,7 @@ cd $WORK/projects/d3p2
 ROOT=$(pwd)/src
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-COMMON="n_groups=4 group_size=4 n_runs=2 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
+COMMON="minimal_log=true n_groups=4 group_size=4 n_runs=2 mdlm_model_path=$MODEL_PATH mdlm_tokenizer=$TOKENIZER_PATH"
 
 srun python src/d5p4/exps/main.py $COMMON method=dpp _w_interaction=0.1
 

@@ -35,6 +35,7 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 # Match effective batch_size with _main: n_groups*group_size = 4*8 = 32
 # Baseline requires group_size=1, post-hoc selection of k=8 done by the script
 srun python d5p4/exps/baseline_mdlm.py --config=d5p4/_jz.yaml \
+    minimal_log=true \
     n_groups=32 \
     group_size=1 \
     method=baseline

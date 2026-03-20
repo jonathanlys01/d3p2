@@ -31,7 +31,7 @@ cd $WORK/projects/d3p2
 ROOT=$(pwd)/src
 export PYTHONPATH=$ROOT:$PYTHONPATH
 
-srun python src/d5p4/exps/sweeps/argmax.py --config=src/d5p4/_default.yaml
+srun python src/d5p4/exps/sweeps/argmax.py --config=src/d5p4/_default.yaml minimal_log=true
 
 
 echo "Job ended at $(date)"

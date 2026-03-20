@@ -57,6 +57,7 @@ for config_str in "${CONFIGS[@]}"; do
     set -ex
     srun python d5p4/single_run_llada.py \
         --config=d5p4/_jz.yaml \
+        minimal_log=true \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$n_groups \
@@ -82,6 +83,7 @@ for config_str in "${CONFIGS[@]}"; do
     set -ex
     srun python d5p4/exps/baseline_llada.py \
         --config=d5p4/_jz.yaml \
+        minimal_log=true \
         model=llada \
         n_runs=$N_RUNS \
         n_groups=$baseline_n_groups \
