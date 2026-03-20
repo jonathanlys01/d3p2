@@ -72,7 +72,9 @@ class Perplexity(torch.nn.Module):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=self.tokenizer.pad_token_id)
+        tokenizer_pad_id = self.tokenizer.pad_token_id
+        assert isinstance(tokenizer_pad_id, int)
+        self.loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=tokenizer_pad_id)
 
         if isinstance(self.model, GPT2Model):
             self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)

@@ -10,10 +10,10 @@ import torch.nn.functional as F
 from d5p4.config import RESULTS_DIR
 
 
-@torch.no_grad()
 def compute_cka(ref_embeddings: torch.Tensor, model_outputs: torch.Tensor) -> float:
     """Compute CKA between reference embeddings and model outputs."""
-    ref_embeddings = ref_embeddings.to(torch.float32)
+    with torch.no_grad():
+        ref_embeddings = ref_embeddings.to(torch.float32)
     model_outputs = model_outputs.to(torch.float32)
 
     # Center embeddings
@@ -34,10 +34,10 @@ def compute_cka(ref_embeddings: torch.Tensor, model_outputs: torch.Tensor) -> fl
     return cka.item()
 
 
-@torch.no_grad()
 def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
     """Compute the average pairwise cosine similarity (excluding self-similarity)."""
-    batch_size = embeddings.shape[0]
+    with torch.no_grad():
+        batch_size = embeddings.shape[0]
     if batch_size <= 1:
         return 0.0
 

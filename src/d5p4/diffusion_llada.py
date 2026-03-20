@@ -147,114 +147,114 @@ class LLADASampler(nn.Module):
         x0_p[:, prompt_len + (num_block + 1) * self.config.block_length :] = -torch.inf
         return x0_p
 
-    @torch.no_grad()
     def sample(self, prompt: str):  # noqa: PLR0915
-        num_blocks = self.config.gen_length // self.config.block_length
-        steps = self.config.llada_steps // num_blocks
-        batch_size = self.config.batch_size
-        assert self.config.cfg_scale >= 0, f"cfg_scale must be non-negative, got {self.config.cfg_scale}"
+        with torch.no_grad():
+            num_blocks = self.config.gen_length // self.config.block_length
+            steps = self.config.llada_steps // num_blocks
+            batch_size = self.config.batch_size
+            assert self.config.cfg_scale >= 0, f"cfg_scale must be non-negative, got {self.config.cfg_scale}"
 
-        prompt_tokens = self._preprocess_prompt(prompt)
-        prompt_len = prompt_tokens.shape[1]
-        prompt_tokens = prompt_tokens.repeat(batch_size, 1)
+            prompt_tokens = self._preprocess_prompt(prompt)
+            prompt_len = prompt_tokens.shape[1]
+            prompt_tokens = prompt_tokens.repeat(batch_size, 1)
 
-        # Setup generation buffer
-        x = torch.full(
-            (batch_size, prompt_len + self.config.gen_length),
-            self.mask_index,
-            dtype=torch.long,
-        ).to(self.device)
-        x[:, :prompt_len] = prompt_tokens.clone()
+            # Setup generation buffer
+            x = torch.full(
+                (batch_size, prompt_len + self.config.gen_length),
+                self.mask_index,
+                dtype=torch.long,
+            ).to(self.device)
+            x[:, :prompt_len] = prompt_tokens.clone()
 
-        prompt_index = x != self.mask_index
+            prompt_index = x != self.mask_index
 
-        disable = False
-        if self.distributed_utils:
-            disable = self.distributed_utils.rank != 0
+            disable = False
+            if self.distributed_utils:
+                disable = self.distributed_utils.rank != 0
 
-        # When there's only one block, show progress for steps instead
-        single_block = num_blocks == 1
-        block_iter = range(num_blocks) if single_block else tqdm(range(num_blocks), desc="Blocks", disable=disable)
+            # When there's only one block, show progress for steps instead
+            single_block = num_blocks == 1
+            block_iter = range(num_blocks) if single_block else tqdm(range(num_blocks), desc="Blocks", disable=disable)
 
-        for num_block in block_iter:
-            start = prompt_len + num_block * self.config.block_length
-            end = prompt_len + (num_block + 1) * self.config.block_length
-            block_mask_index = x[:, start:end] == self.mask_index
+            for num_block in block_iter:
+                start = prompt_len + num_block * self.config.block_length
+                end = prompt_len + (num_block + 1) * self.config.block_length
+                block_mask_index = x[:, start:end] == self.mask_index
 
-            num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
+                num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
 
-            step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
-            for step in step_iter:
-                mask_index = x == self.mask_index
+                step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
+                for step in step_iter:
+                    mask_index = x == self.mask_index
 
-                # Apply CFG only if step is within the guidance range
-                apply_cfg = (
-                    self.config.cfg_scale != 1.0 and self.config.guidance_start <= step < self.config.guidance_end
-                )
+                    # Apply CFG only if step is within the guidance range
+                    apply_cfg = (
+                        self.config.cfg_scale != 1.0 and self.config.guidance_start <= step < self.config.guidance_end
+                    )
 
-                if apply_cfg:
-                    un_x = x.clone()
-                    un_x[prompt_index] = self.mask_index
-                    x_ = torch.cat([x, un_x], dim=0)
+                    if apply_cfg:
+                        un_x = x.clone()
+                        un_x[prompt_index] = self.mask_index
+                        x_ = torch.cat([x, un_x], dim=0)
 
-                    logits_all, out_all = self._forward_model(x_)
-                    embeddings_all = out_all[-1]
+                        logits_all, out_all = self._forward_model(x_)
+                        embeddings_all = out_all[-1]
 
-                    cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
-                    embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)  # cond logits
+                        cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
+                        embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)  # cond logits
 
-                    logits = uncond_logits + self.config.cfg_scale * (cond_logits - uncond_logits)
-                else:
-                    logits, out = self._forward_model(x)
-                    embeddings = out[-1]
+                        logits = uncond_logits + self.config.cfg_scale * (cond_logits - uncond_logits)
+                    else:
+                        logits, out = self._forward_model(x)
+                        embeddings = out[-1]
 
-                if self.config.logits_eos_inf:
-                    logits[:, :, 126081] = -torch.inf
+                    if self.config.logits_eos_inf:
+                        logits[:, :, 126081] = -torch.inf
 
-                log_p_x0 = F.log_softmax(logits, dim=-1)
+                    log_p_x0 = F.log_softmax(logits, dim=-1)
 
-                cache = Cache(
-                    log_p_x0=log_p_x0[:, start:end],
-                    embeddings=embeddings[:, start:end],
-                    x=x[:, start:end],
-                )
-                subsample_step, slice_idx = self._get_slice(step, cache)
+                    cache = Cache(
+                        log_p_x0=log_p_x0[:, start:end],
+                        embeddings=embeddings[:, start:end],
+                        x=x[:, start:end],
+                    )
+                    subsample_step, slice_idx = self._get_slice(step, cache)
 
-                assert slice_idx is not None
+                    assert slice_idx is not None
 
-                # Capture logits for sampling BEFORE expansion
-                logits_to_sample = torch.index_select(log_p_x0, 0, slice_idx)
+                    # Capture logits for sampling BEFORE expansion
+                    logits_to_sample = torch.index_select(log_p_x0, 0, slice_idx)
 
-                if subsample_step:
-                    # Expand indices
-                    expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
+                    if subsample_step:
+                        # Expand indices
+                        expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
 
-                    # Expand state (index_select gives bounds-checked CPU error instead of cryptic CUDA crash)
-                    x = torch.index_select(x, 0, expanded_idx)
-                    log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
-                    mask_index = torch.index_select(mask_index, 0, expanded_idx)
-                    num_transfer_tokens = torch.index_select(num_transfer_tokens, 0, expanded_idx)
-                    prompt_index = torch.index_select(prompt_index, 0, expanded_idx)
+                        # Expand state (index_select gives bounds-checked CPU error instead of cryptic CUDA crash)
+                        x = torch.index_select(x, 0, expanded_idx)
+                        log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
+                        mask_index = torch.index_select(mask_index, 0, expanded_idx)
+                        num_transfer_tokens = torch.index_select(num_transfer_tokens, 0, expanded_idx)
+                        prompt_index = torch.index_select(prompt_index, 0, expanded_idx)
 
-                # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
-                x0 = self._block_sample(logits_to_sample, subsample_step)
+                    # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
+                    x0 = self._block_sample(logits_to_sample, subsample_step)
 
-                # Pass log_probs to _get_confidence
-                x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
+                    # Pass log_probs to _get_confidence
+                    x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
 
-                x0 = torch.where(mask_index, x0, x)
-                confidence = torch.where(mask_index, x0_p, -torch.inf)
+                    x0 = torch.where(mask_index, x0, x)
+                    confidence = torch.where(mask_index, x0_p, -torch.inf)
 
-                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                for j in range(x.shape[0]):
-                    _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, step])
-                    transfer_index[j, select_index] = True
-                x[transfer_index] = x0[transfer_index]
+                    transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                    for j in range(x.shape[0]):
+                        _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, step])
+                        transfer_index[j, select_index] = True
+                    x[transfer_index] = x0[transfer_index]
 
-        if self.distributed_utils:
-            x = self.distributed_utils.all_gather_sequences(x)
+            if self.distributed_utils:
+                x = self.distributed_utils.all_gather_sequences(x)
 
-        return x
+            return x
 
 
 def main_block():

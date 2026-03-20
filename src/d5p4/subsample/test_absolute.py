@@ -171,9 +171,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
     # Dynamic header generation
     headers = [f"{'N_G':>4}", f"{'N_I':>4}", f"{'w_int':>5}"]
 
-    raw_h = []
-    rnk_h = []
-    t50_h = []
+    raw_h: list[str] = []
+    rnk_h: list[str] = []
+    t50_h: list[str] = []
 
     for method, _ in IMPLEMENTED_METHODS:
         meta = METHOD_META[method]
@@ -302,9 +302,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
                 # Dynamic row printing
                 row_cols = [f"{n_groups:>4}", f"{group_size:>4}", f"{w:>5.2f}"]
 
-                raw_cells = []
-                rnk_cells = []
-                t50_cells = []
+                raw_cells: list[str] = []
+                rnk_cells: list[str] = []
+                t50_cells: list[str] = []
 
                 for i, (method, _) in enumerate(IMPLEMENTED_METHODS):
                     clr = METHOD_META[method]["color"]

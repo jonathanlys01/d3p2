@@ -127,7 +127,7 @@ def build_dataset_rows(config: Config) -> tuple[list[Any], dict[str, Any]]:
     question_to_row: dict[str, Any] = {}
 
     for row in rows:
-        question = str(row.question)
+        question = str(row.question)  # type: ignore
         if question in question_to_row:
             raise ValueError("Dataset contains duplicate question prompts; cannot safely match old results.")
         question_to_row[question] = row

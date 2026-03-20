@@ -126,38 +126,38 @@ class MDLMSampler(nn.Module):
 
         return ret
 
-    @torch.no_grad()
     def sample(
         self,
         init_x: Optional[torch.Tensor] = None,
     ):
-        num_steps = self.config.mdlm_steps
+        with torch.no_grad():
+            num_steps = self.config.mdlm_steps
 
-        if init_x is None:
-            if self.config.initial_mask_ratio == 1.0:
-                init_x = self._sample_prior(self.config.batch_size, self.model_length)
-            else:
-                init_x = get_initial_data(self.tokenizer, self.mask_index, self.config)
+            if init_x is None:
+                if self.config.initial_mask_ratio == 1.0:
+                    init_x = self._sample_prior(self.config.batch_size, self.model_length)
+                else:
+                    init_x = get_initial_data(self.tokenizer, self.mask_index, self.config)
 
-        x = init_x.to(self.device)
+            x = init_x.to(self.device)
 
-        timesteps = torch.linspace(1, EPS, num_steps + 1, device=self.device)
-        dt = (1 - EPS) / num_steps
+            timesteps = torch.linspace(1, EPS, num_steps + 1, device=self.device)
+            dt = (1 - EPS) / num_steps
 
-        disable = False
-        if self.distributed_utils:
-            disable = self.distributed_utils.rank != 0
-        for i in tqdm(range(num_steps), desc="Generating", disable=disable):
-            t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-            x = self._ddpm_update(x=x, t=t, dt=dt, step=i)
+            disable = False
+            if self.distributed_utils:
+                disable = self.distributed_utils.rank != 0
+            for i in tqdm(range(num_steps), desc="Generating", disable=disable):
+                t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+                x = self._ddpm_update(x=x, t=t, dt=dt, step=i)
 
-        assert x is not None
+            assert x is not None
 
-        # last step cleanup: sample from p(x0 | xt) to fill remaining masks
-        t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
-        x = self._ddpm_update(x=x, t=t, dt=timesteps[-1].item(), step=-1)
+            # last step cleanup: sample from p(x0 | xt) to fill remaining masks
+            t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
+            x = self._ddpm_update(x=x, t=t, dt=timesteps[-1].item(), step=-1)
 
-        return x
+            return x
 
 
 if __name__ == "__main__":

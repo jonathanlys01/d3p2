@@ -104,6 +104,7 @@ project-excludes = [
     "src/d5p4/llada_ref",
     "src/d5p4/mdlm_ref",
     "src/d5p4/mauve",
+    "tests",
 ] # external sources
 
 [tool.pyrefly.errors]

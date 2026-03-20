@@ -56,112 +56,112 @@ class AutoregressiveSampler(nn.Module):
         bos = torch.full((1, 1), self.tokenizer.bos_token_id, dtype=torch.long, device=self.device)
         return torch.cat([bos, tokens], dim=1)
 
-    @torch.no_grad()
     def sample(self, prompt: str | None = None):  # noqa: C901, PLR0912, PLR0915
-        batch_size = self.config.batch_size
+        with torch.no_grad():
+            batch_size = self.config.batch_size
 
-        # Initialize sequence with prompt or BOS
-        if prompt is not None:
-            encoded = self.tokenizer([prompt], add_special_tokens=True, padding=False, return_tensors="pt")
-            prompt_tokens = self._prepend_bos(encoded["input_ids"].to(self.device))
-            seq = prompt_tokens.repeat(batch_size, 1)
-            prompt_len = prompt_tokens.shape[1]
-        else:
-            seq = torch.full((batch_size, 1), self.tokenizer.bos_token_id, dtype=torch.long, device=self.device)
-            prompt_len = 0
+            # Initialize sequence with prompt or BOS
+            if prompt is not None:
+                encoded = self.tokenizer([prompt], add_special_tokens=True, padding=False, return_tensors="pt")
+                prompt_tokens = self._prepend_bos(encoded["input_ids"].to(self.device))
+                seq = prompt_tokens.repeat(batch_size, 1)
+                prompt_len = prompt_tokens.shape[1]
+            else:
+                seq = torch.full((batch_size, 1), self.tokenizer.bos_token_id, dtype=torch.long, device=self.device)
+                prompt_len = 0
 
-        attention_mask = torch.ones_like(seq, dtype=torch.long)
-        finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-        past_key_values = None
+            attention_mask = torch.ones_like(seq, dtype=torch.long)
+            finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            past_key_values = None
 
-        # For mean embedding strategy: track cumulative embeddings
-        use_mean_embedding = self.config.ar_embedding_method == "mean"
-        embedding_sum: torch.Tensor | None = None
-        embedding_count = 0
+            # For mean embedding strategy: track cumulative embeddings
+            use_mean_embedding = self.config.ar_embedding_method == "mean"
+            embedding_sum: torch.Tensor | None = None
+            embedding_count = 0
 
-        disable = False
-        if self.distributed_utils:
-            disable = self.distributed_utils.rank != 0
+            disable = False
+            if self.distributed_utils:
+                disable = self.distributed_utils.rank != 0
 
-        for step in tqdm(range(self.model_length), desc="Generating", disable=disable):
-            subsample_step = self.config.subsample_start <= step <= self.config.subsample_end
-            input_ids = seq if past_key_values is None else seq[:, -1:]
+            for step in tqdm(range(self.model_length), desc="Generating", disable=disable):
+                subsample_step = self.config.subsample_start <= step <= self.config.subsample_end
+                input_ids = seq if past_key_values is None else seq[:, -1:]
 
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                use_cache=True,
-                return_dict=True,
-                output_hidden_states=True,
-            )
-
-            past_key_values = outputs.past_key_values
-            embeddings = outputs.hidden_states[-1] if outputs.hidden_states else None
-            logits = outputs.logits[:, -1]
-            probs = F.softmax(logits, dim=-1).unsqueeze(1)
-
-            # Update cumulative embedding sum for mean strategy
-            if use_mean_embedding and embeddings is not None:
-                current_emb = embeddings[:, -1, :]  # [B, hidden_dim]
-                embedding_sum = current_emb.clone() if embedding_sum is None else embedding_sum + current_emb
-                embedding_count += 1
-
-            if subsample_step and self.config.group_size > 1:
-                # Compute embedding for Cache based on strategy (always shape [B, 1, E])
-                if use_mean_embedding and embedding_sum is not None:
-                    mean_emb = (embedding_sum / embedding_count).unsqueeze(1)  # [B, 1, E]
-                    cache_embeddings = mean_emb
-                else:
-                    cache_embeddings = embeddings[:, -1:] if embeddings is not None else None
-
-                cache = Cache(
-                    log_p_x0=logits.unsqueeze(1),
-                    embeddings=cache_embeddings,
-                    x=seq,
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    return_dict=True,
+                    output_hidden_states=True,
                 )
-                slice_idx = self.selector.subsample(cache)
 
-                if slice_idx is not None:
-                    # Slice state
-                    probs = probs[slice_idx]
-                    seq = seq[slice_idx]
-                    finished = finished[slice_idx]
-                    attention_mask = attention_mask[slice_idx]
-                    if use_mean_embedding and embedding_sum is not None:
-                        embedding_sum = embedding_sum[slice_idx]
+                past_key_values = outputs.past_key_values
+                embeddings = outputs.hidden_states[-1] if outputs.hidden_states else None
+                logits = outputs.logits[:, -1]
+                probs = F.softmax(logits, dim=-1).unsqueeze(1)
 
-                    # Expand
-                    g = self.config.group_size
-                    next_token = sample_categorical(probs, expand=g)
-                    seq = seq.repeat_interleave(g, dim=0)
-                    finished = finished.repeat_interleave(g, dim=0)
-                    attention_mask = attention_mask.repeat_interleave(g, dim=0)
+                # Update cumulative embedding sum for mean strategy
+                if use_mean_embedding and embeddings is not None:
+                    current_emb = embeddings[:, -1, :]  # [B, hidden_dim]
+                    embedding_sum = current_emb.clone() if embedding_sum is None else embedding_sum + current_emb
+                    embedding_count += 1
+
+                if subsample_step and self.config.group_size > 1:
+                    # Compute embedding for Cache based on strategy (always shape [B, 1, E])
                     if use_mean_embedding and embedding_sum is not None:
-                        embedding_sum = embedding_sum.repeat_interleave(g, dim=0)
-                    if past_key_values is not None:
-                        past_key_values = DynamicCache(
-                            tuple(kv[slice_idx].repeat_interleave(g, dim=0) for kv in layer)
-                            for layer in past_key_values
-                        )
+                        mean_emb = (embedding_sum / embedding_count).unsqueeze(1)  # [B, 1, E]
+                        cache_embeddings = mean_emb
+                    else:
+                        cache_embeddings = embeddings[:, -1:] if embeddings is not None else None
+
+                    cache = Cache(
+                        log_p_x0=logits.unsqueeze(1),
+                        embeddings=cache_embeddings,
+                        x=seq,
+                    )
+                    slice_idx = self.selector.subsample(cache)
+
+                    if slice_idx is not None:
+                        # Slice state
+                        probs = probs[slice_idx]
+                        seq = seq[slice_idx]
+                        finished = finished[slice_idx]
+                        attention_mask = attention_mask[slice_idx]
+                        if use_mean_embedding and embedding_sum is not None:
+                            embedding_sum = embedding_sum[slice_idx]
+
+                        # Expand
+                        g = self.config.group_size
+                        next_token = sample_categorical(probs, expand=g)
+                        seq = seq.repeat_interleave(g, dim=0)
+                        finished = finished.repeat_interleave(g, dim=0)
+                        attention_mask = attention_mask.repeat_interleave(g, dim=0)
+                        if use_mean_embedding and embedding_sum is not None:
+                            embedding_sum = embedding_sum.repeat_interleave(g, dim=0)
+                        if past_key_values is not None:
+                            past_key_values = DynamicCache(
+                                tuple(kv[slice_idx].repeat_interleave(g, dim=0) for kv in layer)
+                                for layer in past_key_values
+                            )
+                    else:
+                        next_token = sample_categorical(probs, expand=None)
                 else:
                     next_token = sample_categorical(probs, expand=None)
-            else:
-                next_token = sample_categorical(probs, expand=None)
 
-            next_token[finished] = self.tokenizer.eos_token_id
-            finished = finished | (next_token.squeeze(-1) == self.tokenizer.eos_token_id)
-            seq = torch.cat([seq, next_token], dim=1)
-            attention_mask = torch.cat([attention_mask, (~finished).long().unsqueeze(-1)], dim=1)
+                next_token[finished] = self.tokenizer.eos_token_id
+                finished = finished | (next_token.squeeze(-1) == self.tokenizer.eos_token_id)
+                seq = torch.cat([seq, next_token], dim=1)
+                attention_mask = torch.cat([attention_mask, (~finished).long().unsqueeze(-1)], dim=1)
 
-            if finished.all():
-                break
+                if finished.all():
+                    break
 
-        # Gather all sequences in distributed mode (handles variable lengths)
-        if self.distributed_utils:
-            seq, lengths = self.distributed_utils.all_gather_sequences_varlen(seq, self.tokenizer.pad_token_id)
+            # Gather all sequences in distributed mode (handles variable lengths)
+            if self.distributed_utils:
+                seq, lengths = self.distributed_utils.all_gather_sequences_varlen(seq, self.tokenizer.pad_token_id)
 
-        return seq, prompt_len
+            return seq, prompt_len
 
 
 def main():

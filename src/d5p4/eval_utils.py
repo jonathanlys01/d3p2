@@ -96,8 +96,10 @@ def compute_statistics(values: list[float], prefix: str) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def _format_num(x: float, sig_figs: int = 4) -> str:
+def _format_num(x: float | str, sig_figs: int = 4) -> str:
     """Format a number with specified significant figures."""
+    if isinstance(x, str):
+        return x
     if x == 0:
         return "0"
     if np.isnan(x):
@@ -105,12 +107,12 @@ def _format_num(x: float, sig_figs: int = 4) -> str:
     return f"{x:.{sig_figs}g}"
 
 
-def _format_summary_value(mean: float, ci95: float, sig_figs: int = 4) -> str:
+def _format_summary_value(mean: float | str, ci95: float | str, sig_figs: int = 4) -> str:
     """Format a mean ± symmetric CI as a string."""
     return f"{_format_num(mean, sig_figs)} pm {_format_num(ci95, sig_figs)}"
 
 
-def _format_asymmetric_ci(mean: float, lower: float, upper: float, sig_figs: int = 4) -> str:
+def _format_asymmetric_ci(mean: float | str, lower: float | str, upper: float | str, sig_figs: int = 4) -> str:
     """Format a mean with asymmetric CI bounds."""
     return f"{_format_num(mean, sig_figs)} [{_format_num(lower, sig_figs)}, {_format_num(upper, sig_figs)}]"
 

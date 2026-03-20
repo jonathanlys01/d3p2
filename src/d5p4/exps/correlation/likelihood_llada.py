@@ -66,159 +66,148 @@ def forward_process(batch, prompt_index, mask_id):
     return noisy_batch, p_mask, full_mask
 
 
-@torch.no_grad()
 def get_llada_log_likelihood(model, prompt, answer, mc_num=128, batch_size=16, mask_id=126336) -> float:  # noqa: PLR0913
     """
     Estimate the log-likelihood of (answer | prompt) using LLaDA.
     """
-    device = model.device
+    with torch.no_grad():
+        device = model.device
 
-    # Concatenate prompt and answer
-    seq = torch.cat([prompt, answer]).unsqueeze(0)  # [1, L]
-    seq_batch = seq.repeat(batch_size, 1).to(device)
+        # Concatenate prompt and answer
+        seq = torch.cat([prompt, answer]).unsqueeze(0)  # [1, L]
+        seq_batch = seq.repeat(batch_size, 1).to(device)
 
-    # Create boolean index for prompt (True for prompt tokens)
-    prompt_index = torch.arange(seq.shape[1], device=device) < len(prompt)
+        # Create boolean index for prompt (True for prompt tokens)
+        prompt_index = torch.arange(seq.shape[1], device=device) < len(prompt)
 
-    likelihood_sum = 0.0
-    num_batches = mc_num // batch_size
-    if num_batches == 0:
-        num_batches = 1
-        batch_size = mc_num  # Adjust if mc_num < default batch_size
+        likelihood_sum = 0.0
+        num_batches = mc_num // batch_size
+        if num_batches == 0:
+            num_batches = 1
+            batch_size = mc_num  # Adjust if mc_num < default batch_size
 
-    for _ in range(num_batches):
-        output = forward_process(seq_batch, prompt_index, mask_id)
-        assert output is not None
-        perturbed_seq, p_mask, mask_index = output
+        for _ in range(num_batches):
+            output = forward_process(seq_batch, prompt_index, mask_id)
+            assert output is not None
+            perturbed_seq, p_mask, mask_index = output
 
-        # Forward pass
-        output = model(perturbed_seq)
-        logits = output.logits
+            # Forward pass
+            output = model(perturbed_seq)
+            logits = output.logits
 
-        # Compute Log-Likelihood estimate
-        # We only consider loss on masked tokens (which are part of the answer)
-        # The reference implementation divides by p_mask (ratio) to debias
+            # Compute Log-Likelihood estimate
+            # We only consider loss on masked tokens (which are part of the answer)
+            # The reference implementation divides by p_mask (ratio) to debias
 
-        flat_logits = logits[mask_index]
-        flat_targets = seq_batch[mask_index]
-        flat_ratios = p_mask[mask_index]
+            flat_logits = logits[mask_index]
+            flat_targets = seq_batch[mask_index]
+            flat_ratios = p_mask[mask_index]
 
-        ce_loss = F.cross_entropy(flat_logits, flat_targets, reduction="mean")
+            ce_loss = F.cross_entropy(flat_logits, flat_targets, reduction="mean")
 
-        # Weighted log prob: -CE / ratio
-        weighted_log_p = -ce_loss / flat_ratios
+            # Weighted log prob: -CE / ratio
+            weighted_log_p = -ce_loss / flat_ratios
 
-        # Aggregate per sample. Since we flattened, we need to be careful.
-        # But wait, original code:
-        # loss = F.cross_entropy(logits[mask_index], seq[mask_index], reduction="none") / p_mask[mask_index]
-        # loss = loss.sum() / batch_size
-        # return -sum(loss_) / len(loss_)
-        # It computes AVG loss per batch.
-        # Let's match the logic: Sum of (CE/ratio) over all masked tokens, averaged over batch size.
-        # The return value is Log Likelihood (negative of loss).
+            # Aggregate per sample. Since we flattened, we need to be careful.
+            # But wait, original code:
+            # loss = F.cross_entropy(logits[mask_index], seq[mask_index], reduction="none") / p_mask[mask_index]
+            # loss = loss.sum() / batch_size
+            # return -sum(loss_) / len(loss_)
+            # It computes AVG loss per batch.
+            # Let's match the logic: Sum of (CE/ratio) over all masked tokens, averaged over batch size.
+            # The return value is Log Likelihood (negative of loss).
 
-        batch_loss = weighted_log_p.sum()  # Sum of all weighted losses in batch
+            batch_loss = weighted_log_p.sum()  # Sum of all weighted losses in batch
 
-        # We need the average log-likelihood per sample.
-        # The original code sums up loss for the *entire batch* then divides by batch_size.
-        # That means it's calculating E[Loss] per sample.
+            # We need the average log-likelihood per sample.
+            # The original code sums up loss for the *entire batch* then divides by batch_size.
+            # That means it's calculating E[Loss] per sample.
 
-        likelihood_sum += batch_loss.item() / batch_size
+            likelihood_sum += batch_loss.item() / batch_size
 
-    return likelihood_sum / num_batches
+        return likelihood_sum / num_batches
 
 
-@torch.no_grad()
 def compute_internal_scores(model, prompt, answer, mc_num=64, batch_size=16, mask_id=126336) -> tuple[float, float]:  # noqa: PLR0913
     """
     Compute entropy and self-certainty scores for LLaDA on the answer part.
     """
-    device = model.device
-    seq = torch.cat([prompt, answer]).unsqueeze(0)
-    seq_batch = seq.repeat(batch_size, 1).to(device)
-    prompt_index = torch.arange(seq.shape[1], device=device) < len(prompt)
+    with torch.no_grad():
+        device = model.device
+        seq = torch.cat([prompt, answer]).unsqueeze(0)
+        seq_batch = seq.repeat(batch_size, 1).to(device)
+        prompt_index = torch.arange(seq.shape[1], device=device) < len(prompt)
 
-    entropy_scores_accum: list[float] = []
-    self_certainty_scores_accum: list[float] = []
+        entropy_scores_accum: list[float] = []
+        self_certainty_scores_accum: list[float] = []
 
-    num_batches = mc_num // batch_size
-    if num_batches == 0:
-        num_batches = 1
-        batch_size = mc_num
+        num_batches = mc_num // batch_size
+        if num_batches == 0:
+            num_batches = 1
+            batch_size = mc_num
 
-    for _ in range(num_batches):
-        out = forward_process(seq_batch, prompt_index, mask_id)
-        assert out is not None
+        for _ in range(num_batches):
+            out = forward_process(seq_batch, prompt_index, mask_id)
+            assert out is not None
 
-        perturbed_seq, _, _ = out
+            perturbed_seq, _, _ = out
 
-        output = model(perturbed_seq)
-        log_probs = F.log_softmax(output.logits, dim=-1)  # [B, L, V]
+            output = model(perturbed_seq)
+            log_probs = F.log_softmax(output.logits, dim=-1)  # [B, L, V]
 
-        # Compute scores
-        # Note: _compute_scores calculates scores for the WHOLE sequence.
-        # We strictly only care about the answer part for correlation?
-        # Typically, for generation quality estimation, we look at the whole sequence or just the generated part.
-        # Given we are correlating with P(Answer|Prompt), we should probably focus on Answer tokens.
-        # However, `_compute_scores` returns [B] (mean over sequence).
-        # Let's slice the log_probs to only include answer part before passing to cache?
-        # Or just compute on full. The prompt is unmasked, so confidence should be high/fixed?
-        # Actually in LLaDA forward_process, prompt is NOT masked.
-        # So the model sees the prompt perfectly. It should be very confident about it (it's input).
-        # Including prompt might dilute the score signal of the answer.
-        # Let's slice to answer part only.
+            # Compute scores
+            # Note: _compute_scores calculates scores for the WHOLE sequence.
+            # We strictly only care about the answer part for correlation?
+            # Typically, for generation quality estimation, we look at the whole sequence or just the generated part.
+            # Given we are correlating with P(Answer|Prompt), we should probably focus on Answer tokens.
+            # However, `_compute_scores` returns [B] (mean over sequence).
+            # Let's slice the log_probs to only include answer part before passing to cache?
+            # Or just compute on full. The prompt is unmasked, so confidence should be high/fixed?
+            # Actually in LLaDA forward_process, prompt is NOT masked.
+            # So the model sees the prompt perfectly. It should be very confident about it (it's input).
+            # Including prompt might dilute the score signal of the answer.
+            # Let's slice to answer part only.
 
-        answer_start = len(prompt)
-        log_probs_answer = log_probs[:, answer_start:, :]
+            answer_start = len(prompt)
+            log_probs_answer = log_probs[:, answer_start:, :]
 
-        cache_answer = Cache(log_p_x0=log_probs_answer)
+            cache_answer = Cache(log_p_x0=log_probs_answer)
 
-        entropy_score = _compute_scores(cache_answer, score_method="entropy")  # [B]
-        self_certainty_score = _compute_scores(cache_answer, score_method="self-certainty")  # [B]
+            entropy_score = _compute_scores(cache_answer, score_method="entropy")  # [B]
+            self_certainty_score = _compute_scores(cache_answer, score_method="self-certainty")  # [B]
 
-        entropy_scores_accum.append(float(entropy_score.mean().item()))
-        self_certainty_scores_accum.append(float(self_certainty_score.mean().item()))
+            entropy_scores_accum.append(float(entropy_score.mean().item()))
+            self_certainty_scores_accum.append(float(self_certainty_score.mean().item()))
 
-    return np.mean(entropy_scores_accum).item(), np.mean(self_certainty_scores_accum).item()
+        return np.mean(entropy_scores_accum).item(), np.mean(self_certainty_scores_accum).item()
 
 
-@torch.no_grad()
 def compute_ar_likelihood(model, tokenizer, prompt_text, answer_text) -> float:
     """
     Compute log P(answer | prompt) using an Autoregressive model.
     """
-    # Tokenize
-    # We want Input = Prompt + Answer
-    # Label = Prompt (ignore) + Answer (loss)
+    with torch.no_grad():
+        prompt_enc = tokenizer(prompt_text, add_special_tokens=True, return_tensors="pt").input_ids.to(model.device)
+        # For answer, we don't want special tokens if they are BOS
+        answer_enc = tokenizer(answer_text, add_special_tokens=False, return_tensors="pt").input_ids.to(model.device)
 
-    # Mask prompt in labels (-100 is default ignore_index in CrossEntropyLoss)
-    # Note: Llama tokenizer might add beginning of sentence token?
-    # We should verify. Typically AutoTokenizer handles it.
-    # If we simply rely on length, we might be off by 1 if merge happens.
-    # For correlation experiments, slight misalignment is usually acceptable, but let's try to be precise.
-    # Better: encode prompt, encode answer, concat.
+        # Concatenate
+        input_ids = torch.cat([prompt_enc, answer_enc], dim=1)
+        labels = input_ids.clone()
 
-    prompt_enc = tokenizer(prompt_text, add_special_tokens=True, return_tensors="pt").input_ids.to(model.device)
-    # For answer, we don't want special tokens if they are BOS
-    answer_enc = tokenizer(answer_text, add_special_tokens=False, return_tensors="pt").input_ids.to(model.device)
+        # Mask prompt
+        labels[:, : prompt_enc.shape[1]] = -100
 
-    # Concatenate
-    input_ids = torch.cat([prompt_enc, answer_enc], dim=1)
-    labels = input_ids.clone()
+        # Forward
+        outputs = model(input_ids, labels=labels)
 
-    # Mask prompt
-    labels[:, : prompt_enc.shape[1]] = -100
+        # Loss is avg neg log likelihood per token
+        # We want total log likelihood? Or avg log likelihood?
+        # Usually LL per token or Perplexity.
+        # Function returns likelihood (log capability).
+        # metrics usually are -loss.
 
-    # Forward
-    outputs = model(input_ids, labels=labels)
-
-    # Loss is avg neg log likelihood per token
-    # We want total log likelihood? Or avg log likelihood?
-    # Usually LL per token or Perplexity.
-    # Function returns likelihood (log capability).
-    # metrics usually are -loss.
-
-    return -outputs.loss.item()
+        return -outputs.loss.item()
 
 
 def main():  # noqa: PLR0915
@@ -273,10 +262,10 @@ def main():  # noqa: PLR0915
     MC_BATCH_SIZE = 16
 
     # Storage
-    entropy_scores = []
-    self_certainty_scores = []
-    llada_likelihoods = []
-    ar_likelihoods = []
+    entropy_scores: list[float] = []
+    self_certainty_scores: list[float] = []
+    llada_likelihoods: list[float] = []
+    ar_likelihoods: list[float] = []
 
     for idx, row in tqdm(qa_df.iterrows(), total=len(qa_df), desc="Score Estimation"):
         question = row["question"]
@@ -326,16 +315,16 @@ def main():  # noqa: PLR0915
         return
 
     # Convert to arrays
-    entropy_scores = np.array(entropy_scores)
-    self_certainty_scores = np.array(self_certainty_scores)
-    llada_likelihoods = np.array(llada_likelihoods)
-    ar_likelihoods = np.array(ar_likelihoods)
+    entropy_scores_arr = np.array(entropy_scores)
+    self_certainty_scores_arr = np.array(self_certainty_scores)
+    llada_likelihoods_arr = np.array(llada_likelihoods)
+    ar_likelihoods_arr = np.array(ar_likelihoods)
 
     # Compute correlations
     # We correlate with AR Likelihood (Higher is better)
-    corr_ll, p_ll = spearmanr(llada_likelihoods, ar_likelihoods)
-    corr_entropy, p_entropy = spearmanr(entropy_scores, ar_likelihoods)
-    corr_self_cert, p_self_cert = spearmanr(self_certainty_scores, ar_likelihoods)
+    corr_ll, p_ll = spearmanr(llada_likelihoods_arr, ar_likelihoods_arr)
+    corr_entropy, p_entropy = spearmanr(entropy_scores_arr, ar_likelihoods_arr)
+    corr_self_cert, p_self_cert = spearmanr(self_certainty_scores_arr, ar_likelihoods_arr)
 
     print("\n" + "=" * 60)
     print("EXPERIMENT RESULTS: LLaDA Score Correlation with Llama-3 LL")

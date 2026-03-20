@@ -16,75 +16,74 @@ from d5p4.subsample.base import _compute_scores
 from d5p4.utils import get_tokenizer, seed_all, tqdm
 
 
-@torch.no_grad()
 def forward_process(batch, mask_id):
     """
     Randomly mask tokens in the batch using a range of mask ratios.
     Based on the LLADA reference implementation.
     """
-    b, L = batch.shape
-    device = batch.device
+    with torch.no_grad():
+        b, L = batch.shape
+        device = batch.device
 
-    # Sample a starting number of tokens to mask
-    k = torch.randint(1, L + 1, (), device=device)
+        # Sample a starting number of tokens to mask
+        k = torch.randint(1, L + 1, (), device=device)
 
-    # Create a range of masking ratios across the batch for better MC coverage
-    # This matches the logic from the LLADA reference _get_log_likelihood.py
-    x = torch.round(torch.linspace(float(k), k + (b - 1) * (L / b), steps=b, device=device)).long()
-    x = ((x - 1) % L) + 1
+        # Create a range of masking ratios across the batch for better MC coverage
+        # This matches the logic from the LLADA reference _get_log_likelihood.py
+        x = torch.round(torch.linspace(float(k), k + (b - 1) * (L / b), steps=b, device=device)).long()
+        x = ((x - 1) % L) + 1
 
-    indices = torch.arange(L, device=device).repeat(b, 1)
-    is_mask = indices < x.unsqueeze(1)
-    for i in range(b):
-        is_mask[i] = is_mask[i][torch.randperm(L)]
+        indices = torch.arange(L, device=device).repeat(b, 1)
+        is_mask = indices < x.unsqueeze(1)
+        for i in range(b):
+            is_mask[i] = is_mask[i][torch.randperm(L)]
 
-    noisy_batch = torch.where(is_mask, mask_id, batch)
-    p_mask = (x / L).unsqueeze(1).repeat(1, L)
-    return noisy_batch, p_mask, is_mask
+        noisy_batch = torch.where(is_mask, mask_id, batch)
+        p_mask = (x / L).unsqueeze(1).repeat(1, L)
+        return noisy_batch, p_mask, is_mask
 
 
-@torch.no_grad()
 def get_mdlm_log_likelihood(model, sequence, mc_num=128, batch_size=16, mask_id=None) -> float:
     """
     Estimate the log-likelihood of a sequence using Monte Carlo samples.
     Adaptation of the LLADA likelihood calculation logic for Discrete Diffusion.
     """
-    device = model.device
-    # Repeat sequence for batch processing of MC samples
-    seq_batch = sequence[None, :].repeat(batch_size, 1).to(device)
+    with torch.no_grad():
+        device = model.device
+        # Repeat sequence for batch processing of MC samples
+        seq_batch = sequence[None, :].repeat(batch_size, 1).to(device)
 
-    likelihood_sum = 0.0
-    num_batches = mc_num // batch_size
+        likelihood_sum = 0.0
+        num_batches = mc_num // batch_size
 
-    for _ in range(num_batches):
-        perturbed_seq, p_mask, mask_index = forward_process(seq_batch, mask_id)
+        for _ in range(num_batches):
+            perturbed_seq, p_mask, mask_index = forward_process(seq_batch, mask_id)
 
-        # Use the mask ratio as the timestep for MDLM
-        timesteps = p_mask[:, 0]
+            # Use the mask ratio as the timestep for MDLM
+            timesteps = p_mask[:, 0]
 
-        output = model(perturbed_seq, timesteps=timesteps, return_dict=True)
-        logits = output.logits
+            output = model(perturbed_seq, timesteps=timesteps, return_dict=True)
+            logits = output.logits
 
-        # Compute Log-Likelihood estimate: log P(x) ~= E [ -CE(logits, target) / ratio ]
-        # We only consider loss on masked tokens as per reference
-        flat_logits = logits[mask_index]
-        flat_targets = seq_batch[mask_index]
-        flat_ratios = p_mask[mask_index]
+            # Compute Log-Likelihood estimate: log P(x) ~= E [ -CE(logits, target) / ratio ]
+            # We only consider loss on masked tokens as per reference
+            flat_logits = logits[mask_index]
+            flat_targets = seq_batch[mask_index]
+            flat_ratios = p_mask[mask_index]
 
-        ce_loss = F.cross_entropy(flat_logits, flat_targets, reduction="none")
-        weighted_log_p = -ce_loss / flat_ratios
+            ce_loss = F.cross_entropy(flat_logits, flat_targets, reduction="none")
+            weighted_log_p = -ce_loss / flat_ratios
 
-        # Aggregate log-probs per sample in the batch
-        sample_indices = torch.where(mask_index)[0]
-        sample_log_probs = torch.zeros(batch_size, device=device)
-        sample_log_probs.index_add_(0, sample_indices, weighted_log_p)
+            # Aggregate log-probs per sample in the batch
+            sample_indices = torch.where(mask_index)[0]
+            sample_log_probs = torch.zeros(batch_size, device=device)
+            sample_log_probs.index_add_(0, sample_indices, weighted_log_p)
 
-        likelihood_sum += sample_log_probs.mean().item()
+            likelihood_sum += sample_log_probs.mean().item()
 
-    return likelihood_sum / num_batches
+        return likelihood_sum / num_batches
 
 
-@torch.no_grad()
 def compute_internal_scores(model, sequence, mask_id, mc_num=64, batch_size=16) -> tuple[float, float]:
     """
     Compute both entropy and self-certainty scores for a sequence.
@@ -92,7 +91,8 @@ def compute_internal_scores(model, sequence, mask_id, mc_num=64, batch_size=16) 
     Returns:
         tuple: (entropy_score, self_certainty_score) both in [0, 1]
     """
-    device = model.device
+    with torch.no_grad():
+        device = model.device
     seq_batch = sequence[None, :].repeat(batch_size, 1).to(device)
 
     entropy_scores_accum: list[float] = []

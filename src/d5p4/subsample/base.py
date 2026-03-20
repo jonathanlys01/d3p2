@@ -22,10 +22,10 @@ class BaseSelector(nn.Module):
     def forward(self, cache: Cache) -> torch.Tensor | None:
         return self.subsample(cache)
 
-    @torch.no_grad()
-    def subsample(self, cache: Cache):
+    def subsample(self, cache: Cache) -> torch.Tensor | None:
         """Select subset indices from cache, dispatching to transversal or non-transversal mode."""
-        ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
+        with torch.no_grad():
+            ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
 
         if self.distributed_utils:
             ret = self.distributed_utils.dispatch_batch_indices(ret)
@@ -35,7 +35,6 @@ class BaseSelector(nn.Module):
 
         return ret
 
-    @torch.no_grad()
     def compute_kernel(self, cache: Cache) -> torch.Tensor | None:
         """
         Compute the DPP kernel matrix L.
@@ -47,7 +46,8 @@ class BaseSelector(nn.Module):
         - "additive": Weighted sum approach
             K = w_interaction * S + diag(scores)
         """
-        assert cache.embeddings is not None
+        with torch.no_grad():
+            assert cache.embeddings is not None
 
         B = cache.embeddings.size(0)
         flat = cache.embeddings.float().reshape(B, -1)
@@ -102,10 +102,10 @@ class BaseSelector(nn.Module):
 
         return K
 
-    @torch.no_grad()
     def compute_scores(self, cache: Cache) -> torch.Tensor | None:
         """Compute scores based on entropy or self-certainty of predicted distribution."""
-        assert cache.log_p_x0 is not None
+        with torch.no_grad():
+            assert cache.log_p_x0 is not None
 
         scores = _compute_scores(cache, self.config._score_method, model=self.config.model)
 
