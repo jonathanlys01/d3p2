@@ -10,9 +10,9 @@ COMMON_ARGS=(
   remasking=low_confidence
   logits_eos_inf=False
   cfg_scale=2.5
-  llada_steps=256
-  gen_length=256
-  block_length=256
+  llada_steps=128
+  gen_length=128
+  block_length=128
   confidence_eos_eot_inf=False
 )
 
