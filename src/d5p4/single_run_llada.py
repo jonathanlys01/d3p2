@@ -8,10 +8,10 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-from d5p4.common_exps import eval_samples
 from d5p4.config import RESULTS_DIR, Config
 from d5p4.data import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
+from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -45,7 +45,8 @@ def main():
 
     dataset = get_qa_dataset(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
-    prompts: list[str] = [row.question for row in dataset.itertuples()][:limit]  # type: ignore
+    rows = list(dataset.itertuples())[:limit]
+    prompts: list[str] = [row.question for row in rows]  # type: ignore
 
     for i in range(len(prompts)):
         print(f"Sampling batch {i + 1}/{len(prompts)}...")
@@ -61,13 +62,30 @@ def main():
         texts.append(texts_)
         save(texts, config, unique_id, rank=offset)
 
+    master = model.distributed_utils is None or model.distributed_utils.rank == 0
+    metrics = None
+    if master:
+        print("Running evaluation...")
+        references: list[list[str]] = [row.correct_answers for row in rows]  # type: ignore
+        evaluator = Evaluator(
+            batch_size=config.eval_batch_size,
+            force=True,
+            ppl_model_id=config.ppl_model_id,
+            cos_model_id=config.cos_model_id,
+        )
+        metrics = evaluator.evaluate(texts, references=references)
+        assert metrics["metrics_summary"] is not None
+        print(f"Evaluation complete: {metrics['metrics_summary']}")
+
     samples = {
         "text_samples": texts,  # list of lists of strings
         "config": asdict(config),
         "experiment_id": str(unique_id),
     }
+    if metrics is not None:
+        samples["metrics"] = metrics
 
-    if model.distributed_utils is None or model.distributed_utils.rank == 0:  # save on master only (or non-distributed)
+    if master:  # save on master only (or non-distributed)
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
         os.makedirs(RESULTS_DIR, exist_ok=True)
         with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
@@ -77,15 +95,6 @@ def main():
     for file in os.listdir(RESULTS_DIR):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
             os.remove(os.path.join(RESULTS_DIR, file))
-
-    # Evaluate samples on master only
-    if model.distributed_utils is None or model.distributed_utils.rank == 0:
-        print("Running evaluation...")
-        # Extract references for the questions we sampled
-        references: list[list[str]] = [row.correct_answers for row in dataset.itertuples()][:limit]  # type: ignore
-        metrics = eval_samples(str(unique_id), config, references=references)
-        assert metrics is not None and metrics["metrics_summary"] is not None
-        print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
