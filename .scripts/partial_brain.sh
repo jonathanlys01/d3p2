@@ -1,33 +1,4 @@
 #!/bin/bash
-#SBATCH --job-name=llada
-#SBATCH --partition=Brain
-#SBATCH --cpus-per-gpu=47
-#SBATCH --gres=gpu:a100:2
-#SBATCH --qos highbrain
-#SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
-#SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
-
-if [ -z "${HF_TOKEN}" ]; then
-    echo "HF_TOKEN is not set. Please set it before running this script."
-    exit 1
-fi
-
-export OMP_NUM_THREADS=1
-
-# Node-local scratch for this job
-JOB_ROOT="${SCRATCH}/uv-${SLURM_JOB_NAME}"
-mkdir -p "${JOB_ROOT}"
-
-# uv caches (env)
-export UV_PROJECT_ENVIRONMENT="${JOB_ROOT}/venv"
-export UV_PYTHON_INSTALL_DIR="${JOB_ROOT}/python"
-uv sync -n
-
-# torch.compile / inductor / triton caches
-export TORCHINDUCTOR_CACHE_DIR="${JOB_ROOT}/torchinductor"
-export TRITON_CACHE_DIR="${JOB_ROOT}/triton"
-
-source "${UV_PROJECT_ENVIRONMENT}/bin/activate"
 
 COMMON_ARGS=(
   --config=_default.yaml
