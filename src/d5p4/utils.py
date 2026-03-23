@@ -1,7 +1,7 @@
 import os
 import warnings
 from builtins import print as bprint
-from collections.abc import Iterable, Iterator, Sized
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from time import monotonic
 from typing import TypeVar
@@ -43,7 +43,7 @@ def configure_runtime(cfg: Config):
 
 
 class _MinimalProgress(Iterator[T]):
-    """Minimal progress logger that emits sparse, log-friendly updates."""
+    """Minimal progress logger that only logs total steps and time upon completion."""
 
     def __init__(
         self,
@@ -51,45 +51,22 @@ class _MinimalProgress(Iterator[T]):
         *,
         desc: str | None = None,
         disable: bool = False,
-        total: int | None = None,
-        mininterval: float = 90.0,
         **_: object,
     ):
-        self._iterable = iterable
         self._iterator = iter(iterable)
         self._desc = desc or "Progress"
         self._disable = disable
         self._count = 0
         self._start_time = monotonic()
-        self._last_log_time = self._start_time
-        self._total = total if total is not None else (len(iterable) if isinstance(iterable, Sized) else None)
-        self._mininterval = mininterval
         self._closed = False
-
-        if not self._disable:
-            print(f"[{_timestamp()}] {self._status_message('started')}")
-
-    def _status_message(self, status: str) -> str:
-        progress = f"{self._count}/{self._total}" if self._total is not None else str(self._count)
-        elapsed = _format_duration(monotonic() - self._start_time)
-        return f"{self._desc} {status} | {progress} | elapsed {elapsed}"
-
-    def _log_progress(self):
-        if self._disable:
-            return
-
-        now = monotonic()
-        if now - self._last_log_time < self._mininterval:
-            return
-
-        self._last_log_time = now
-        print(f"[{_timestamp()}] {self._status_message('progress')}")
 
     def _close(self):
         if self._disable or self._closed:
             return
+
         self._closed = True
-        print(f"[{_timestamp()}] {self._status_message('done')}")
+        elapsed = _format_duration(monotonic() - self._start_time)
+        print(f"[{_timestamp()}] {self._desc} done | {self._count} steps | total time {elapsed}")
 
     def __iter__(self) -> "_MinimalProgress[T]":
         return self
@@ -102,7 +79,6 @@ class _MinimalProgress(Iterator[T]):
             raise
 
         self._count += 1
-        self._log_progress()
         return item
 
     def __del__(self):
