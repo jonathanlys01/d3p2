@@ -4,8 +4,10 @@ COMMON_ARGS=(
   --config=_default.yaml
   minimal_log=true
   model=llada
+  group_size=4
+  n_groups=4
   qa_n_shots=0
-  qa_dataset_len=-1
+  qa_dataset_len=200
   cat_temperature=1.0
   remasking=low_confidence
   logits_eos_inf=False
@@ -31,8 +33,6 @@ set -ex
 # Truthful QA
 run_exp \
   method=greedy_map \
-  n_groups=4 \
-  group_size=4 \
   subsample_end=64 \
   _w_interaction=8 \
   qa_dataset=truthful_qa \
@@ -40,8 +40,6 @@ run_exp \
 
 run_exp \
   method=greedy_map \
-  n_groups=4 \
-  group_size=4 \
   subsample_end=-1 \
   _w_interaction=8 \
   qa_dataset=truthful_qa \
@@ -50,8 +48,6 @@ run_exp \
 # Common Sense QA
 run_exp \
   method=greedy_map \
-  n_groups=4 \
-  group_size=4 \
   subsample_end=64 \
   _w_interaction=8 \
   qa_dataset=common_sense_qa \
@@ -59,8 +55,6 @@ run_exp \
 
 run_exp \
   method=greedy_map \
-  n_groups=4 \
-  group_size=4 \
   subsample_end=-1 \
   _w_interaction=8 \
   qa_dataset=common_sense_qa \
