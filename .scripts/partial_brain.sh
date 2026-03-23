@@ -33,7 +33,7 @@ run_exp \
   method=greedy_map \
   n_groups=4 \
   group_size=4 \
-  subsample_end=128 \
+  subsample_end=64 \
   _w_interaction=8 \
   qa_dataset=truthful_qa \
   comment="truthful-partial"
@@ -52,7 +52,7 @@ run_exp \
   method=greedy_map \
   n_groups=4 \
   group_size=4 \
-  subsample_end=128 \
+  subsample_end=64 \
   _w_interaction=8 \
   qa_dataset=common_sense_qa \
   comment="common_sense_qa-partial"
