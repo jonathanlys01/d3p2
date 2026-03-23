@@ -52,7 +52,7 @@ class _MinimalProgress(Iterator[T]):
         desc: str | None = None,
         disable: bool = False,
         total: int | None = None,
-        mininterval: float = 30.0,
+        mininterval: float = 90.0,
         **_: object,
     ):
         self._iterable = iterable
