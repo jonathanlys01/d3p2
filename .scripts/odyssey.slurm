@@ -10,7 +10,7 @@
 if [ -z "${HF_TOKEN}" ]; then
     echo "HF_TOKEN is not set. Please set it before running this script."
     exit 1
-
+fi
   
 N_QUESTIONS=${N_QUESTIONS:-100}
 export OMP_NUM_THREADS=1
