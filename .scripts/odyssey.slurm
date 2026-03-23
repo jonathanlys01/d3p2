@@ -7,6 +7,11 @@
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
+if [ -z "${HF_TOKEN}" ]; then
+    echo "HF_TOKEN is not set. Please set it before running this script."
+    exit 1
+
+  
 N_QUESTIONS=${N_QUESTIONS:-100}
 export OMP_NUM_THREADS=1
 
@@ -51,18 +56,10 @@ TOP_DIR=$(git rev-parse --show-toplevel)
 cd $TOP_DIR/src/d5p4
 
 # list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
-list_w_interaction=(6.4 8.0 11.5 15.0 20.0)
+# list_w_interaction=(6.4 8.0 11.5 15.0 20.0)
+list_w_interaction=(25.0 30.0)
+
 set -ex
-
-# derisk
-# run_llada_math \
-#     method=greedy_map \
-#     n_groups=2 \
-#     group_size=2 \
-#     subsample_end=128 \
-#     comment="derisk" \
-#     qa_dataset_len=5
-
 
 # run_llada_math \
 #     method=baseline \
