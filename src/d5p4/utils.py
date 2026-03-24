@@ -215,6 +215,7 @@ class DistributedUtils:
         self.local_rank: int = idr_torch.local_rank
         self.world_size: int = idr_torch.world_size
         self.cfg = cfg
+        self._owns_process_group = False
 
         if self.is_distributed():
             self._setup_pg()
@@ -511,22 +512,26 @@ class DistributedUtils:
         return gather_buffer, lengths
 
     def _setup_pg(self):
-        if not torch.distributed.is_initialized():
-            print("Initializing process group")
-            torch.distributed.init_process_group(
-                backend="nccl",
-                init_method="env://",
-                world_size=self.world_size,
-                rank=self.rank,
-            )
+        device = f"cuda:{self.local_rank}"
+        torch.cuda.set_device(device)
 
-            device = f"cuda:{self.local_rank}"
-            torch.cuda.set_device(device)
+        if torch.distributed.is_initialized():
+            return
+
+        print("Initializing process group")
+        torch.distributed.init_process_group(
+            backend="nccl",
+            init_method="env://",
+            world_size=self.world_size,
+            rank=self.rank,
+        )
+        self._owns_process_group = True
 
     def cleanup(self):
-        if not self.is_distributed():
+        if not self.is_distributed() or not self._owns_process_group:
             return
-        torch.distributed.destroy_process_group()
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
 
 
 # Dataloading utilities
