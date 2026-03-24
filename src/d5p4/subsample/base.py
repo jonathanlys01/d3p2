@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from d5p4.config import Cache, Config
-from d5p4.utils import DistributedUtils
+from d5p4.utils import DistributedUtils, print
 
 
 class BaseSelector(nn.Module):
@@ -26,6 +26,8 @@ class BaseSelector(nn.Module):
         """Select subset indices from cache, dispatching to transversal or non-transversal mode."""
         with torch.no_grad():
             ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
+
+        ret = self._validate_or_fallback(ret)
 
         if self.distributed_utils:
             ret = self.distributed_utils.dispatch_batch_indices(ret)
@@ -121,6 +123,68 @@ class BaseSelector(nn.Module):
     def _non_transversal(self, cache: Cache) -> torch.Tensor | None:
         """Non-transversal selection: global selection without group constraints."""
         raise NotImplementedError
+
+    def _candidate_count(self) -> int:
+        return self.config.batch_size * self.distributed_mul
+
+    def _selection_count(self) -> int:
+        return self.config.n_groups * self.distributed_mul
+
+    def _fallback_selection(self, device: torch.device) -> torch.Tensor:
+        if self.config.transversal:
+            groups = torch.arange(self._selection_count(), device=device)
+            return groups * self.config.group_size
+
+        local = torch.arange(self.config.n_groups, device=device)
+        if self.distributed_utils is None:
+            return local
+
+        offsets = torch.arange(self.distributed_mul, device=device) * self.config.batch_size
+        return (offsets.unsqueeze(1) + local.unsqueeze(0)).reshape(-1)
+
+    def _validate_global_selection(self, ret: torch.Tensor) -> bool:
+        expected_count = self._selection_count()
+        total_candidates = self._candidate_count()
+
+        if ret.dim() != 1 or ret.numel() != expected_count:
+            return False
+        if ret.numel() == 0:
+            return False
+        if ret.min().item() < 0 or ret.max().item() >= total_candidates:
+            return False
+        if torch.unique(ret).numel() != expected_count:
+            return False
+
+        if self.config.transversal:
+            group_ids = torch.div(ret, self.config.group_size, rounding_mode="floor")
+            return torch.unique(group_ids).numel() == expected_count
+
+        if self.distributed_utils:
+            for rank in range(self.distributed_mul):
+                start = rank * self.config.batch_size
+                end = start + self.config.batch_size
+                rank_count = ((ret >= start) & (ret < end)).sum().item()
+                if rank_count != self.config.n_groups:
+                    return False
+
+        return True
+
+    def _validate_or_fallback(self, ret: torch.Tensor | None) -> torch.Tensor | None:
+        if ret is None:
+            return None
+
+        ret = ret.long()
+        if self._validate_global_selection(ret):
+            return ret
+
+        fallback = self._fallback_selection(ret.device)
+        mode = "transversal" if self.config.transversal else "non-transversal"
+        print(
+            "Invalid selector output detected; using deterministic fallback "
+            f"for {type(self).__name__} ({mode}).",
+            force=True,
+        )
+        return fallback
 
 
 # General subsample utils

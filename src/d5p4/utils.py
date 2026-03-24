@@ -404,6 +404,11 @@ class DistributedUtils:
 
         # Get local indices for this rank
         local_indices = self._get_local_indices(all_indices.to(dtype=torch.long))
+        expected_local_size = self.cfg.n_groups
+        assert local_indices is not None and local_indices.numel() == expected_local_size, (
+            f"Local batch indices size mismatch on rank {self.rank}: "
+            f"{0 if local_indices is None else local_indices.numel()} != {expected_local_size}"
+        )
         return local_indices
 
     def _get_local_indices(self, global_indices: torch.Tensor) -> torch.Tensor | None:

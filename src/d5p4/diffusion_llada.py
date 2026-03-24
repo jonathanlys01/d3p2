@@ -238,6 +238,10 @@ class LLADASampler(nn.Module):
                         num_transfer_tokens = torch.index_select(num_transfer_tokens, 0, expanded_idx)
                         prompt_index = torch.index_select(prompt_index, 0, expanded_idx)
 
+                        assert x.size(0) == self.config.batch_size, (
+                            f"Expanded batch size mismatch: {x.size(0)} != {self.config.batch_size}"
+                        )
+
                     # Pass log_probs to _block_sample (softmax is invariant to shift, so log_probs work same as logits)
                     x0 = self._block_sample(logits_to_sample, subsample_step)
 
