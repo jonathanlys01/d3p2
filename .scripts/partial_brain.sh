@@ -50,14 +50,14 @@ run_exp \
   method=greedy_map \
   subsample_end=64 \
   _w_interaction=8 \
-  qa_dataset=common_sense_qa \
+  qa_dataset=commonsense_qa \
   comment="common_sense_qa-partial"
 
 run_exp \
   method=greedy_map \
   subsample_end=-1 \
   _w_interaction=8 \
-  qa_dataset=common_sense_qa \
+  qa_dataset=commonsense_qa \
   comment="common_sense_qa-d5p4"
 
 echo All done
