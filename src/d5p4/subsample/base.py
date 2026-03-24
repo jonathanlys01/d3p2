@@ -27,7 +27,7 @@ class BaseSelector(nn.Module):
         with torch.no_grad():
             ret = self._transversal(cache) if self.config.transversal else self._non_transversal(cache)
 
-        ret = self._validate_or_fallback(ret)
+        ret = self._validate_or_fallback(ret, cache)
 
         if self.distributed_utils:
             ret = self.distributed_utils.dispatch_batch_indices(ret)
@@ -130,7 +130,7 @@ class BaseSelector(nn.Module):
     def _selection_count(self) -> int:
         return self.config.n_groups * self.distributed_mul
 
-    def _fallback_selection(self, device: torch.device) -> torch.Tensor:
+    def _structural_fallback_selection(self, device: torch.device) -> torch.Tensor:
         if self.config.transversal:
             groups = torch.arange(self._selection_count(), device=device)
             return groups * self.config.group_size
@@ -142,7 +142,29 @@ class BaseSelector(nn.Module):
         offsets = torch.arange(self.distributed_mul, device=device) * self.config.batch_size
         return (offsets.unsqueeze(1) + local.unsqueeze(0)).reshape(-1)
 
-    def _validate_global_selection(self, ret: torch.Tensor) -> bool:
+    def _score_fallback_selection(self, cache: Cache) -> torch.Tensor | None:
+        scores = self.compute_scores(cache)
+        if scores is None:
+            return None
+
+        if self.config.transversal:
+            grouped = scores.view(self._selection_count(), self.config.group_size)
+            local_indices = torch.argmax(grouped, dim=1)
+            offsets = torch.arange(self._selection_count(), device=scores.device) * self.config.group_size
+            return local_indices + offsets
+
+        if self.distributed_utils:
+            rank_offsets = torch.arange(self.distributed_mul, device=scores.device) * self.config.batch_size
+            selected = []
+            for offset in rank_offsets:
+                rank_scores = scores[offset : offset + self.config.batch_size]
+                local_topk = torch.topk(rank_scores, k=self.config.n_groups).indices
+                selected.append(local_topk + offset)
+            return torch.cat(selected)
+
+        return torch.topk(scores, k=self.config.n_groups).indices
+
+    def _validate_global_selection(self, ret: torch.Tensor) -> bool:  # noqa: PLR0911
         expected_count = self._selection_count()
         total_candidates = self._candidate_count()
 
@@ -169,20 +191,30 @@ class BaseSelector(nn.Module):
 
         return True
 
-    def _validate_or_fallback(self, ret: torch.Tensor | None) -> torch.Tensor | None:
-        if ret is None:
-            return None
+    def _validate_or_fallback(self, ret: torch.Tensor | None, cache: Cache) -> torch.Tensor | None:
+        needs_fallback = False
+        if self.distributed_utils is None or self.distributed_utils.rank == 0:
+            needs_fallback = ret is None or not self._validate_global_selection(ret.long())
 
-        ret = ret.long()
-        if self._validate_global_selection(ret):
-            return ret
+        if self.distributed_utils:
+            invalid_flag = torch.tensor(int(needs_fallback), dtype=torch.int32, device=self.device)
+            torch.distributed.all_reduce(invalid_flag, op=torch.distributed.ReduceOp.MAX)
+            needs_fallback = bool(invalid_flag.item())
 
-        fallback = self._fallback_selection(ret.device)
+        if not needs_fallback:
+            assert ret is not None
+            return ret.long()
+
+        fallback = self._score_fallback_selection(cache)
+        if fallback is None:
+            if self.distributed_utils and self.distributed_utils.rank != 0:
+                return None
+            fallback_device = ret.device if ret is not None else torch.device(self.device)
+            fallback = self._structural_fallback_selection(fallback_device)
+
         mode = "transversal" if self.config.transversal else "non-transversal"
         print(
-            "Invalid selector output detected; using deterministic fallback "
-            f"for {type(self).__name__} ({mode}).",
-            force=True,
+            f"Invalid selector output detected; using deterministic score fallback for {type(self).__name__} ({mode}).",
         )
         return fallback
 
