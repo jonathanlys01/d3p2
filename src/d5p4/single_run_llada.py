@@ -48,12 +48,12 @@ def main():
     rows = list(dataset.itertuples())[:limit]
     prompts: list[str] = [row.question for row in rows]  # type: ignore
 
-    for i in range(len(prompts)):
+    for i, prompt in enumerate(prompts):
         print(f"Sampling batch {i + 1}/{len(prompts)}...")
-        samples = model.sample(prompt=prompts[i])
+        samples = model.sample(prompt=prompt)
         texts_ = []
         for sample in samples:
-            prompt_tokens = model._preprocess_prompt(prompts[i])
+            prompt_tokens = model._preprocess_prompt(prompt)
             prompt_len = prompt_tokens.shape[1]
             completion_tokens = sample[prompt_len:]
             gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
