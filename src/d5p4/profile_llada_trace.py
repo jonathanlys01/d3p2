@@ -54,6 +54,15 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--warmup-runs", type=int, default=1, help="Unprofiled runs before tracing.")
     parser.add_argument("--profile-runs", type=int, default=1, help="Profiled runs to include in the trace.")
     parser.add_argument(
+        "--steps-per-block",
+        type=int,
+        default=4,
+        help=(
+            "Override llada_steps to this many diffusion steps per block for quicker comparison traces. "
+            "Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--profile-compile",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -100,6 +109,21 @@ def load_config(config_args: list[str]) -> Config:
     return config
 
 
+def reduce_sampling_steps(config: Config, steps_per_block: int) -> Config:
+    if steps_per_block <= 0:
+        return config
+
+    num_blocks = config.gen_length // config.block_length
+    target_steps = min(config.llada_steps, steps_per_block * num_blocks)
+    if target_steps == config.llada_steps:
+        return config
+
+    config_dict = asdict(config)
+    config_dict["disable_sys_args"] = True
+    config_dict["llada_steps"] = target_steps
+    return Config(**config_dict)
+
+
 def sync_device():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -130,7 +154,7 @@ def save_metadata(output_dir: Path, metadata: dict, rank: int):
 
 def main():
     args, config_args = parse_args()
-    config = load_config(config_args)
+    config = reduce_sampling_steps(load_config(config_args), args.steps_per_block)
     sampler = LLADAProfilerSampler(config)
     offset = sampler.distributed_utils.rank if sampler.distributed_utils else 0
 
@@ -141,7 +165,9 @@ def main():
 
     prompt = resolve_prompt(config, args.prompt, args.prompt_index)
     output_dir = build_trace_output_dir(args.trace_dir)
-    trace_stem = args.trace_name or f"llada_trace_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    trace_stem = args.trace_name or (
+        f"llada_{config.method}_steps{config.llada_steps}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    )
     trace_path = output_dir / f"{trace_stem}_rank{offset}.trace.json"
 
     warmup_runs = 0 if args.profile_compile else args.warmup_runs
@@ -167,28 +193,29 @@ def main():
                 _ = sampler.sample(prompt)
                 sync_device()
 
-    prof.export_chrome_trace(str(trace_path))
-    save_metadata(
-        output_dir,
-        {
-            "rank": offset,
-            "prompt": prompt,
-            "trace_path": str(trace_path),
-            "config": asdict(config),
-            "profiler_args": {
-                "warmup_runs": args.warmup_runs,
-                "profile_runs": args.profile_runs,
-                "profile_compile": args.profile_compile,
-                "record_shapes": args.record_shapes,
-                "profile_memory": args.profile_memory,
-                "with_stack": args.with_stack,
-                "with_flops": args.with_flops,
+    if offset == 0:
+        prof.export_chrome_trace(str(trace_path))
+        save_metadata(
+            output_dir,
+            {
+                "rank": offset,
+                "prompt": prompt,
+                "trace_path": str(trace_path),
+                "config": asdict(config),
+                "profiler_args": {
+                    "warmup_runs": args.warmup_runs,
+                    "profile_runs": args.profile_runs,
+                    "steps_per_block": args.steps_per_block,
+                    "profile_compile": args.profile_compile,
+                    "record_shapes": args.record_shapes,
+                    "profile_memory": args.profile_memory,
+                    "with_stack": args.with_stack,
+                    "with_flops": args.with_flops,
+                },
             },
-        },
-        offset,
-    )
-
-    print(f"Saved trace to {trace_path}", force=True)
+            offset,
+        )
+        print(f"Saved trace to {trace_path}", force=True)
 
     if sampler.distributed_utils:
         sampler.distributed_utils.cleanup()
