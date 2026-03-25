@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+import numpy as np
 from pprint import pprint
 from unittest.mock import patch
 
@@ -57,9 +58,11 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         pprint(reference_alignment)
 
         self.assertIn("distinct_2", grouped_diversity)
+        self.assertIn("empirical_entropy", grouped_diversity)
         self.assertIn("self_bleu", grouped_diversity)
         self.assertIn("expectation_adjusted_distinct", grouped_diversity)
         self.assertIn("batch_distinct_2", corpus_diversity)
+        self.assertIn("batch_empirical_entropy", corpus_diversity)
         self.assertIn("batch_self_bleu", corpus_diversity)
         self.assertIn("batch_expectation_adjusted_distinct", corpus_diversity)
         self.assertIn("f1", reference_alignment)
@@ -69,8 +72,19 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
 
         self.assertNotIn("batch_distinct_2", grouped_diversity)
         self.assertGreaterEqual(grouped_diversity["distinct_2"], 0.0)
+        self.assertGreaterEqual(grouped_diversity["empirical_entropy"], 0.0)
         self.assertGreaterEqual(corpus_diversity["batch_distinct_2"], 0.0)
+        self.assertGreaterEqual(corpus_diversity["batch_empirical_entropy"], 0.0)
         self.assertGreaterEqual(reference_alignment["f1_at_k"], reference_alignment["f1"])
+
+    def test_empirical_entropy_matches_definition(self):
+        metrics = StringMetrics()
+
+        diversity = metrics.diversity_set(["a a b", "b c"], prefix="batch")
+        probs = np.array([2 / 5, 2 / 5, 1 / 5], dtype=float)
+        expected_entropy = float(-(probs * np.log(probs)).sum())
+
+        self.assertAlmostEqual(diversity["batch_empirical_entropy"], expected_entropy)
 
     def test_math_results_shape_persists_string_metrics_without_model_downloads(self):
         payload = {
@@ -119,7 +133,9 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
             self.assertIn("pass_at_2", math_metrics)
             self.assertIn("f1", math_metrics)
             self.assertIn("distinct_2", math_metrics)
+            self.assertIn("empirical_entropy", math_metrics)
             self.assertIn("batch_distinct_2", math_metrics)
+            self.assertIn("batch_empirical_entropy", math_metrics)
             self.assertIn("batch_self_bleu", math_metrics)
             self.assertIn("math_metrics_summary", math_metrics)
 

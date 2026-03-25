@@ -249,11 +249,13 @@ def _compute_distinct_metrics_impl(
     distinct_tokens: set[str] = set()
     distinct_tokens_2grams: set[tuple[str, str]] = set()
     distinct_tokens_3grams: set[tuple[str, str, str]] = set()
+    token_counts: Counter[str] = Counter()
     total_tokens = 0
 
     for prediction in texts:
         tokens = _cached_metric_tokenize(prediction)
         distinct_tokens.update(tokens)
+        token_counts.update(tokens)
         total_tokens += len(tokens)
 
         prev_1 = "<s>"
@@ -267,6 +269,11 @@ def _compute_distinct_metrics_impl(
     metrics["distinct_1"] = len(distinct_tokens) / total_tokens if total_tokens else 0.0
     metrics["distinct_2"] = len(distinct_tokens_2grams) / total_tokens if total_tokens else 0.0
     metrics["distinct_3"] = len(distinct_tokens_3grams) / total_tokens if total_tokens else 0.0
+    metrics["empirical_entropy"] = (
+        float(-sum((count / total_tokens) * np.log(count / total_tokens) for count in token_counts.values()))
+        if total_tokens
+        else 0.0
+    )
 
     if vocab_size is not None and total_tokens > 0:
         try:

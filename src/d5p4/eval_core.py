@@ -257,7 +257,7 @@ class WassersteinDistance(torch.nn.Module):
 
 
 class StringMetrics(torch.nn.Module):
-    """Lexical string metrics: distinct-n, self-BLEU, F1, BLEU vs references."""
+    """Lexical string metrics: distinct-n, empirical entropy, self-BLEU, F1, BLEU vs references."""
 
     def __init__(self):
         super().__init__()
@@ -478,6 +478,7 @@ class Evaluator:
             ("cosine_similarity", "CosSim"),
             ("wasserstein_distance", "WD"),
             ("distinct_2", "Dist-2"),
+            ("empirical_entropy", "Ent"),
             ("self_bleu", "S-BLEU"),
             ("cos_at_k", "Cos@k"),
         ]
@@ -895,7 +896,13 @@ class MathEvaluator:
                 f"Cos@k: {_format_summary_value(metrics['cos_at_k'], metrics['cos_at_k_ci95'])}",
             )
 
-        for key, display_name in [("f1", "F1"), ("bleu", "BLEU"), ("distinct_2", "Dist-2"), ("self_bleu", "S-BLEU")]:
+        for key, display_name in [
+            ("f1", "F1"),
+            ("bleu", "BLEU"),
+            ("distinct_2", "Dist-2"),
+            ("empirical_entropy", "Ent"),
+            ("self_bleu", "S-BLEU"),
+        ]:
             if key in metrics:
                 ci_key = f"{key}_ci95"
                 if ci_key in metrics:
@@ -903,7 +910,11 @@ class MathEvaluator:
                 else:
                     summary_parts.append(f"{display_name}: {_format_num(metrics[key])}")
 
-        for key, display_name in [("batch_distinct_2", "B-Dist2"), ("batch_self_bleu", "B-S-BLEU")]:
+        for key, display_name in [
+            ("batch_distinct_2", "B-Dist2"),
+            ("batch_empirical_entropy", "B-Ent"),
+            ("batch_self_bleu", "B-S-BLEU"),
+        ]:
             val = metrics.get(key, float("nan"))
             if not (isinstance(val, float) and np.isnan(val)):
                 summary_parts.append(f"{display_name}: {_format_num(val)}")
