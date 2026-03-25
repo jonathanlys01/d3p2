@@ -202,8 +202,7 @@ class BaseSelector(nn.Module):
             needs_fallback = bool(invalid_flag.item())
 
         if not needs_fallback:
-            assert ret is not None
-            return ret.long()
+            return None if ret is None else ret.long()
 
         fallback = self._score_fallback_selection(cache)
         if fallback is None:
