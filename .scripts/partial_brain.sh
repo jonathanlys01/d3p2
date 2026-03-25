@@ -4,10 +4,9 @@ COMMON_ARGS=(
   --config=_default.yaml
   minimal_log=true
   model=llada
-  group_size=4
-  n_groups=4
-  qa_n_shots=0
-  qa_dataset_len=200
+  group_size=3
+  n_groups=3
+  qa_dataset_len=500
   cat_temperature=1.0
   remasking=low_confidence
   logits_eos_inf=False
@@ -31,12 +30,6 @@ cd "${TOP_DIR}/src/d5p4"
 set -ex
 
 # Truthful QA
-run_exp \
-  method=greedy_map \
-  subsample_end=64 \
-  _w_interaction=8 \
-  qa_dataset=truthful_qa \
-  comment="truthful-partial"
 
 run_exp \
   method=greedy_map \
@@ -45,19 +38,35 @@ run_exp \
   qa_dataset=truthful_qa \
   comment="truthful-d5p4"
 
-# Common Sense QA
 run_exp \
-  method=greedy_map \
   subsample_end=64 \
+  method=greedy_map \
   _w_interaction=8 \
-  qa_dataset=commonsense_qa \
-  comment="common_sense_qa-partial"
+  qa_dataset=truthful_qa \
+  comment="truthful-partial-subsample"
 
 run_exp \
+  guidance_end=64 \
   method=greedy_map \
-  subsample_end=-1 \
   _w_interaction=8 \
-  qa_dataset=commonsense_qa \
-  comment="common_sense_qa-d5p4"
+  qa_dataset=truthful_qa \
+  comment="truthful-partial-cfg"
+
+
+# # Common Sense QA
+# run_exp \
+#   method=greedy_map \
+#   subsample_end=64 \
+#   _w_interaction=8 \
+#   qa_dataset=commonsense_qa \
+#   comment="common_sense_qa-partial" \
+#   qa_n_shots=1
+
+# run_exp \
+#   method=greedy_map \
+#   subsample_end=-1 \
+#   _w_interaction=8 \
+#   qa_dataset=commonsense_qa \
+#   comment="common_sense_qa-d5p4"
 
 echo All done
