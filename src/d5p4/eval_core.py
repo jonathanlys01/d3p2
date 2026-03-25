@@ -442,7 +442,7 @@ class Evaluator:
     # Public API
     # ------------------------------------------------------------------
 
-    def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float]:
+    def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float | str]:
         timings: list[tuple[str, float]] = []
 
         ppl_stats, elapsed = _time_call(self.perplexity_model, texts, batch_size=self.batch_size)
@@ -597,7 +597,11 @@ class Evaluator:
 
         return selected_sequences
 
-    def eval_from_file(self, file_path: str, references: list[list[str]] | None = None) -> dict[str, float] | None:
+    def eval_from_file(
+        self,
+        file_path: str,
+        references: list[list[str]] | None = None,
+    ) -> dict[str, float | str] | None:
         with open(file_path) as f:
             data = json.load(f)
 

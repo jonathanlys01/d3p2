@@ -206,6 +206,7 @@ def summarize_gpu_wall_clock(prof) -> list[dict[str, float | int | str]]:
         if gpu_time_us is None:
             continue
 
+        assert name
         samples[name].append(gpu_time_us)
 
     summary = []
@@ -237,12 +238,9 @@ def summarize_gpu_wall_clock(prof) -> list[dict[str, float | int | str]]:
 
 
 def print_wall_clock_summary(summary: list[dict[str, float | int | str]]):
-    print("Average GPU time per annotated scope (rank 0):", force=True)
+    print("Average GPU time per annotated scope (rank 0)")
     for row in summary:
-        print(
-            (f"  {row['name']}: {row['avg_ms']:.3f} +- {row['stderr_ms']:.3f} ms over {row['count']} calls"),
-            force=True,
-        )
+        print((f"  {row['name']}: {row['avg_ms']:.3f} +- {row['stderr_ms']:.3f} ms over {row['count']} calls"))
 
 
 def main():
@@ -311,7 +309,7 @@ def main():
             },
             offset,
         )
-        print(f"Saved trace to {trace_path}", force=True)
+        print(f"Saved trace to {trace_path}")
 
     if sampler.distributed_utils:
         sampler.distributed_utils.cleanup()
