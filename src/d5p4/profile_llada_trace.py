@@ -30,6 +30,24 @@ from d5p4.diffusion_llada_profile import LLADAProfilerSampler
 from d5p4.utils import compile_model, print, seed_all
 
 
+ANNOTATED_SCOPE_ORDER = [
+    "llada.block_transfer_plan",
+    "llada.diffusion_step",
+    "llada.guidance",
+    "llada.forward_pass",
+    "llada.model_forward",
+    "llada.log_softmax",
+    "llada.selection.slice",
+    "llada.selection.index",
+    "llada.selection.expand",
+    "llada.sampling",
+    "llada.selection.confidence",
+    "llada.selection.mask",
+    "llada.selection.transfer",
+    "llada.state_update",
+]
+
+
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", type=str, default=None, help="Prompt to profile. Defaults to qa_dataset row.")
@@ -152,6 +170,52 @@ def save_metadata(output_dir: Path, metadata: dict, rank: int):
         json.dump(metadata, f, indent=2)
 
 
+def summarize_wall_clock(trace_path: Path) -> list[dict[str, float | int | str]]:
+    with trace_path.open() as f:
+        trace = json.load(f)
+
+    durations: dict[str, float] = dict.fromkeys(ANNOTATED_SCOPE_ORDER, 0.0)
+    counts: dict[str, int] = dict.fromkeys(ANNOTATED_SCOPE_ORDER, 0)
+
+    for event in trace.get("traceEvents", []):
+        name = event.get("name")
+        if name not in durations or event.get("ph") != "X":
+            continue
+
+        duration_us = event.get("dur")
+        if duration_us is None:
+            continue
+
+        durations[name] += float(duration_us)
+        counts[name] += 1
+
+    summary = []
+    for name in ANNOTATED_SCOPE_ORDER:
+        count = counts[name]
+        if count == 0:
+            continue
+        avg_us = durations[name] / count
+        summary.append(
+            {
+                "name": name,
+                "count": count,
+                "avg_us": avg_us,
+                "avg_ms": avg_us / 1000.0,
+            },
+        )
+
+    return summary
+
+
+def print_wall_clock_summary(summary: list[dict[str, float | int | str]]):
+    print("Average wall-clock per annotated scope (rank 0):", force=True)
+    for row in summary:
+        print(
+            f"  {row['name']}: {row['avg_ms']:.3f} ms avg over {row['count']} calls",  # type: ignore[index]
+            force=True,
+        )
+
+
 def main():
     args, config_args = parse_args()
     config = reduce_sampling_steps(load_config(config_args), args.steps_per_block)
@@ -194,13 +258,18 @@ def main():
                 sync_device()
 
     if offset == 0:
-        prof.export_chrome_trace(str(trace_path))
+        temp_trace_path = trace_path.parent / f".{trace_path.name}.tmp"
+        prof.export_chrome_trace(str(temp_trace_path))
+        summary = summarize_wall_clock(temp_trace_path)
+        print_wall_clock_summary(summary)
+        temp_trace_path.replace(trace_path)
         save_metadata(
             output_dir,
             {
                 "rank": offset,
                 "prompt": prompt,
                 "trace_path": str(trace_path),
+                "scope_wall_clock_summary": summary,
                 "config": asdict(config),
                 "profiler_args": {
                     "warmup_runs": args.warmup_runs,
