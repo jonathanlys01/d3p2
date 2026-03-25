@@ -12,7 +12,7 @@ if [ -z "${HF_TOKEN}" ]; then
     exit 1
 fi
   
-N_QUESTIONS=${N_QUESTIONS:--1}
+N_QUESTIONS=${N_QUESTIONS:-500}
 export OMP_NUM_THREADS=1
 
 # Node-local scratch for this job
