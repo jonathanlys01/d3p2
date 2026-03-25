@@ -12,7 +12,7 @@ if [ -z "${HF_TOKEN}" ]; then
     exit 1
 fi
   
-N_QUESTIONS=${N_QUESTIONS:-100}
+N_QUESTIONS=${N_QUESTIONS:--1}
 export OMP_NUM_THREADS=1
 
 # Node-local scratch for this job
@@ -57,26 +57,26 @@ cd $TOP_DIR/src/d5p4
 
 # list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 # list_w_interaction=(6.4 8.0 11.5 15.0 20.0)
-list_w_interaction=(25.0 30.0)
+# list_w_interaction=(25.0 30.0)
 
 set -ex
 
-# run_llada_math \
-#     method=baseline \
-#     n_groups=4 \
-#     group_size=1 \
-#     comment="hcfg Independent pure baseline"
+run_llada_math \
+    method=baseline \
+    n_groups=4 \
+    group_size=1 \
+    comment="full Independent pure baseline"
 
 
-for w_interaction in "${list_w_interaction[@]}"; do
-  run_llada_math \
-    method=greedy_map \
-    n_groups=2 \
-    group_size=2 \
-    subsample_end=128 \
-    comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}" \
-    _w_interaction=$w_interaction
-done
+# for w_interaction in "${list_w_interaction[@]}"; do
+#   run_llada_math \
+#     method=greedy_map \
+#     n_groups=2 \
+#     group_size=2 \
+#     subsample_end=128 \
+#     comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}" \
+#     _w_interaction=$w_interaction
+# done
 
 
 echo All done
