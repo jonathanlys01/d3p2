@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import uuid
 from dataclasses import asdict
@@ -174,33 +175,41 @@ def summarize_wall_clock(trace_path: Path) -> list[dict[str, float | int | str]]
     with trace_path.open() as f:
         trace = json.load(f)
 
-    durations: dict[str, float] = dict.fromkeys(ANNOTATED_SCOPE_ORDER, 0.0)
-    counts: dict[str, int] = dict.fromkeys(ANNOTATED_SCOPE_ORDER, 0)
+    samples: dict[str, list[float]] = {name: [] for name in ANNOTATED_SCOPE_ORDER}
 
     for event in trace.get("traceEvents", []):
         name = event.get("name")
-        if name not in durations or event.get("ph") != "X":
+        if name not in samples or event.get("ph") != "X":
             continue
 
         duration_us = event.get("dur")
         if duration_us is None:
             continue
 
-        durations[name] += float(duration_us)
-        counts[name] += 1
+        samples[name].append(float(duration_us))
 
     summary = []
     for name in ANNOTATED_SCOPE_ORDER:
-        count = counts[name]
+        values = samples[name]
+        count = len(values)
         if count == 0:
             continue
-        avg_us = durations[name] / count
+
+        avg_us = sum(values) / count
+        if count > 1:
+            variance = sum((value - avg_us) ** 2 for value in values) / (count - 1)
+            stderr_us = math.sqrt(variance) / math.sqrt(count)
+        else:
+            stderr_us = 0.0
+
         summary.append(
             {
                 "name": name,
                 "count": count,
                 "avg_us": avg_us,
                 "avg_ms": avg_us / 1000.0,
+                "stderr_us": stderr_us,
+                "stderr_ms": stderr_us / 1000.0,
             },
         )
 
@@ -211,7 +220,10 @@ def print_wall_clock_summary(summary: list[dict[str, float | int | str]]):
     print("Average wall-clock per annotated scope (rank 0):", force=True)
     for row in summary:
         print(
-            f"  {row['name']}: {row['avg_ms']:.3f} ms avg over {row['count']} calls",  # type: ignore[index]
+            (
+                f"  {row['name']}: {row['avg_ms']:.3f} +- {row['stderr_ms']:.3f} ms "
+                f"over {row['count']} calls"
+            ),  # type: ignore[index]
             force=True,
         )
 
