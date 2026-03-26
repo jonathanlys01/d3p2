@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TOP_DIR=($git rev-parse --show-toplevel)
+TOP_DIR=$(git rev-parse --show-toplevel)
 cd $TOP_DIR
 
 DS=${1:-"truthful_qa"} # truthful_qa or commonsense_qa
