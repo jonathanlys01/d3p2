@@ -115,11 +115,37 @@ def seed_all(seed: int):
     transformers.set_seed(seed)
 
 
+# ---------------------------------------------------------------------------
+# HPC cluster helpers
+# ---------------------------------------------------------------------------
+
+
+def is_hpc_cluster() -> bool:
+    """Return True when running on an HPC cluster without internet access.
+
+    Detected via the ``$DSDIR`` environment variable, which is set on such
+    clusters to point at the shared dataset/model directory.
+    """
+    return "DSDIR" in os.environ
+
+
+def get_hpc_hf_model_path(model_name: str) -> str:
+    """Return the absolute path of *model_name* under ``$DSDIR/HuggingFace_Models``.
+
+    Example::
+
+        get_hpc_hf_model_path("bert-base-uncased")
+        # -> "/path/to/dsdir/HuggingFace_Models/bert-base-uncased"
+    """
+    dsdir = os.environ["DSDIR"]
+    return os.path.join(dsdir, "HuggingFace_Models", model_name)
+
+
 def process_model_args(path, **kwargs):
     ret = dict(kwargs.items())
     ret["pretrained_model_name_or_path"] = path
 
-    if os.path.isdir(path):
+    if os.path.isdir(path) or is_hpc_cluster():
         ret["local_files_only"] = True
     return ret
 

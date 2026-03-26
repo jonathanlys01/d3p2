@@ -21,7 +21,7 @@ import sacrebleu
 from scipy.stats._continuous_distns import t
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from d5p4.utils import print as u_print
+from d5p4.utils import get_hpc_hf_model_path, is_hpc_cluster, print as u_print, process_model_args
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +161,15 @@ def _emit_timing_summary(scope: str, timings: list[tuple[str, float]]) -> None:
 # ---------------------------------------------------------------------------
 
 
+_BERT_BASE_MODEL_ID = "bert-base-uncased"
+
+
 def _get_string_metrics_tokenizer() -> PreTrainedTokenizerBase:
     global _STRING_METRICS_TOKENIZER  # noqa: PLW0603
     if _STRING_METRICS_TOKENIZER is None:
-        _STRING_METRICS_TOKENIZER = AutoTokenizer.from_pretrained("bert-base-uncased")
+        path = get_hpc_hf_model_path(_BERT_BASE_MODEL_ID) if is_hpc_cluster() else _BERT_BASE_MODEL_ID
+        args = process_model_args(path)
+        _STRING_METRICS_TOKENIZER = AutoTokenizer.from_pretrained(**args)
     return _STRING_METRICS_TOKENIZER  # type: ignore
 
 

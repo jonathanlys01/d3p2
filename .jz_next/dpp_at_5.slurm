@@ -54,12 +54,16 @@ run_llada_math() {
 
 set -ex
 
-run_llada_math \
-    method=baseline \
-    n_groups=2 \
-    group_size=1 \
-    comment="Independent pure baseline"
+w_interaction=5.0
 
-set +ex 
+run_llada_math \
+  method=greedy_map \
+  n_groups=1 \
+  group_size=2 \
+  subsample_end=128 \
+  comment="D5P4 pure partial @ w_inter=${w_interaction}" \
+  _w_interaction=$w_interaction
+
+set +ex    
  
 echo "Job ended at $(date)"
