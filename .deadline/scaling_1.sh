@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ROOT=$(pwd)/src
+ROOT=$JOME/d3p2/src
 
 cd $ROOT
 export PYTHONPATH=$ROOT:$PYTHONPATH

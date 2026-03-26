@@ -77,7 +77,7 @@ def main():  # noqa: C901, PLR0915
         if k > 0 and k < len(decoded):
             selected_groups = evaluator.evaluate_baseline(
                 [decoded],
-                metric="f1",
+                metric="ppl",
                 k=k,
                 references=current_refs,
             )

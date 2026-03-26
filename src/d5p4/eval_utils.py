@@ -21,7 +21,8 @@ import sacrebleu
 from scipy.stats._continuous_distns import t
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from d5p4.utils import get_hpc_hf_model_path, is_hpc_cluster, print as u_print, process_model_args
+from d5p4.utils import get_hpc_hf_model_path, is_hpc_cluster, process_model_args
+from d5p4.utils import print as u_print
 
 
 # ---------------------------------------------------------------------------
