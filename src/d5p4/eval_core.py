@@ -200,7 +200,7 @@ class AverageCosineSimilarity(torch.nn.Module):
 
 
 class MAUVE(torch.nn.Module):
-    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer):
+    def __init__(self, model: AutoModel, tokenizer: PreTrainedTokenizerBase):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
@@ -406,6 +406,14 @@ class StringMetrics(torch.nn.Module):
 # ---------------------------------------------------------------------------
 
 
+def _build_perplexity_model(model_id: str) -> Perplexity:
+    """Load a causal-LM backbone and wrap it in a :class:`Perplexity` scorer."""
+    args = process_model_args(model_id, cache_dir=CACHE_DIR)
+    model = LlamaForCausalLM.from_pretrained(**args) if "llama" in model_id else AutoModel.from_pretrained(**args)
+    tokenizer = AutoTokenizer.from_pretrained(**args)
+    return Perplexity(model, tokenizer)
+
+
 class Evaluator:
     """Generation-quality evaluator wrapping Perplexity, CosineSimilarity,
     MAUVE, WassersteinDistance, and StringMetrics."""
@@ -418,15 +426,8 @@ class Evaluator:
         cos_model_id: str = "jinaai/jina-embeddings-v2-base-en",
         show_timings: bool = False,
     ):
-        ppl_models_args = process_model_args(ppl_model_id, cache_dir=CACHE_DIR)
-        if "llama" in ppl_model_id:
-            ppl_model = LlamaForCausalLM.from_pretrained(**ppl_models_args)
-        else:
-            ppl_model = AutoModel.from_pretrained(**ppl_models_args)
-
-        ppl_tokenizer = AutoTokenizer.from_pretrained(**ppl_models_args)
-        self.perplexity_model = Perplexity(ppl_model, ppl_tokenizer)
-        self.mauve_model = MAUVE(ppl_model, ppl_tokenizer)  # reuse PPL model for MAUVE
+        self.perplexity_model = _build_perplexity_model(ppl_model_id)
+        self.mauve_model = MAUVE(self.perplexity_model.model, self.perplexity_model.tokenizer)  # reuse backbone
 
         cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
         cos_model = JinaBertModel.from_pretrained(**cos_models_args)
@@ -679,13 +680,7 @@ class MathEvaluator:
         self._cosine_model: AverageCosineSimilarity | None = None
 
         if ppl_model_id is not None:
-            ppl_models_args = process_model_args(ppl_model_id, cache_dir=CACHE_DIR)
-            if "llama" in ppl_model_id:
-                ppl_model = LlamaForCausalLM.from_pretrained(**ppl_models_args)
-            else:
-                ppl_model = AutoModel.from_pretrained(**ppl_models_args)
-            ppl_tokenizer = AutoTokenizer.from_pretrained(**ppl_models_args)
-            self._perplexity_model = Perplexity(ppl_model, ppl_tokenizer)
+            self._perplexity_model = _build_perplexity_model(ppl_model_id)
 
         if cos_model_id is not None:
             cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
@@ -811,20 +806,15 @@ class MathEvaluator:
 
         for k in effective_ks:
             vals = [v for v in pass_at_k_per_q[k] if not np.isnan(v)]
-            pass_k = float(np.mean(vals)) if vals else float("nan")
-            metrics[f"pass_at_{k}"] = pass_k
-            metrics[f"pass@{k}"] = pass_k
+            pass_k_stats = compute_statistics(vals, f"pass_at_{k}")
+            metrics.update(pass_k_stats)
+            metrics[f"pass@{k}"] = pass_k_stats[f"pass_at_{k}"]
 
         metrics["k"] = float(group_size)
 
         # ── string metrics ────────────────────────────────────────────────
         references = string_references if string_references is not None else [[g] for g in gold_answers]
-        string_stats, elapsed = _time_call(
-            lambda: {
-                **self._string_metrics.reference_alignment(generations, references, num_workers=num_workers),
-                **self._string_metrics.diversity_grouped(generations, references, num_workers=num_workers),
-            },
-        )
+        string_stats, elapsed = _time_call(self._string_metrics, generations, references, num_workers=num_workers)
         timings.append(("string_metrics", elapsed))
         metrics.update(string_stats)
 
@@ -872,8 +862,9 @@ class MathEvaluator:
 
         for k in effective_ks:
             val = metrics.get(f"pass_at_{k}", float("nan"))
+            ci = metrics.get(f"pass_at_{k}_ci95", float("nan"))
             if not np.isnan(val):
-                summary_parts.append(f"pass@{k}: {_format_num(val)}")
+                summary_parts.append(f"pass@{k}: {_format_summary_value(val, ci)}")
 
         # Perplexity (asymmetric CI in PPL space)
         if "perplexity" in metrics and "perplexity_ci95_lower" in metrics:
