@@ -192,6 +192,14 @@ class BaseSelector(nn.Module):
         return True
 
     def _validate_or_fallback(self, ret: torch.Tensor | None, cache: Cache) -> torch.Tensor | None:
+        mode = "transversal" if self.config.transversal else "non-transversal"
+        rank = self.distributed_utils.rank if self.distributed_utils else 0
+        ret_shape = None if ret is None else tuple(ret.shape)
+        ret_values = None if ret is None else ret.detach().cpu().tolist()
+        print(
+            f"Selector debug: {type(self).__name__} ({mode}) rank={rank} ret_shape={ret_shape} ret={ret_values}",
+        )
+
         needs_fallback = False
         if self.distributed_utils is None or self.distributed_utils.rank == 0:
             needs_fallback = ret is None or not self._validate_global_selection(ret.long())
@@ -211,7 +219,6 @@ class BaseSelector(nn.Module):
             fallback_device = ret.device if ret is not None else torch.device(self.device)
             fallback = self._structural_fallback_selection(fallback_device)
 
-        mode = "transversal" if self.config.transversal else "non-transversal"
         print(
             f"Invalid selector output detected; using deterministic score fallback for {type(self).__name__} ({mode}).",
         )
