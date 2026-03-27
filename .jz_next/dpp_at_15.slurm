@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=llada-dpp-at-5
+#SBATCH --job-name=llada-dpp-at-15
 #SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
 #SBATCH --time=12:00:00
@@ -54,7 +54,7 @@ run_llada_math() {
 
 set -ex
 
-w_interaction=5.0
+w_interaction=15.0
 
 run_llada_math \
   method=greedy_map \

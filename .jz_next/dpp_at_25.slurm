@@ -9,10 +9,10 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=llada-baseline
-#SBATCH --output=slurm-logs/%j-%x.out
-#SBATCH --error=slurm-logs/%j-%x.err
-#SBATCH --time=19:00:00
+#SBATCH --job-name=llada-dpp-at-25
+#SBATCH --output=slurm-logs/%x-%j.out
+#SBATCH --error=slurm-logs/%x-%j.err
+#SBATCH --time=12:00:00
 #SBATCH --qos=qos_gpu_h100-t3
 
 
@@ -40,7 +40,7 @@ COMMON_ARGS=(
   cat_temperature=1.0
   remasking=low_confidence
   logits_eos_inf=False
-  cfg_scale=1.0
+  cfg_scale=2.0
   llada_steps=256
   gen_length=256
   block_length=256
