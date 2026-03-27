@@ -387,6 +387,7 @@ class DistributedUtils:
 
         NOTE: This function handles 1D tensors of selection indices, hence the
         1D gather buffer. For 2D token sequences, use dispatch_sequences.
+        Local slices may be uneven; only the global total count is fixed.
         """
         assert self.is_distributed(), "dispatch_batch_indices can only be called in distributed mode"
 
@@ -429,13 +430,7 @@ class DistributedUtils:
         )
 
         # Get local indices for this rank
-        local_indices = self._get_local_indices(all_indices.to(dtype=torch.long))
-        expected_local_size = self.cfg.n_groups
-        assert local_indices is not None and local_indices.numel() == expected_local_size, (
-            f"Local batch indices size mismatch on rank {self.rank}: "
-            f"{0 if local_indices is None else local_indices.numel()} != {expected_local_size}"
-        )
-        return local_indices
+        return self._get_local_indices(all_indices.to(dtype=torch.long))
 
     def _get_local_indices(self, global_indices: torch.Tensor) -> torch.Tensor | None:
         # get the indices for this rank
@@ -446,7 +441,7 @@ class DistributedUtils:
         local_indices = global_indices[mask]
 
         if local_indices.numel() == 0:
-            return None
+            return torch.empty((0,), dtype=torch.long, device=global_indices.device)
 
         local_indices = local_indices - self.rank * self.cfg.batch_size
 

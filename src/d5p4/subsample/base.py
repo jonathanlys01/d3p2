@@ -130,10 +130,17 @@ class BaseSelector(nn.Module):
     def _selection_count(self) -> int:
         return self.config.n_groups * self.distributed_mul
 
+    def _allows_uneven_non_transversal_dispatch(self) -> bool:
+        """MDLM can rebalance variable local selection counts after expansion."""
+        return self.distributed_utils is not None and not self.config.transversal and self.config.model == "mdlm"
+
     def _structural_fallback_selection(self, device: torch.device) -> torch.Tensor:
         if self.config.transversal:
             groups = torch.arange(self._selection_count(), device=device)
             return groups * self.config.group_size
+
+        if self._allows_uneven_non_transversal_dispatch():
+            return torch.arange(self._selection_count(), device=device)
 
         local = torch.arange(self.config.n_groups, device=device)
         if self.distributed_utils is None:
@@ -152,6 +159,9 @@ class BaseSelector(nn.Module):
             local_indices = torch.argmax(grouped, dim=1)
             offsets = torch.arange(self._selection_count(), device=scores.device) * self.config.group_size
             return local_indices + offsets
+
+        if self._allows_uneven_non_transversal_dispatch():
+            return torch.topk(scores, k=self._selection_count()).indices
 
         if self.distributed_utils:
             rank_offsets = torch.arange(self.distributed_mul, device=scores.device) * self.config.batch_size
@@ -181,7 +191,7 @@ class BaseSelector(nn.Module):
             group_ids = torch.div(ret, self.config.group_size, rounding_mode="floor")
             return torch.unique(group_ids).numel() == expected_count
 
-        if self.distributed_utils:
+        if self.distributed_utils and not self._allows_uneven_non_transversal_dispatch():
             for rank in range(self.distributed_mul):
                 start = rank * self.config.batch_size
                 end = start + self.config.batch_size
