@@ -43,7 +43,7 @@ def main():
     print(f"Experiment ID: {unique_id}")
 
     for i in range(config.n_runs):
-        print(f"Sampling batch {i + 1}/{config.n_runs}...")
+        print(f"Sampling batch {i + 1}/{config.n_runs}...", progress=True)
         samples = model.sample()
         texts.append(model.tokenizer.batch_decode(samples, skip_special_tokens=True))
         save(texts, config, unique_id, rank=offset)

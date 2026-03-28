@@ -65,3 +65,4 @@ method: greedy_map
 transversal: True
 interactive: false
 minimal_log: false
+quiet: false

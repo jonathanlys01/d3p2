@@ -44,3 +44,4 @@ n_trials: 200  # Optuna sweep trials
 
 interactive: false
 minimal_log: false
+quiet: false

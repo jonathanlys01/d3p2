@@ -49,7 +49,7 @@ def main():
     prompts: list[str] = [row.question for row in rows]  # type: ignore
 
     for i, prompt in enumerate(prompts):
-        print(f"Sampling batch {i + 1}/{len(prompts)}...")
+        print(f"Sampling batch {i + 1}/{len(prompts)}...", progress=True)
         samples = model.sample(prompt=prompt)
         texts_ = []
         for sample in samples:

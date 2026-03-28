@@ -154,7 +154,7 @@ def _emit_timing_summary(scope: str, timings: list[tuple[str, float]]) -> None:
     if not timings:
         return
     formatted = " | ".join(f"{name}: {seconds:.3f}s" for name, seconds in timings)
-    u_print(f"[timing] {scope} | {formatted}")
+    u_print(f"[timing] {scope} | {formatted}", progress=True)
 
 
 # ---------------------------------------------------------------------------

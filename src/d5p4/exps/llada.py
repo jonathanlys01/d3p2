@@ -47,7 +47,7 @@ def main():  # noqa: PLR0915
         if cfg.interactive:
             u_print(f"[{i + 1}/{len(dataset)}] Prompt: {prompt[:50]}...", verbose=True)
         else:
-            u_print(f"[{i + 1}/{len(dataset)}]")
+            u_print(f"[{i + 1}/{len(dataset)}]", progress=True)
 
         # Sample
         sample_ids = sampler.sample(prompt=prompt)

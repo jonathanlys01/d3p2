@@ -34,12 +34,14 @@ def _format_duration(seconds: float) -> str:
 
 
 MINIMAL_LOG: bool = False
+QUIET: bool = False
 
 
 def configure_runtime(cfg: Config):
-    global INTERACTIVE, MINIMAL_LOG  # noqa: PLW0603
+    global INTERACTIVE, MINIMAL_LOG, QUIET  # noqa: PLW0603
     INTERACTIVE = cfg.interactive
     MINIMAL_LOG = cfg.minimal_log
+    QUIET = cfg.quiet
 
 
 class _MinimalProgress(Iterator[T]):
@@ -86,6 +88,10 @@ class _MinimalProgress(Iterator[T]):
 
 
 def tqdm(it: Iterable[T], **kwargs) -> Iterable[T]:
+    quiet = kwargs.pop("quiet", QUIET)
+    if quiet:
+        return it
+
     minimal = kwargs.pop("minimal", MINIMAL_LOG)
     if minimal:
         return _MinimalProgress(it, **kwargs)
@@ -100,8 +106,10 @@ warnings.filterwarnings("ignore", category=IdrTorchWarning)  # ignore idr_torch 
 INTERACTIVE: bool = True  # Module-level flag, set from config at script startup
 
 
-def print(*args, verbose: bool = False, **kwargs):
-    """Print only from rank 0. If verbose=True, also requires INTERACTIVE mode."""
+def print(*args, verbose: bool = False, progress: bool = False, **kwargs):
+    """Print only from rank 0, with optional suppression for verbose/progress logs."""
+    if QUIET and (verbose or progress):
+        return
     if verbose and not INTERACTIVE:
         return
     if kwargs.pop("force", False) or idr_torch.rank == 0:

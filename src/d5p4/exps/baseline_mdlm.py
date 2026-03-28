@@ -52,7 +52,7 @@ def main():
     )
 
     for i in range(config.n_runs):
-        print(f"Sampling batch {i + 1}/{config.n_runs}...")
+        print(f"Sampling batch {i + 1}/{config.n_runs}...", progress=True)
         samples = model.sample()
         decoded = model.tokenizer.batch_decode(samples, skip_special_tokens=True)
 

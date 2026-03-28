@@ -62,7 +62,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     results: list[dict] = []  # one entry per question
 
     for i, (prompt, gold, answer_str) in enumerate(zip(prompts, answer_numbers, answer_strings)):
-        print(f"Sampling {i + 1}/{len(prompts)}  (gold={gold!r})...")
+        print(f"Sampling {i + 1}/{len(prompts)}  (gold={gold!r})...", progress=True)
 
         raw_samples = model.sample(prompt=prompt)
 
@@ -88,7 +88,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             },
         )
 
-        print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)")
+        print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
         save({"results": results}, config, unique_id, rank=offset)
 
     # ── final aggregation ────────────────────────────────────────────────────
