@@ -179,7 +179,7 @@ def main():  # noqa: PLR0915
         text: str = mdlm_tokenizer.decode(sample_ids, skip_special_tokens=True)
         ppl_ = ppl_evaluator._forward([text])
         assert ppl_ is not None
-        ppl = float(ppl_[0])
+        ppl = float(ppl_["ppl"][0])
 
         # 2. MDLM Log-Likelihood
         seq_tensor = torch.from_numpy(sample_ids.astype(np.int64)).to(device)
