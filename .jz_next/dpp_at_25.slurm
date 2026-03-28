@@ -12,7 +12,7 @@
 #SBATCH --job-name=llada-dpp-at-25
 #SBATCH --output=slurm-logs/%x-%j.out
 #SBATCH --error=slurm-logs/%x-%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=15:00:00
 #SBATCH --qos=qos_gpu_h100-t3
 
 
