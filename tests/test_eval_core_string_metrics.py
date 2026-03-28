@@ -118,9 +118,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
             "perplexity": 2.0,
             "perplexity_ci95_lower": 1.5,
             "perplexity_ci95_upper": 2.5,
-        }
-        evaluator.corpus_perplexity_model = lambda texts, batch_size=0: {  # noqa: ARG005
-            "perplexity": 1.8,
+            "corpus_perplexity": 1.8,
         }
         evaluator.cosine_model = lambda texts: {  # noqa: ARG005
             "cosine_similarity": 0.4,
