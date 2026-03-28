@@ -3,14 +3,15 @@ import os
 import sys
 import tempfile
 import unittest
-import numpy as np
 from pprint import pprint
 from unittest.mock import patch
+
+import numpy as np
 
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from d5p4.eval_core import MathEvaluator, StringMetrics, _is_math_results_file
+from d5p4.eval_core import Evaluator, MathEvaluator, StringMetrics, _is_math_results_file
 
 
 class _FakeTokenizer:
@@ -85,6 +86,80 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         expected_entropy = float(-(probs * np.log(probs)).sum())
 
         self.assertAlmostEqual(diversity["batch_empirical_entropy"], expected_entropy)
+
+    def test_grouped_empirical_entropy_is_sequence_level(self):
+        metrics = StringMetrics()
+
+        predictions = [["a a b", "a b c"]]
+
+        grouped = metrics.diversity_grouped(predictions)
+        corpus = metrics.diversity_corpus(predictions, prefix="batch")
+
+        seq_probs_1 = np.array([2 / 3, 1 / 3], dtype=float)
+        seq_probs_2 = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
+        expected_sequence_entropy = float(
+            (
+                -(seq_probs_1 * np.log(seq_probs_1)).sum()
+                + -(seq_probs_2 * np.log(seq_probs_2)).sum()
+            )
+            / 2,
+        )
+
+        corpus_probs = np.array([3 / 6, 2 / 6, 1 / 6], dtype=float)
+        expected_corpus_entropy = float(-(corpus_probs * np.log(corpus_probs)).sum())
+
+        self.assertAlmostEqual(grouped["empirical_entropy"], expected_sequence_entropy)
+        self.assertAlmostEqual(corpus["batch_empirical_entropy"], expected_corpus_entropy)
+        self.assertNotAlmostEqual(grouped["empirical_entropy"], corpus["batch_empirical_entropy"])
+
+    def test_evaluator_summary_includes_batch_empirical_entropy(self):
+        evaluator = Evaluator.__new__(Evaluator)
+        evaluator.perplexity_model = lambda texts, batch_size=0: {  # noqa: ARG005
+            "perplexity": 2.0,
+            "perplexity_ci95_lower": 1.5,
+            "perplexity_ci95_upper": 2.5,
+        }
+        evaluator.corpus_perplexity_model = lambda texts, batch_size=0: {  # noqa: ARG005
+            "perplexity": 1.8,
+        }
+        evaluator.cosine_model = lambda texts: {  # noqa: ARG005
+            "cosine_similarity": 0.4,
+            "cosine_similarity_ci95": 0.05,
+        }
+        evaluator.wasserstein_model = None
+        evaluator.string_metrics = type(
+            "_FakeStringMetrics",
+            (),
+            {
+                "reference_alignment": staticmethod(lambda predictions, references=None, num_workers=1: {}),  # noqa: ARG005
+                "diversity_grouped": staticmethod(
+                    lambda predictions, references=None, num_workers=1: {  # noqa: ARG005
+                        "distinct_2": 0.3,
+                        "distinct_2_ci95": 0.02,
+                        "empirical_entropy": 0.7,
+                        "empirical_entropy_ci95": 0.04,
+                        "self_bleu": 12.0,
+                        "self_bleu_ci95": 1.5,
+                    },
+                ),
+                "diversity_corpus": staticmethod(
+                    lambda predictions, references=None, prefix="batch": {  # noqa: ARG005
+                        f"{prefix}_empirical_entropy": 0.9,
+                    },
+                ),
+            },
+        )()
+        evaluator.batch_size = 0
+        evaluator.force = False
+        evaluator.show_timings = False
+
+        metrics = evaluator.evaluate([["sample a", "sample b"]])
+        summary = metrics.get("metrics_summary")
+
+        self.assertIsInstance(summary, str)
+        assert isinstance(summary, str)
+        self.assertIn("Ent: 0.7 pm 0.04", summary)
+        self.assertIn("B-Ent: 0.9", summary)
 
     def test_math_results_shape_persists_string_metrics_without_model_downloads(self):
         payload = {

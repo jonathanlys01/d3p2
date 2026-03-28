@@ -150,6 +150,130 @@ class Perplexity(torch.nn.Module):
         }
 
 
+class CorpusPerplexity(torch.nn.Module):
+    """Token-weighted corpus-level perplexity (avoids averaging averages).
+
+    Shares model and tokenizer with :class:`Perplexity` — construct via
+    :func:`_build_corpus_perplexity` to avoid loading the backbone twice.
+    """
+
+    def __init__(self, model: AutoModel, tokenizer: PreTrainedTokenizerBase):
+        super().__init__()
+        self.model = model
+        self.tokenizer = tokenizer
+
+        # Tokenizer pad token — mirror Perplexity setup exactly.
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        tokenizer_pad_id = self.tokenizer.pad_token_id
+        assert isinstance(tokenizer_pad_id, int)
+        self.pad_token_id = tokenizer_pad_id
+
+        # LM head — resolved identically to Perplexity.
+        if isinstance(self.model, GPT2Model):
+            self.lm_head = torch.nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
+            self.lm_head.weight = self.model.wte.weight  # tie weights
+        elif isinstance(self.model, LlamaForCausalLM):
+            self.lm_head = self.model.lm_head
+        else:
+            raise ValueError(f"Unsupported model type: {type(self.model)}")
+
+    def _forward(self, texts: list[str]) -> tuple[float, int] | None:
+        """Return (total_nll, total_valid_tokens) for a batch."""
+        texts = [t.strip() for t in texts]
+
+        self.model.to(device)
+        inputs = self.tokenizer(
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            add_special_tokens=False,
+        ).to(device)
+
+        if inputs["input_ids"].numel() == 0:
+            return None
+
+        with torch.inference_mode():
+            if isinstance(self.model, LlamaForCausalLM):
+                outputs: CausalLMOutputWithPast = self.model(
+                    **inputs,
+                    return_dict=True,
+                    output_hidden_states=True,
+                )
+                assert outputs.hidden_states is not None
+                last_hidden_states = outputs.hidden_states[-1]
+            else:
+                last_hidden_states: torch.Tensor = self.model(
+                    **inputs,
+                    return_dict=True,
+                ).last_hidden_state
+
+            logits = self.lm_head(last_hidden_states)  # [B, T, V]
+            shift_logits = logits[..., :-1, :].contiguous()  # [B, T-1, V]
+            shift_labels = inputs["input_ids"][..., 1:].contiguous()  # [B, T-1]
+            valid_mask = inputs["attention_mask"][..., 1:].contiguous().bool()
+
+            token_nll = torch.nn.functional.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                reduction="none",
+            ).view_as(shift_labels)
+
+            token_nll = token_nll.clamp(max=15.0)
+            token_nll = token_nll * valid_mask
+
+            total_nll = token_nll.sum()
+            total_tokens = valid_mask.sum()
+
+        total_nll = torch.nan_to_num(total_nll, nan=15.0, posinf=15.0, neginf=0.0)
+
+        return float(total_nll.item()), int(total_tokens.item())
+
+    def forward(self, texts: list[list[str]], batch_size: int = 0) -> dict[str, float]:
+        """Compute corpus-level perplexity."""
+        flattened_texts = [text for sublist in texts for text in sublist]
+        if len(flattened_texts) == 0:
+            return {
+                "nll": float("nan"),
+                "perplexity": float("inf"),
+                "token_count": 0,
+                "text_count": 0,
+            }
+
+        batch_size = batch_size or len(flattened_texts)
+
+        total_nll = 0.0
+        total_tokens = 0
+
+        for start in range(0, len(flattened_texts), batch_size):
+            result = self._forward(flattened_texts[start : start + batch_size])
+            if result is None:
+                continue
+            batch_nll, batch_tokens = result
+            total_nll += batch_nll
+            total_tokens += batch_tokens
+
+        if total_tokens == 0:
+            return {
+                "nll": float("nan"),
+                "perplexity": float("inf"),
+                "token_count": 0,
+                "text_count": len(flattened_texts),
+            }
+
+        avg_nll = total_nll / total_tokens
+        perplexity = float(np.exp(avg_nll))
+
+        return {
+            "nll": avg_nll,
+            "perplexity": perplexity,
+            "token_count": total_tokens,
+            "text_count": len(flattened_texts),
+        }
+
+
 class AverageCosineSimilarity(torch.nn.Module):
     def __init__(self, model: JinaBertModel):
         super().__init__()
@@ -257,7 +381,12 @@ class WassersteinDistance(torch.nn.Module):
 
 
 class StringMetrics(torch.nn.Module):
-    """Lexical string metrics: distinct-n, empirical entropy, self-BLEU, F1, BLEU vs references."""
+    """Lexical string metrics: distinct-n, empirical entropy, self-BLEU, F1, BLEU vs references.
+
+    Grouped diversity reports sequence-level ``empirical_entropy`` (mean entropy
+    per sequence within a group), while ``diversity_corpus()`` reports corpus-level
+    entropy over the fully flattened generations.
+    """
 
     def __init__(self):
         super().__init__()
@@ -414,6 +543,14 @@ def _build_perplexity_model(model_id: str) -> Perplexity:
     return Perplexity(model, tokenizer)
 
 
+def _build_corpus_perplexity(perplexity: Perplexity) -> CorpusPerplexity:
+    """Wrap an existing :class:`Perplexity` backbone in a :class:`CorpusPerplexity`.
+
+    Reuses the already-loaded model and tokenizer so no second model load is needed.
+    """
+    return CorpusPerplexity(perplexity.model, perplexity.tokenizer)
+
+
 class Evaluator:
     """Generation-quality evaluator wrapping Perplexity, CosineSimilarity,
     MAUVE, WassersteinDistance, and StringMetrics."""
@@ -427,6 +564,7 @@ class Evaluator:
         show_timings: bool = False,
     ):
         self.perplexity_model = _build_perplexity_model(ppl_model_id)
+        self.corpus_perplexity_model = _build_corpus_perplexity(self.perplexity_model)  # shares backbone
         self.mauve_model = MAUVE(self.perplexity_model.model, self.perplexity_model.tokenizer)  # reuse backbone
 
         cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
@@ -443,17 +581,30 @@ class Evaluator:
     # Public API
     # ------------------------------------------------------------------
 
-    def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float | str]:
+    def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float | str]:  # noqa: C901
         timings: list[tuple[str, float]] = []
 
         ppl_stats, elapsed = _time_call(self.perplexity_model, texts, batch_size=self.batch_size)
         timings.append(("perplexity", elapsed))
+
+        corpus_ppl_stats, elapsed = _time_call(self.corpus_perplexity_model, texts, batch_size=self.batch_size)
+        timings.append(("corpus_perplexity", elapsed))
+        # Namespace corpus PPL keys to avoid collision with per-sample PPL keys.
+        corpus_ppl_stats = {f"corpus_{k}": v for k, v in corpus_ppl_stats.items()}
 
         cos_stats, elapsed = _time_call(self.cosine_model, texts)
         timings.append(("cosine_similarity", elapsed))
 
         string_stats, elapsed = _time_call(self.compute_string_metrics, texts, references=references)
         timings.append(("string_metrics", elapsed))
+
+        batch_diversity, elapsed = _time_call(
+            self.string_metrics.diversity_corpus,
+            texts,
+            references=references,
+            prefix="batch",
+        )
+        timings.append(("batch_diversity", elapsed))
 
         wd_stats: dict[str, float] = {}
         if references and any(refs for refs in references):
@@ -471,15 +622,17 @@ class Evaluator:
             wd_stats, elapsed = _time_call(_compute_wd_stats)
             timings.append(("wasserstein_distance", elapsed))
 
-        metrics = {**ppl_stats, **cos_stats, **string_stats, **wd_stats}
+        metrics = {**ppl_stats, **corpus_ppl_stats, **cos_stats, **string_stats, **batch_diversity, **wd_stats}
 
         # Build human-readable summary
         summary_targets = [
             ("perplexity", "PPL"),
+            ("corpus_perplexity", "C-PPL"),
             ("cosine_similarity", "CosSim"),
             ("wasserstein_distance", "WD"),
             ("distinct_2", "Dist-2"),
             ("empirical_entropy", "Ent"),
+            ("batch_empirical_entropy", "B-Ent"),
             ("self_bleu", "S-BLEU"),
             ("cos_at_k", "Cos@k"),
         ]
@@ -492,8 +645,12 @@ class Evaluator:
                     metrics[f"{key}_ci95_upper"],
                 )
                 summary_parts.append(f"{display_name}: {val_str}")
+            elif key == "corpus_perplexity" and key in metrics:
+                summary_parts.append(f"{display_name}: {_format_num(metrics[key])}")
             elif key in metrics and f"{key}_ci95" in metrics:
                 summary_parts.append(f"{display_name}: {_format_summary_value(metrics[key], metrics[f'{key}_ci95'])}")
+            elif key in metrics:
+                summary_parts.append(f"{display_name}: {_format_num(metrics[key])}")
 
         if summary_parts:
             metrics["metrics_summary"] = " | ".join(summary_parts)
@@ -677,10 +834,12 @@ class MathEvaluator:
         self.batch_size = batch_size
 
         self._perplexity_model: Perplexity | None = None
+        self._corpus_perplexity_model: CorpusPerplexity | None = None
         self._cosine_model: AverageCosineSimilarity | None = None
 
         if ppl_model_id is not None:
             self._perplexity_model = _build_perplexity_model(ppl_model_id)
+            self._corpus_perplexity_model = _build_corpus_perplexity(self._perplexity_model)  # shares backbone
 
         if cos_model_id is not None:
             cos_models_args = process_model_args(cos_model_id, cache_dir=CACHE_DIR)
@@ -839,6 +998,16 @@ class MathEvaluator:
             timings.append(("perplexity", elapsed))
             metrics.update(ppl_stats)
 
+        if self._corpus_perplexity_model is not None:
+            corpus_ppl_stats, elapsed = _time_call(
+                self._corpus_perplexity_model,
+                generations,
+                batch_size=_batch_size,
+            )
+            timings.append(("corpus_perplexity", elapsed))
+            # Namespace to avoid collision with per-sample perplexity keys.
+            metrics.update({f"corpus_{k}": v for k, v in corpus_ppl_stats.items()})
+
         if self._cosine_model is not None:
             cos_stats, elapsed = _time_call(self._cosine_model, generations)
             timings.append(("cosine_similarity", elapsed))
@@ -878,6 +1047,12 @@ class MathEvaluator:
                 ppl_upper,
             )
             summary_parts.append(f"PPL: {val_str}")
+
+        # Corpus perplexity (token-weighted scalar)
+        if "corpus_perplexity" in metrics:
+            corpus_ppl = metrics["corpus_perplexity"]
+            assert isinstance(corpus_ppl, float)
+            summary_parts.append(f"C-PPL: {_format_num(corpus_ppl)}")
 
         # Cosine similarity (per-group)
         if "cosine_similarity" in metrics and "cosine_similarity_ci95" in metrics:

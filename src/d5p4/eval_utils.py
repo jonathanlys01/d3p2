@@ -238,6 +238,24 @@ def _vocab_size_from_refs(references_for_vocab: list[str] | None) -> int | None:
     return len(vocab)
 
 
+def _empirical_entropy_from_counts(token_counts: Counter[str], total_tokens: int) -> float:
+    if total_tokens == 0:
+        return 0.0
+
+    return float(-sum((count / total_tokens) * np.log(count / total_tokens) for count in token_counts.values()))
+
+
+def _compute_sequence_empirical_entropy_impl(texts: list[str]) -> float:
+    if not texts:
+        return 0.0
+
+    entropies = [
+        _empirical_entropy_from_counts(Counter(tokens), len(tokens))
+        for tokens in (_cached_metric_tokenize(text) for text in texts)
+    ]
+    return float(np.mean(entropies)) if entropies else 0.0
+
+
 def _compute_distinct_metrics_impl(
     texts: list[str],
     vocab_size: int | None = None,
@@ -275,11 +293,7 @@ def _compute_distinct_metrics_impl(
     metrics["distinct_1"] = len(distinct_tokens) / total_tokens if total_tokens else 0.0
     metrics["distinct_2"] = len(distinct_tokens_2grams) / total_tokens if total_tokens else 0.0
     metrics["distinct_3"] = len(distinct_tokens_3grams) / total_tokens if total_tokens else 0.0
-    metrics["empirical_entropy"] = (
-        float(-sum((count / total_tokens) * np.log(count / total_tokens) for count in token_counts.values()))
-        if total_tokens
-        else 0.0
-    )
+    metrics["empirical_entropy"] = _empirical_entropy_from_counts(token_counts, total_tokens)
 
     if vocab_size is not None and total_tokens > 0:
         try:
@@ -346,6 +360,7 @@ def _compute_self_bleu_bounded_impl(
 def _group_diversity_task(args: tuple[list[str], int | None]) -> tuple[dict[str, float], float]:
     group, vocab_size = args
     distinct_metrics = _compute_distinct_metrics_impl(group, vocab_size=vocab_size)
+    distinct_metrics["empirical_entropy"] = _compute_sequence_empirical_entropy_impl(group)
     self_bleu = _compute_self_bleu_impl(group)
     return distinct_metrics, self_bleu
 
@@ -426,6 +441,7 @@ __all__ = [
     "_cached_lower_split_counter",
     "_compute_f1_score",
     "_vocab_size_from_refs",
+    "_compute_sequence_empirical_entropy_impl",
     "_compute_distinct_metrics_impl",
     "_compute_self_bleu_impl",
     "_compute_self_bleu_bounded_impl",
