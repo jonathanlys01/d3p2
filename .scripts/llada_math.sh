@@ -33,6 +33,17 @@ run_llada_math() {
 list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 set -ex
 
+run_llada_math \
+    method=diverse_beam \
+    n_groups=2 \
+    group_size=2 \
+    subsample_end=128 \
+    comment="derisk" \
+    qa_dataset_len=50 \
+    _diversity_alpha=20.
+
+exit
+
 # derisk
 run_llada_math \
     method=greedy_map \
