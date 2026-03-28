@@ -17,7 +17,7 @@ mdlm_tokenizer: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
 llada_model_path: /Brain/public/models/GSAI-ML/LLaDA-8B-Instruct
 llada_tokenizer: /Brain/public/models/GSAI-ML/LLaDA-8B-Instruct
 
-ppl_model_id: ${env_path_or:DSDIR,HuggingFace_Models/gpt2/,gpt2}
+ppl_model_id: ${env_path_or:DSDIR,HuggingFace_Models/gpt2-large/,gpt2-large}
 cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,/Brain/public/models/jinaai/jina-embeddings-v2-base-en/}
 
 # Autoregressive
