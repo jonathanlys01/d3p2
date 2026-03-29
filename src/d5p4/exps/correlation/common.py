@@ -1,3 +1,4 @@
+import math
 import os
 from typing import Any
 
@@ -57,6 +58,53 @@ def compute_cosine_similarity_stats(embeddings: torch.Tensor) -> dict[str, float
 def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
     """Compute the average pairwise cosine similarity (excluding self-similarity)."""
     return compute_cosine_similarity_stats(embeddings)["mean"]
+
+
+def compute_H_from_Z(Z: torch.Tensor, rho: float = 0.4) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute the BOS/EOS-adjusted interaction matrix H from residual embeddings Z.
+
+    Args:
+        Z: Residual embeddings [k, d], typically flattened token embeddings without BOS/EOS.
+        rho: Shared BOS/EOS contribution parameter in [0, 1).
+
+    Returns:
+        H: [k, k]
+        spec_norm: scalar tensor containing ||H||_2
+    """
+    if not 0 <= rho < 1:
+        raise ValueError(f"rho must be in [0, 1), got {rho}")
+
+    Z = F.normalize(Z.to(torch.float32), dim=-1)
+
+    k = Z.shape[0]
+    if k <= 1:
+        H = torch.zeros((k, k), device=Z.device, dtype=Z.dtype)
+        spec_norm = torch.zeros((), device=Z.device, dtype=Z.dtype)
+        return H, spec_norm
+
+    device, dtype = Z.device, Z.dtype
+
+    identity = torch.eye(k, device=device, dtype=dtype)
+    ones = torch.ones((k, 1), device=device, dtype=dtype)
+
+    # Residual cosine matrix: off-diag = z_i^T z_j, diag = 0.
+    C_tilde = Z @ Z.T - identity
+
+    # Projectors onto span(1) and its orthogonal complement.
+    P1 = (ones @ ones.T) / k
+    Pperp = identity - P1
+
+    B_inv_half = (
+        P1 / math.sqrt(1 + (k - 1) * rho)
+        + Pperp / math.sqrt(1 - rho)
+    )
+
+    H = (1 - rho) * (B_inv_half @ C_tilde @ B_inv_half)
+    H = 0.5 * (H + H.T)
+    spec_norm = torch.linalg.eigvalsh(H).abs().max()
+
+    return H, spec_norm
 
 
 def get_pooled_output(

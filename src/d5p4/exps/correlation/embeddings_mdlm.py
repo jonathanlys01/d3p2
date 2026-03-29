@@ -6,6 +6,7 @@ from d5p4.config import Config
 from d5p4.exps.correlation.common import (
     compute_cka,
     compute_cosine_similarity_stats,
+    compute_H_from_Z,
     get_pooled_output,
     plot_cka_acs,
     save_results_csv,
@@ -14,7 +15,7 @@ from d5p4.mdlm_ref.modeling_mdlm import MDLM
 from d5p4.utils import get_tokenizer, tqdm
 
 
-def main():  # noqa: PLR0915
+def main():  # noqa: C901, PLR0915
     config = Config()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -47,8 +48,10 @@ def main():  # noqa: PLR0915
 
     mask_ratios = list(np.linspace(0.0, 0.99, num=50))  # 0.0 to 0.99 inclusive
     pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten", "flatten_no_special"]
+    rho = 0.4
 
     results = {strategy: {"cka": [], "acs": [], "acs_std": []} for strategy in pooling_strategies}
+    results["flatten_no_special"]["h_spec_norm"] = []
     all_ref_acs_scores: list[dict[str, float]] = []
 
     print("\nStarting experiment sweep...")
@@ -58,6 +61,7 @@ def main():  # noqa: PLR0915
         batch_scores_per_strategy: dict[str, dict[str, list[float]]] = {
             strategy: {"cka": [], "acs": [], "acs_std": []} for strategy in pooling_strategies
         }
+        batch_scores_per_strategy["flatten_no_special"]["h_spec_norm"] = []
 
         for i in tqdm(range(N_BATCHES), desc="Batches"):
             sample_texts = []
@@ -123,6 +127,10 @@ def main():  # noqa: PLR0915
                 batch_scores_per_strategy[strategy]["acs"].append(acs_stats["mean"])
                 batch_scores_per_strategy[strategy]["acs_std"].append(acs_stats["std"])
 
+                if strategy == "flatten_no_special":
+                    _, h_spec_norm = compute_H_from_Z(mdlm_pooled, rho=rho)
+                    batch_scores_per_strategy[strategy]["h_spec_norm"].append(h_spec_norm.item())
+
         print(f"    Aggregating results for mask ratio {mask_ratio:.2f}...")
         for strategy in pooling_strategies:
             avg_cka = np.mean(batch_scores_per_strategy[strategy]["cka"])
@@ -132,10 +140,17 @@ def main():  # noqa: PLR0915
             results[strategy]["cka"].append(avg_cka)
             results[strategy]["acs"].append(avg_acs)
             results[strategy]["acs_std"].append(avg_acs_std)
-            print(
+
+            summary = (
                 f"    Strategy: {strategy:<17} | "
-                f"Avg CKA: {avg_cka:7.4f}, Avg ACS: {avg_acs:7.4f}, ACS Std: {avg_acs_std:7.4f}",
+                f"Avg CKA: {avg_cka:7.4f}, Avg ACS: {avg_acs:7.4f}, ACS Std: {avg_acs_std:7.4f}"
             )
+            if strategy == "flatten_no_special":
+                avg_h_spec_norm = np.mean(batch_scores_per_strategy[strategy]["h_spec_norm"])
+                results[strategy]["h_spec_norm"].append(avg_h_spec_norm)
+                summary += f", H SpecNorm (rho={rho:.2f}): {avg_h_spec_norm:7.4f}"
+
+            print(summary)
 
     ref_model.to("cpu")
     mdlm_embedder.to("cpu")
@@ -146,6 +161,16 @@ def main():  # noqa: PLR0915
     final_ref_acs_mean = float(np.mean([s["mean"] for s in all_ref_acs_scores]))
     final_ref_acs_std = float(np.mean([s["std"] for s in all_ref_acs_scores]))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_mean:.4f} (std: {final_ref_acs_std:.4f})")
+
+    flatten_no_special_h_spec_norm = np.asarray(results["flatten_no_special"]["h_spec_norm"], dtype=float)
+    max_idx = int(np.argmax(flatten_no_special_h_spec_norm))
+    min_idx = int(np.argmin(flatten_no_special_h_spec_norm))
+    print(
+        "Summary: flatten_no_special H spectral norm "
+        f"(rho={rho:.2f}) mean={flatten_no_special_h_spec_norm.mean():.4f}, "
+        f"min={flatten_no_special_h_spec_norm[min_idx]:.4f} at mask_ratio={mask_ratios[min_idx]:.2f}, "
+        f"max={flatten_no_special_h_spec_norm[max_idx]:.4f} at mask_ratio={mask_ratios[max_idx]:.2f}",
+    )
 
     # Save results to CSV
     df = save_results_csv(
