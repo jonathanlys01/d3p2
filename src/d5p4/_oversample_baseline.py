@@ -36,6 +36,7 @@ if __name__ == "__main__":
             # filter only valid fields
             valid_fields = {f.name for f in fields(Config)}
             filtered_config = {k: v for k, v in file_config_dict.items() if k in valid_fields}
+            filtered_config.pop("disable_sys_args")
             current_config = Config(disable_sys_args=True, **filtered_config)
 
         texts = data["text_samples"]
