@@ -84,8 +84,18 @@ def get_qa_dataset(cfg: Config) -> pd.DataFrame:
         return truthful_qa(cfg)
     elif cfg.qa_dataset == "commonsense_qa":
         return commonsense_qa(cfg)
+    elif cfg.qa_dataset == "gsm8k":
+        from d5p4.data.math_ds import gsm8k
+
+        df = gsm8k(cfg)
+        # Ensure compatibility with standard QA evaluator by providing correct_answers
+        if "correct_answers" not in df.columns and "answer_str" in df.columns:
+            df["correct_answers"] = df["answer_str"].apply(lambda x: [x])
+        return df
     else:
-        raise ValueError(f"Unknown qa_dataset: {cfg.qa_dataset}. Available: 'truthful_qa', 'commonsense_qa'")
+        raise ValueError(
+            f"Unknown qa_dataset: {cfg.qa_dataset}. Available: 'truthful_qa', 'commonsense_qa', 'gsm8k'",
+        )
 
 
 if __name__ == "__main__":
