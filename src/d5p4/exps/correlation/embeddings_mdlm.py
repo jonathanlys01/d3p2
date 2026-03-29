@@ -4,8 +4,8 @@ from transformers import AutoModel
 
 from d5p4.config import Config
 from d5p4.exps.correlation.common import (
-    compute_avg_cosine_similarity,
     compute_cka,
+    compute_cosine_similarity_stats,
     get_pooled_output,
     plot_cka_acs,
     save_results_csv,
@@ -48,15 +48,15 @@ def main():  # noqa: PLR0915
     mask_ratios = list(np.linspace(0.0, 0.99, num=50))  # 0.0 to 0.99 inclusive
     pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten", "flatten_no_special"]
 
-    results = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
-    all_ref_acs_scores: list[float] = []
+    results = {strategy: {"cka": [], "acs": [], "acs_std": []} for strategy in pooling_strategies}
+    all_ref_acs_scores: list[dict[str, float]] = []
 
     print("\nStarting experiment sweep...")
     for mask_ratio in mask_ratios:
         print(f"--- Testing Mask Ratio: {mask_ratio:.2f} ---")
 
         batch_scores_per_strategy: dict[str, dict[str, list[float]]] = {
-            strategy: {"cka": [], "acs": []} for strategy in pooling_strategies
+            strategy: {"cka": [], "acs": [], "acs_std": []} for strategy in pooling_strategies
         }
 
         for i in tqdm(range(N_BATCHES), desc="Batches"):
@@ -76,7 +76,7 @@ def main():  # noqa: PLR0915
 
             # Only compute ref_acs_baseline if mask_ratio is 0.0 (it's constant)
             if mask_ratio == 0.0:
-                all_ref_acs_scores.append(compute_avg_cosine_similarity(ref_embeddings))
+                all_ref_acs_scores.append(compute_cosine_similarity_stats(ref_embeddings))
 
             inputs = mdlm_tokenizer(
                 sample_texts,
@@ -110,25 +110,32 @@ def main():  # noqa: PLR0915
                 ):
                     batch_scores_per_strategy[strategy]["cka"].append(float("nan"))
                     batch_scores_per_strategy[strategy]["acs"].append(float("nan"))
+                    batch_scores_per_strategy[strategy]["acs_std"].append(float("nan"))
                     continue
 
                 with torch.inference_mode():
                     mdlm_pooled = get_pooled_output(mdlm_outputs, strategy, full_token_mask)
 
                 cka_score = compute_cka(ref_embeddings, mdlm_pooled)
-                acs_score = compute_avg_cosine_similarity(mdlm_pooled)
+                acs_stats = compute_cosine_similarity_stats(mdlm_pooled)
 
                 batch_scores_per_strategy[strategy]["cka"].append(cka_score)
-                batch_scores_per_strategy[strategy]["acs"].append(acs_score)
+                batch_scores_per_strategy[strategy]["acs"].append(acs_stats["mean"])
+                batch_scores_per_strategy[strategy]["acs_std"].append(acs_stats["std"])
 
         print(f"    Aggregating results for mask ratio {mask_ratio:.2f}...")
         for strategy in pooling_strategies:
             avg_cka = np.mean(batch_scores_per_strategy[strategy]["cka"])
             avg_acs = np.mean(batch_scores_per_strategy[strategy]["acs"])
+            avg_acs_std = np.mean(batch_scores_per_strategy[strategy]["acs_std"])
 
             results[strategy]["cka"].append(avg_cka)
             results[strategy]["acs"].append(avg_acs)
-            print(f"    Strategy: {strategy:<17} | Avg CKA: {avg_cka:7.4f}, Avg ACS: {avg_acs:7.4f}")
+            results[strategy]["acs_std"].append(avg_acs_std)
+            print(
+                f"    Strategy: {strategy:<17} | "
+                f"Avg CKA: {avg_cka:7.4f}, Avg ACS: {avg_acs:7.4f}, ACS Std: {avg_acs_std:7.4f}",
+            )
 
     ref_model.to("cpu")
     mdlm_embedder.to("cpu")
@@ -136,8 +143,9 @@ def main():  # noqa: PLR0915
         torch.cuda.empty_cache()
     print("Models offloaded to CPU.")
 
-    final_ref_acs_baseline = float(np.mean(all_ref_acs_scores))
-    print(f"Final averaged Reference ACS baseline: {final_ref_acs_baseline:.4f}")
+    final_ref_acs_mean = float(np.mean([s["mean"] for s in all_ref_acs_scores]))
+    final_ref_acs_std = float(np.mean([s["std"] for s in all_ref_acs_scores]))
+    print(f"Final averaged Reference ACS baseline: {final_ref_acs_mean:.4f} (std: {final_ref_acs_std:.4f})")
 
     # Save results to CSV
     df = save_results_csv(
@@ -145,7 +153,7 @@ def main():  # noqa: PLR0915
         x_values=mask_ratios,
         x_name="mask_ratio",
         filename="embeddings_mdlm_results.csv",
-        ref_acs_baseline=final_ref_acs_baseline,
+        ref_acs_baseline=final_ref_acs_mean,
     )
 
     # Plot results
@@ -154,7 +162,7 @@ def main():  # noqa: PLR0915
         x_name="mask_ratio",
         title_suffix="MDLM Representation Quality",
         n_samples=N_TOTAL_SAMPLES,
-        ref_acs_baseline=final_ref_acs_baseline,
+        ref_acs_baseline=final_ref_acs_mean,
         plot_filename=f"cka_acs_results_mdlm_{N_TOTAL_SAMPLES}_samples.png",
     )
 

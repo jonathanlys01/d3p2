@@ -34,20 +34,29 @@ def compute_cka(ref_embeddings: torch.Tensor, model_outputs: torch.Tensor) -> fl
     return cka.item()
 
 
-def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
-    """Compute the average pairwise cosine similarity (excluding self-similarity)."""
+def compute_cosine_similarity_stats(embeddings: torch.Tensor) -> dict[str, float]:
+    """Compute the mean and standard deviation of pairwise cosine similarities."""
     with torch.no_grad():
         batch_size = embeddings.shape[0]
     if batch_size <= 1:
-        return 0.0
+        return {"mean": 0.0, "std": 0.0}
 
     embeddings_norm = F.normalize(embeddings, p=2, dim=1)
     sim_matrix = embeddings_norm @ embeddings_norm.t()
-    sim_matrix.fill_diagonal_(0)
-    sim_sum = sim_matrix.sum()
-    num_pairs = batch_size * (batch_size - 1)
 
-    return (sim_sum / num_pairs).item()
+    # Extract off-diagonal elements
+    mask = ~torch.eye(batch_size, dtype=torch.bool, device=embeddings.device)
+    pairwise_similarities = sim_matrix[mask]
+
+    return {
+        "mean": pairwise_similarities.mean().item(),
+        "std": pairwise_similarities.std().item(),
+    }
+
+
+def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
+    """Compute the average pairwise cosine similarity (excluding self-similarity)."""
+    return compute_cosine_similarity_stats(embeddings)["mean"]
 
 
 def get_pooled_output(
