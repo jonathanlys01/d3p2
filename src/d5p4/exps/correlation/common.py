@@ -37,16 +37,23 @@ def compute_cka(ref_embeddings: torch.Tensor, model_outputs: torch.Tensor) -> fl
 
 def compute_cosine_similarity_stats(embeddings: torch.Tensor) -> dict[str, float]:
     """Compute the mean and standard deviation of pairwise cosine similarities."""
-    with torch.no_grad():
-        batch_size = embeddings.shape[0]
+    sim_matrix = compute_cosine_similarity_matrix(embeddings)
+    return compute_cosine_similarity_stats_from_matrix(sim_matrix)
+
+
+def compute_cosine_similarity_matrix(embeddings: torch.Tensor) -> torch.Tensor:
+    """Compute the pairwise cosine similarity matrix after row-wise normalization."""
+    embeddings_norm = F.normalize(embeddings.to(torch.float32), p=2, dim=1)
+    return embeddings_norm @ embeddings_norm.t()
+
+
+def compute_cosine_similarity_stats_from_matrix(sim_matrix: torch.Tensor) -> dict[str, float]:
+    """Compute pairwise cosine summary statistics from a precomputed similarity matrix."""
+    batch_size = sim_matrix.shape[0]
     if batch_size <= 1:
         return {"mean": 0.0, "std": 0.0}
 
-    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
-    sim_matrix = embeddings_norm @ embeddings_norm.t()
-
-    # Extract off-diagonal elements
-    mask = ~torch.eye(batch_size, dtype=torch.bool, device=embeddings.device)
+    mask = ~torch.eye(batch_size, dtype=torch.bool, device=sim_matrix.device)
     pairwise_similarities = sim_matrix[mask]
 
     return {
@@ -58,6 +65,31 @@ def compute_cosine_similarity_stats(embeddings: torch.Tensor) -> dict[str, float
 def compute_avg_cosine_similarity(embeddings: torch.Tensor) -> float:
     """Compute the average pairwise cosine similarity (excluding self-similarity)."""
     return compute_cosine_similarity_stats(embeddings)["mean"]
+
+
+def estimate_rho_from_cosine_matrices(
+    plain_sim_matrix: torch.Tensor,
+    residual_sim_matrix: torch.Tensor,
+    clamp_eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Estimate rho from the off-diagonal mean of cos(flatten) - cos(flatten_no_special).
+
+    The estimate is clamped to [0, 1) because the closed-form H construction assumes that range.
+    """
+    if plain_sim_matrix.shape != residual_sim_matrix.shape:
+        raise ValueError(
+            "plain_sim_matrix and residual_sim_matrix must have the same shape, "
+            f"got {plain_sim_matrix.shape} and {residual_sim_matrix.shape}",
+        )
+
+    batch_size = plain_sim_matrix.shape[0]
+    if batch_size <= 1:
+        return torch.zeros((), device=plain_sim_matrix.device, dtype=plain_sim_matrix.dtype)
+
+    mask = ~torch.eye(batch_size, dtype=torch.bool, device=plain_sim_matrix.device)
+    rho_estimate = (plain_sim_matrix - residual_sim_matrix)[mask].mean()
+    return rho_estimate.clamp(min=0.0, max=1.0 - clamp_eps)
 
 
 def compute_H_from_Z(Z: torch.Tensor, rho: float = 0.4) -> tuple[torch.Tensor, torch.Tensor]:
@@ -72,24 +104,43 @@ def compute_H_from_Z(Z: torch.Tensor, rho: float = 0.4) -> tuple[torch.Tensor, t
         H: [k, k]
         spec_norm: scalar tensor containing ||H||_2
     """
+    residual_sim_matrix = compute_cosine_similarity_matrix(Z)
+    return compute_H_from_residual_cosine_matrix(residual_sim_matrix, rho=rho)
+
+
+def compute_H_from_residual_cosine_matrix(
+    residual_sim_matrix: torch.Tensor,
+    rho: float = 0.4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute H from a cached cosine similarity matrix of residual embeddings.
+
+    Args:
+        residual_sim_matrix: Pairwise cosine similarity matrix of normalized residual embeddings [k, k].
+        rho: Shared BOS/EOS contribution parameter in [0, 1).
+
+    Returns:
+        H: [k, k]
+        spec_norm: scalar tensor containing ||H||_2
+    """
     if not 0 <= rho < 1:
         raise ValueError(f"rho must be in [0, 1), got {rho}")
 
-    Z = F.normalize(Z.to(torch.float32), dim=-1)
+    residual_sim_matrix = residual_sim_matrix.to(torch.float32)
 
-    k = Z.shape[0]
+    k = residual_sim_matrix.shape[0]
     if k <= 1:
-        H = torch.zeros((k, k), device=Z.device, dtype=Z.dtype)
-        spec_norm = torch.zeros((), device=Z.device, dtype=Z.dtype)
+        H = torch.zeros((k, k), device=residual_sim_matrix.device, dtype=residual_sim_matrix.dtype)
+        spec_norm = torch.zeros((), device=residual_sim_matrix.device, dtype=residual_sim_matrix.dtype)
         return H, spec_norm
 
-    device, dtype = Z.device, Z.dtype
+    device, dtype = residual_sim_matrix.device, residual_sim_matrix.dtype
 
     identity = torch.eye(k, device=device, dtype=dtype)
     ones = torch.ones((k, 1), device=device, dtype=dtype)
 
     # Residual cosine matrix: off-diag = z_i^T z_j, diag = 0.
-    C_tilde = Z @ Z.T - identity
+    C_tilde = residual_sim_matrix - identity
 
     # Projectors onto span(1) and its orthogonal complement.
     P1 = (ones @ ones.T) / k

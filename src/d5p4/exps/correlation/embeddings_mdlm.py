@@ -5,8 +5,10 @@ from transformers import AutoModel
 from d5p4.config import Config
 from d5p4.exps.correlation.common import (
     compute_cka,
-    compute_cosine_similarity_stats,
-    compute_H_from_Z,
+    compute_cosine_similarity_matrix,
+    compute_cosine_similarity_stats_from_matrix,
+    compute_H_from_residual_cosine_matrix,
+    estimate_rho_from_cosine_matrices,
     get_pooled_output,
     plot_cka_acs,
     save_results_csv,
@@ -48,10 +50,10 @@ def main():  # noqa: C901, PLR0915
 
     mask_ratios = list(np.linspace(0.0, 0.99, num=50))  # 0.0 to 0.99 inclusive
     pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten", "flatten_no_special"]
-    rho = 0.4
 
     results = {strategy: {"cka": [], "acs": [], "acs_std": []} for strategy in pooling_strategies}
     results["flatten_no_special"]["h_spec_norm"] = []
+    results["flatten_no_special"]["rho_estimate"] = []
     all_ref_acs_scores: list[dict[str, float]] = []
 
     print("\nStarting experiment sweep...")
@@ -62,6 +64,7 @@ def main():  # noqa: C901, PLR0915
             strategy: {"cka": [], "acs": [], "acs_std": []} for strategy in pooling_strategies
         }
         batch_scores_per_strategy["flatten_no_special"]["h_spec_norm"] = []
+        batch_scores_per_strategy["flatten_no_special"]["rho_estimate"] = []
 
         for i in tqdm(range(N_BATCHES), desc="Batches"):
             sample_texts = []
@@ -80,7 +83,8 @@ def main():  # noqa: C901, PLR0915
 
             # Only compute ref_acs_baseline if mask_ratio is 0.0 (it's constant)
             if mask_ratio == 0.0:
-                all_ref_acs_scores.append(compute_cosine_similarity_stats(ref_embeddings))
+                ref_sim_matrix = compute_cosine_similarity_matrix(ref_embeddings)
+                all_ref_acs_scores.append(compute_cosine_similarity_stats_from_matrix(ref_sim_matrix))
 
             inputs = mdlm_tokenizer(
                 sample_texts,
@@ -107,6 +111,8 @@ def main():  # noqa: C901, PLR0915
                 )
                 mdlm_outputs = mdlm_all_states.hidden_states[-1]
 
+            cosine_matrices: dict[str, torch.Tensor] = {}
+
             for strategy in pooling_strategies:
                 # edge cases
                 if (strategy == "pool_masked" and mask_ratio == 0.0) or (
@@ -119,17 +125,25 @@ def main():  # noqa: C901, PLR0915
 
                 with torch.inference_mode():
                     mdlm_pooled = get_pooled_output(mdlm_outputs, strategy, full_token_mask)
+                    sim_matrix = compute_cosine_similarity_matrix(mdlm_pooled)
 
+                cosine_matrices[strategy] = sim_matrix
                 cka_score = compute_cka(ref_embeddings, mdlm_pooled)
-                acs_stats = compute_cosine_similarity_stats(mdlm_pooled)
+                acs_stats = compute_cosine_similarity_stats_from_matrix(sim_matrix)
 
                 batch_scores_per_strategy[strategy]["cka"].append(cka_score)
                 batch_scores_per_strategy[strategy]["acs"].append(acs_stats["mean"])
                 batch_scores_per_strategy[strategy]["acs_std"].append(acs_stats["std"])
 
-                if strategy == "flatten_no_special":
-                    _, h_spec_norm = compute_H_from_Z(mdlm_pooled, rho=rho)
-                    batch_scores_per_strategy[strategy]["h_spec_norm"].append(h_spec_norm.item())
+            residual_sim_matrix = cosine_matrices["flatten_no_special"]
+            plain_sim_matrix = cosine_matrices["flatten"]
+            rho_estimate = estimate_rho_from_cosine_matrices(plain_sim_matrix, residual_sim_matrix)
+            _, h_spec_norm = compute_H_from_residual_cosine_matrix(
+                residual_sim_matrix,
+                rho=float(rho_estimate),
+            )
+            batch_scores_per_strategy["flatten_no_special"]["rho_estimate"].append(rho_estimate.item())
+            batch_scores_per_strategy["flatten_no_special"]["h_spec_norm"].append(h_spec_norm.item())
 
         print(f"    Aggregating results for mask ratio {mask_ratio:.2f}...")
         for strategy in pooling_strategies:
@@ -146,9 +160,14 @@ def main():  # noqa: C901, PLR0915
                 f"Avg CKA: {avg_cka:7.4f}, Avg ACS: {avg_acs:7.4f}, ACS Std: {avg_acs_std:7.4f}"
             )
             if strategy == "flatten_no_special":
+                avg_rho_estimate = np.mean(batch_scores_per_strategy[strategy]["rho_estimate"])
                 avg_h_spec_norm = np.mean(batch_scores_per_strategy[strategy]["h_spec_norm"])
+                results[strategy]["rho_estimate"].append(avg_rho_estimate)
                 results[strategy]["h_spec_norm"].append(avg_h_spec_norm)
-                summary += f", H SpecNorm (rho={rho:.2f}): {avg_h_spec_norm:7.4f}"
+                summary += (
+                    f", Rho Est: {avg_rho_estimate:7.4f} "
+                    f"(cos(flatten)-cos(flatten_no_special)), H SpecNorm: {avg_h_spec_norm:7.4f}"
+                )
 
             print(summary)
 
@@ -162,12 +181,23 @@ def main():  # noqa: C901, PLR0915
     final_ref_acs_std = float(np.mean([s["std"] for s in all_ref_acs_scores]))
     print(f"Final averaged Reference ACS baseline: {final_ref_acs_mean:.4f} (std: {final_ref_acs_std:.4f})")
 
+    flatten_no_special_rho = np.asarray(results["flatten_no_special"]["rho_estimate"], dtype=float)
+    rho_max_idx = int(np.argmax(flatten_no_special_rho))
+    rho_min_idx = int(np.argmin(flatten_no_special_rho))
+    print(
+        "Summary: flatten_no_special rho estimate from "
+        "cos(flatten)-cos(flatten_no_special) "
+        f"mean={flatten_no_special_rho.mean():.4f}, "
+        f"min={flatten_no_special_rho[rho_min_idx]:.4f} at mask_ratio={mask_ratios[rho_min_idx]:.2f}, "
+        f"max={flatten_no_special_rho[rho_max_idx]:.4f} at mask_ratio={mask_ratios[rho_max_idx]:.2f}",
+    )
+
     flatten_no_special_h_spec_norm = np.asarray(results["flatten_no_special"]["h_spec_norm"], dtype=float)
     max_idx = int(np.argmax(flatten_no_special_h_spec_norm))
     min_idx = int(np.argmin(flatten_no_special_h_spec_norm))
     print(
-        "Summary: flatten_no_special H spectral norm "
-        f"(rho={rho:.2f}) mean={flatten_no_special_h_spec_norm.mean():.4f}, "
+        "Summary: flatten_no_special H spectral norm with dynamic rho "
+        f"mean={flatten_no_special_h_spec_norm.mean():.4f}, "
         f"min={flatten_no_special_h_spec_norm[min_idx]:.4f} at mask_ratio={mask_ratios[min_idx]:.2f}, "
         f"max={flatten_no_special_h_spec_norm[max_idx]:.4f} at mask_ratio={mask_ratios[max_idx]:.2f}",
     )
