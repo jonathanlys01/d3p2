@@ -46,7 +46,7 @@ def main():  # noqa: PLR0915
     torch.manual_seed(42)
 
     mask_ratios = list(np.linspace(0.0, 0.99, num=50))  # 0.0 to 0.99 inclusive
-    pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten"]
+    pooling_strategies = ["mean", "pool_non_masked", "pool_masked", "flatten", "flatten_no_special"]
 
     results = {strategy: {"cka": [], "acs": []} for strategy in pooling_strategies}
     all_ref_acs_scores: list[float] = []

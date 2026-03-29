@@ -60,11 +60,13 @@ def get_pooled_output(
 
     Args:
         outputs: Token-level hidden states [B, L, D]
-        strategy: "mean", "flatten", "pool_masked", or "pool_non_masked"
+        strategy: "mean", "flatten", "flatten_no_special", "pool_masked", or "pool_non_masked"
         mask: Boolean mask [B, L] where True means masked token
     """
     if strategy == "flatten":
         return outputs.reshape(outputs.size(0), -1)
+    elif strategy == "flatten_no_special":
+        return outputs[:, 1:-1, :].reshape(outputs.size(0), -1)
     elif strategy == "mean":
         return torch.mean(outputs, dim=1)
     elif strategy == "pool_masked":
