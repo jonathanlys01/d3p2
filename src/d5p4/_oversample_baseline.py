@@ -54,7 +54,11 @@ if __name__ == "__main__":
                 print(f"Warning: Could not load references for {current_config.qa_dataset}: {e}")
 
         selected = evaluator.evaluate_baseline(texts, "ppl", subsample_k, references=references)
-        metrics = evaluator.evaluate(selected, references=references)
+        # expand each selected text by subsample_k
+        expanded_selected = []
+        for i in range(len(selected)):
+            expanded_selected.extend([selected[i]] * subsample_k)
+        metrics = evaluator.evaluate(expanded_selected, references=references)
 
         print("-" * 80)
         print(f"File: {file}")
