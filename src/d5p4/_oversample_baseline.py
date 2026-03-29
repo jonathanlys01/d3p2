@@ -58,8 +58,6 @@ if __name__ == "__main__":
 
         print("-" * 80)
         print(f"File: {file}")
-        if "metrics_summary" in metrics:
-            print(f"Summary: {metrics['metrics_summary']}")
-        else:
-            print(f"Metrics: {metrics}")
+        for key, value in metrics.items():
+            print(f"{key}: {value}")
         print("-" * 80)
