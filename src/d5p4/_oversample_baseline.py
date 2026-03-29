@@ -1,4 +1,5 @@
 import json
+import os
 
 from d5p4.config import Config
 from d5p4.eval_core import Evaluator
@@ -12,24 +13,22 @@ if __name__ == "__main__":
         cos_model_id=config.cos_model_id,
     )
 
-    path = "/Brain/private/j21lys/d3p2/src/results/exp-20260127_161300_dddd5af5-0f8a-42ed-a62c-ecf59c4614ec.json"
-    bs = 8
+    path = os.path.expanduser("~/src/tries/2026-03-29-ppl-proxy")
+    files = [f for f in os.listdir(path) if f.endswith(".json")]
 
-    with open(path, "r") as f:
-        data = json.load(f)
+    subsample_k = config.subsample_k
 
-    texts = data["text_samples"]
-    new_texts = []
+    assert subsample_k != 0
 
-    selected = evaluator.evaluate_baseline(texts, "ppl", bs)  # select top 8 per batch
+    print("Using subsample_k: ", subsample_k)
 
-    # repeat each element 8 times
-    for i in range(len(selected)):
-        new_texts.extend(selected[i] * bs)
+    for file in files:
+        with open(os.path.join(path, file), "r") as f:
+            data = json.load(f)
 
-    # rebatch
-    new_texts = [new_texts[i : i + bs] for i in range(0, len(new_texts), bs)]
+        texts = data["text_samples"]
+        new_texts = []
 
-    # evaluate
-    metrics = evaluator.evaluate(new_texts)
-    print(metrics)
+        selected = evaluator.evaluate_baseline(texts, "ppl", subsample_k)
+        metrics = evaluator.evaluate(selected)
+        print(metrics)
