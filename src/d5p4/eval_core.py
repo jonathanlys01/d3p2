@@ -99,7 +99,11 @@ class Perplexity(torch.nn.Module):
         ).to(device)
 
         if inputs["input_ids"].numel() == 0:
-            return None
+            return {
+                "mean_nll": torch.full((len(texts),), 15.0, device=device),
+                "total_nll": torch.zeros((), device=device),
+                "total_tokens": torch.zeros((), device=device, dtype=torch.long),
+            }
 
         self.model.to(device)
 
@@ -127,8 +131,12 @@ class Perplexity(torch.nn.Module):
 
             seq_total_nll = token_nll.sum(dim=1)
             seq_token_counts = valid_mask.sum(dim=1)
-            seq_mean_nll = seq_total_nll / seq_token_counts.clamp(min=1).to(token_nll.dtype)
-            seq_mean_nll = torch.nan_to_num(seq_mean_nll, nan=15.0, posinf=15.0, neginf=0.0)
+            seq_mean_nll = torch.where(
+                seq_token_counts > 0,
+                seq_total_nll / seq_token_counts.to(token_nll.dtype),
+                torch.full_like(seq_total_nll, 15.0),
+            )
+            seq_mean_nll = torch.nan_to_num(seq_mean_nll, nan=15.0, posinf=15.0, neginf=0.0).clamp(max=15.0)
 
         return {
             "mean_nll": seq_mean_nll,
@@ -495,6 +503,12 @@ class Evaluator:
     # ------------------------------------------------------------------
 
     def evaluate(self, texts: list[list[str]], references: list[list[str]] | None = None) -> dict[str, float | str]:  # noqa: C901
+        if references is not None and len(references) != len(texts):
+            raise ValueError(
+                "Expected one reference group per prediction group, got "
+                f"{len(references)} references for {len(texts)} groups.",
+            )
+
         timings: list[tuple[str, float]] = []
 
         ppl_stats, elapsed = _time_call(self.perplexity_model, texts, batch_size=self.batch_size)
@@ -645,6 +659,11 @@ class Evaluator:
         elif metric.lower() == "f1":
             if references is None:
                 raise ValueError("References must be provided for the f1 metric.")
+            if len(references) != len(full_sequences):
+                raise ValueError(
+                    f"Expected one reference group per candidate group, got {len(references)} "
+                    f"references for {len(full_sequences)} groups.",
+                )
             unflattened_scores = [
                 [max((_compute_f1_score(cand, ref) for ref in group_refs), default=0.0) for cand in group_cands]
                 for group_cands, group_refs in zip(full_sequences, references)

@@ -7,10 +7,45 @@ from d5p4.data import get_qa_dataset
 from d5p4.eval_core import Evaluator
 
 
+def _select_and_evaluate_baseline(
+    evaluator: Evaluator,
+    texts: list[list[str]],
+    metric: str,
+    subsample_k: int,
+    references: list[list[str]] | None = None,
+) -> tuple[list[list[str]], dict[str, float | str]]:
+    selected = evaluator.evaluate_baseline(texts, metric, subsample_k, references=references)
+    metrics = evaluator.evaluate(selected, references=references)
+    return selected, metrics
+
+
+def _load_references(current_config: Config, expected_groups: int) -> list[list[str]] | None:
+    if not current_config.qa_dataset:
+        return None
+
+    try:
+        dataset = get_qa_dataset(current_config)
+        limit = current_config.qa_dataset_len if current_config.qa_dataset_len > 0 else len(dataset)
+        references = [row.correct_answers for row in dataset.itertuples()][:limit]
+        print(f"Loaded {len(references)} references for {current_config.qa_dataset}")
+    except Exception as e:
+        print(f"Warning: Could not load references for {current_config.qa_dataset}: {e}")
+        return None
+
+    if len(references) != expected_groups:
+        print(
+            "Warning: Reference count does not match text groups "
+            f"({len(references)} refs vs {expected_groups} groups); skipping reference-based metrics.",
+        )
+        return None
+
+    return references
+
+
 if __name__ == "__main__":
     config = Config()
     evaluator = Evaluator(
-        batch_size=config.batch_size,
+        batch_size=config.eval_batch_size,
         ppl_model_id=config.ppl_model_id,
         cos_model_id=config.cos_model_id,
     )
@@ -41,34 +76,24 @@ if __name__ == "__main__":
 
         texts = data["text_samples"]
 
-        # Load references for QA tasks
-        references = None
-        # Default data_path check or just check if qa_dataset is set
-        if current_config.qa_dataset:
-            try:
-                dataset = get_qa_dataset(current_config)
-                limit = current_config.qa_dataset_len if current_config.qa_dataset_len > 0 else len(dataset)
-                references = [row.correct_answers for row in dataset.itertuples()][:limit]
-                print(f"Loaded {len(references)} references for {current_config.qa_dataset}")
-            except Exception as e:
-                print(f"Warning: Could not load references for {current_config.qa_dataset}: {e}")
+        references = _load_references(current_config, len(texts))
+        metrics_to_run = ["ppl", "f1"] if references is not None else ["ppl"]
 
-        for metric in ["ppl", "f1"]:
+        for metric in metrics_to_run:
             print(f"File: {file} | Metric: {metric}")
-            selected = evaluator.evaluate_baseline(texts, metric, subsample_k, references=references)
-
-            # expand each selected text by subsample_k
-            expanded_selected = []
-            for i in range(len(selected)):
-                expanded_selected.extend([selected[i]] * subsample_k)
-
-            metrics = evaluator.evaluate(expanded_selected, references=references)
+            selected, metrics = _select_and_evaluate_baseline(
+                evaluator,
+                texts,
+                metric,
+                subsample_k,
+                references=references,
+            )
 
             # Save dummy result file
             save_data = {
                 "config": file_config_dict,
                 "metrics": metrics,
-                "text_samples": [],
+                "text_samples": selected,
                 "experiment_id": data.get("experiment_id", ""),
             }
             out_name = file.replace(".json", f"-bon-{metric}.json")

@@ -7,16 +7,67 @@ from pprint import pprint
 from unittest.mock import patch
 
 import numpy as np
+import torch
 
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from d5p4.eval_core import Evaluator, MathEvaluator, StringMetrics, _is_math_results_file
+from d5p4._oversample_baseline import _select_and_evaluate_baseline
+from d5p4.eval_core import Evaluator, MathEvaluator, Perplexity, StringMetrics, _is_math_results_file
 
 
 class _FakeTokenizer:
     def tokenize(self, text: str) -> list[str]:
         return text.lower().split()
+
+
+class _FakeBatch(dict):
+    def to(self, _device):
+        return self
+
+
+class _FakePerplexityTokenizer:
+    pad_token = "<pad>"
+    eos_token = "<eos>"
+    pad_token_id = 0
+
+    def __call__(
+        self,
+        texts: list[str],
+        return_tensors: str = "pt",
+        padding: bool = True,
+        truncation: bool = True,
+        add_special_tokens: bool = False,
+    ) -> _FakeBatch:
+        del return_tensors, padding, truncation, add_special_tokens
+
+        encoded = [[1, 2, 3] if text.strip() else [] for text in texts]
+        max_len = max((len(ids) for ids in encoded), default=0)
+        input_ids = torch.zeros((len(texts), max_len), dtype=torch.long)
+        attention_mask = torch.zeros((len(texts), max_len), dtype=torch.long)
+        for i, ids in enumerate(encoded):
+            if ids:
+                input_ids[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+                attention_mask[i, : len(ids)] = 1
+        return _FakeBatch({"input_ids": input_ids, "attention_mask": attention_mask})
+
+
+class _FakePerplexityModel(torch.nn.Module):
+    def eval(self):
+        return self
+
+    def to(self, _device):
+        return self
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, return_dict: bool = True):
+        del attention_mask, return_dict
+        batch_size, seq_len = input_ids.shape
+        vocab_size = 8
+        return type(
+            "_FakeOutputs",
+            (),
+            {"last_hidden_state": torch.zeros(batch_size, seq_len, vocab_size)},
+        )()
 
 
 class TestEvalCoreStringMetrics(unittest.TestCase):
@@ -158,6 +209,64 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         assert isinstance(summary, str)
         self.assertIn("Ent: 0.7 pm 0.04", summary)
         self.assertIn("B-Ent: 0.9", summary)
+
+    def test_perplexity_empty_texts_are_penalized(self):
+        perplexity = Perplexity.__new__(Perplexity)
+        torch.nn.Module.__init__(perplexity)
+        perplexity.model = _FakePerplexityModel()
+        perplexity.tokenizer = _FakePerplexityTokenizer()
+        perplexity.lm_head = torch.nn.Identity()
+
+        scores = perplexity._forward(["non-empty", "   ", ""])
+
+        self.assertIsNotNone(scores)
+        assert scores is not None
+        mean_nll = scores["mean_nll"].cpu().tolist()
+        self.assertLess(mean_nll[0], 15.0)
+        self.assertEqual(mean_nll[1], 15.0)
+        self.assertEqual(mean_nll[2], 15.0)
+
+    def test_evaluate_baseline_f1_requires_aligned_references(self):
+        evaluator = Evaluator.__new__(Evaluator)
+
+        with self.assertRaisesRegex(ValueError, "reference group per candidate group"):
+            evaluator.evaluate_baseline(
+                [["candidate-a"], ["candidate-b"]],
+                metric="f1",
+                k=1,
+                references=[["ref-a"]],
+            )
+
+    def test_oversample_baseline_evaluates_selected_groups_directly(self):
+        class _RecordingEvaluator:
+            def __init__(self):
+                self.evaluate_inputs = None
+                self.evaluate_references = None
+
+            def evaluate_baseline(self, texts, metric, k, references=None):
+                del texts, metric, k, references
+                return [["a1", "a2"], ["b1", "b2"]]
+
+            def evaluate(self, texts, references=None):
+                self.evaluate_inputs = texts
+                self.evaluate_references = references
+                return {"f1": 1.0}
+
+        evaluator = _RecordingEvaluator()
+        references = [["ref-a"], ["ref-b"]]
+
+        selected, metrics = _select_and_evaluate_baseline(
+            evaluator,
+            [["ignored-a"], ["ignored-b"]],
+            metric="f1",
+            subsample_k=2,
+            references=references,
+        )
+
+        self.assertEqual(selected, [["a1", "a2"], ["b1", "b2"]])
+        self.assertEqual(metrics, {"f1": 1.0})
+        self.assertEqual(evaluator.evaluate_inputs, selected)
+        self.assertEqual(evaluator.evaluate_references, references)
 
     def test_math_results_shape_persists_string_metrics_without_model_downloads(self):
         payload = {

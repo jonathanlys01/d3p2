@@ -55,37 +55,15 @@ run_llada_math() {
 TOP_DIR=$(git rev-parse --show-toplevel)
 cd $TOP_DIR/src/d5p4
 
-# list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
-# list_w_interaction=(6.4 8.0 11.5 15.0 20.0)
-# list_w_interaction=(25.0 30.0)
-
+w_interaction=100.0
 set -ex
 
-# run_llada_math \
-#     method=baseline \
-#     n_groups=4 \
-#     group_size=1 \
-#     comment="full Independent pure baseline"
-
-
 run_llada_math \
-  method=diverse_beam \
+  method=greedy_map \
   n_groups=2 \
   group_size=2 \
   subsample_end=128 \
-  _diversity_alpha=20.0 \
-  comment="hcfg divbs pure partial @ alpha=20"
-
-
-# for w_interaction in "${list_w_interaction[@]}"; do
-#   run_llada_math \
-#     method=greedy_map \
-#     n_groups=2 \
-#     group_size=2 \
-#     subsample_end=128 \
-#     comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}" \
-#     _w_interaction=$w_interaction
-# done
-
+  comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}" \
+  _w_interaction=$w_interaction
 
 echo All done
