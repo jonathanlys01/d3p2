@@ -12,7 +12,7 @@ if [ -z "${HF_TOKEN}" ]; then
     exit 1
 fi
   
-N_QUESTIONS=${N_QUESTIONS:-500}
+N_QUESTIONS=${N_QUESTIONS:-100}
 export OMP_NUM_THREADS=1
 
 # Node-local scratch for this job
@@ -61,11 +61,20 @@ cd $TOP_DIR/src/d5p4
 
 set -ex
 
-run_llada_math \
-    method=baseline \
-    n_groups=4 \
-    group_size=1 \
-    comment="full Independent pure baseline"
+# run_llada_math \
+#     method=baseline \
+#     n_groups=4 \
+#     group_size=1 \
+#     comment="full Independent pure baseline"
+
+
+  run_llada_math \
+    method=diverse_beam \
+    n_groups=2 \
+    group_size=2 \
+    subsample_end=128 \
+    _diversity_alpha=20.0 \
+    comment="hcfg divbs pure partial @ alpha=20"
 
 
 # for w_interaction in "${list_w_interaction[@]}"; do
