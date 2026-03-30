@@ -13,6 +13,7 @@ Utility helpers live in eval_utils.py.
 import argparse
 import json
 import os
+from dataclasses import fields
 
 import numpy as np
 import ot
@@ -22,7 +23,8 @@ from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, 
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from d5p4 import mauve
-from d5p4.config import CACHE_DIR
+from d5p4.config import CACHE_DIR, Config
+from d5p4.data import get_qa_dataset
 from d5p4.eval_utils import (
     _BATCH_SELF_BLEU_EXACT_THRESHOLD,
     _compute_distinct_metrics_impl,
@@ -661,7 +663,7 @@ class Evaluator:
 
         return selected_sequences
 
-    def eval_from_file(
+    def eval_from_file(  # noqa: C901
         self,
         file_path: str,
         references: list[list[str]] | None = None,
@@ -692,24 +694,16 @@ class Evaluator:
             if references is None:
                 config_dict = data.get("config")
                 if config_dict:
-                    from dataclasses import fields
-
-                    from d5p4.config import Config
-                    from d5p4.data import get_qa_dataset
-
                     valid_fields = {f.name for f in fields(Config)}
                     filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
                     filtered_config["disable_sys_args"] = True
                     cfg = Config(**filtered_config)
 
                     if cfg.qa_dataset:
-                        try:
-                            dataset = get_qa_dataset(cfg)
-                            limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
-                            references = [row.correct_answers for row in dataset.itertuples()][:limit]
-                            u_print(f"On-the-fly: Loaded {len(references)} references for {cfg.qa_dataset}")
-                        except Exception as e:
-                            u_print(f"Warning: Could not load references on-the-fly for {cfg.qa_dataset}: {e}")
+                        dataset = get_qa_dataset(cfg)
+                        limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
+                        references = [row.correct_answers for row in dataset.itertuples()][:limit]
+                        u_print(f"On-the-fly: Loaded {len(references)} references for {cfg.qa_dataset}")
 
         metrics = self.evaluate(texts, references=references)
         data["metrics"] = metrics
@@ -1016,7 +1010,7 @@ class MathEvaluator:
 
         return metrics
 
-    def eval_from_file(
+    def eval_from_file(  # noqa: C901, PLR0912
         self,
         file_path: str,
         force: bool = False,
@@ -1079,27 +1073,18 @@ class MathEvaluator:
             else:
                 config_dict = data.get("config")
                 if config_dict:
-                    from dataclasses import fields
-
-                    from d5p4.config import Config
-
                     valid_fields = {f.name for f in fields(Config)}
                     filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
                     filtered_config["disable_sys_args"] = True
                     cfg = Config(**filtered_config)
 
                     if cfg.qa_dataset:
-                        try:
-                            from d5p4.data import get_qa_dataset
-
-                            dataset = get_qa_dataset(cfg)
-                            limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
-                            string_references = [row.correct_answers for row in dataset.itertuples()][:limit]
-                            u_print(
-                                f"On-the-fly: Loaded {len(string_references)} references for {cfg.qa_dataset} (Math)",
-                            )
-                        except Exception as e:
-                            u_print(f"Warning: Could not load references on-the-fly for {cfg.qa_dataset}: {e}")
+                        dataset = get_qa_dataset(cfg)
+                        limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
+                        string_references = [row.correct_answers for row in dataset.itertuples()][:limit]
+                        u_print(
+                            f"On-the-fly: Loaded {len(string_references)} references for {cfg.qa_dataset} (Math)",
+                        )
 
         math_metrics = self.evaluate(
             generations,
