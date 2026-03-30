@@ -15,8 +15,8 @@ if __name__ == "__main__":
         cos_model_id=config.cos_model_id,
     )
 
-    path = os.path.expanduser("~/src/tries/2026-03-29-ppl-proxy")
-    files = sorted([f for f in os.listdir(path) if f.endswith(".json")])
+    path = os.path.expanduser("~/src/tries/2026-03-30-fixing-baseline")
+    files = sorted([f for f in os.listdir(path) if f.endswith(".json") and "-bon-" not in f])
 
     subsample_k = config.subsample_k
     assert subsample_k != 0
@@ -36,7 +36,7 @@ if __name__ == "__main__":
             # filter only valid fields
             valid_fields = {f.name for f in fields(Config)}
             filtered_config = {k: v for k, v in file_config_dict.items() if k in valid_fields}
-            filtered_config.pop("disable_sys_args")
+            filtered_config.pop("disable_sys_args", None)
             current_config = Config(disable_sys_args=True, **filtered_config)
 
         texts = data["text_samples"]
@@ -53,17 +53,29 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Warning: Could not load references for {current_config.qa_dataset}: {e}")
 
-        # selected = evaluator.evaluate_baseline(texts, "ppl", subsample_k, references=references)
-        selected = evaluator.evaluate_baseline(texts, "f1", subsample_k, references=references)
+        for metric in ["ppl", "f1"]:
+            print(f"File: {file} | Metric: {metric}")
+            selected = evaluator.evaluate_baseline(texts, metric, subsample_k, references=references)
 
-        # expand each selected text by subsample_k
-        expanded_selected = []
-        for i in range(len(selected)):
-            expanded_selected.extend([selected[i]] * subsample_k)
-        metrics = evaluator.evaluate(expanded_selected, references=references)
+            # expand each selected text by subsample_k
+            expanded_selected = []
+            for i in range(len(selected)):
+                expanded_selected.extend([selected[i]] * subsample_k)
 
-        print("-" * 80)
-        print(f"File: {file}")
-        for key, value in metrics.items():
-            print(f"{key}: {value}")
-        print("-" * 80)
+            metrics = evaluator.evaluate(expanded_selected, references=references)
+
+            # Save dummy result file
+            save_data = {
+                "config": file_config_dict,
+                "metrics": metrics,
+                "text_samples": [],
+                "experiment_id": data.get("experiment_id", ""),
+            }
+            out_name = file.replace(".json", f"-bon-{metric}.json")
+            with open(os.path.join(path, out_name), "w") as f_out:
+                json.dump(save_data, f_out, indent=4)
+
+            print("-" * 80)
+            for key, value in metrics.items():
+                print(f"{metric}_{key}: {value}")
+            print("-" * 80)
