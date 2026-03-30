@@ -53,7 +53,9 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Warning: Could not load references for {current_config.qa_dataset}: {e}")
 
-        selected = evaluator.evaluate_baseline(texts, "ppl", subsample_k, references=references)
+        # selected = evaluator.evaluate_baseline(texts, "ppl", subsample_k, references=references)
+        selected = evaluator.evaluate_baseline(texts, "f1", subsample_k, references=references)
+
         # expand each selected text by subsample_k
         expanded_selected = []
         for i in range(len(selected)):
