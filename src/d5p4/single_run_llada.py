@@ -15,11 +15,13 @@ from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, print, seed_all
 
 
-def save(text, config, uid, rank=0):
+def save(text, config, uid, rank=0, references=None):
     samples = {
         "text_samples": text,  # list of lists of strings
         "config": asdict(config),
     }
+    if references is not None:
+        samples["references"] = references
 
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -47,6 +49,7 @@ def main():
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
     prompts: list[str] = [row.question for row in rows]  # type: ignore
+    references_all: list[list[str]] = [row.correct_answers for row in rows]  # type: ignore
 
     for i, prompt in enumerate(prompts):
         print(f"Sampling batch {i + 1}/{len(prompts)}...", progress=True)
@@ -60,25 +63,25 @@ def main():
             texts_.append(gen_text)
 
         texts.append(texts_)
-        save(texts, config, unique_id, rank=offset)
+        save(texts, config, unique_id, rank=offset, references=references_all[: i + 1])
 
     master = model.distributed_utils is None or model.distributed_utils.rank == 0
     metrics = None
     if master:
         print("Running evaluation...")
-        references: list[list[str]] = [row.correct_answers for row in rows]  # type: ignore
         evaluator = Evaluator(
             batch_size=config.eval_batch_size,
             force=True,
             ppl_model_id=config.ppl_model_id,
             cos_model_id=config.cos_model_id,
         )
-        metrics = evaluator.evaluate(texts, references=references)
+        metrics = evaluator.evaluate(texts, references=references_all)
         assert metrics["metrics_summary"] is not None
         print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     samples = {
-        "text_samples": texts,  # list of lists of strings
+        "text_samples": texts,
+        "references": references_all,
         "config": asdict(config),
         "experiment_id": str(unique_id),
     }

@@ -665,6 +665,7 @@ class Evaluator:
         self,
         file_path: str,
         references: list[list[str]] | None = None,
+        load_references: bool = False,
     ) -> dict[str, float | str] | None:
         with open(file_path) as f:
             data = json.load(f)
@@ -685,6 +686,30 @@ class Evaluator:
         if not texts:
             print(f"Skipping {file_path}")
             return None
+
+        if references is None and load_references:
+            references = data.get("references")
+            if references is None:
+                config_dict = data.get("config")
+                if config_dict:
+                    from dataclasses import fields
+
+                    from d5p4.config import Config
+                    from d5p4.data import get_qa_dataset
+
+                    valid_fields = {f.name for f in fields(Config)}
+                    filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
+                    filtered_config["disable_sys_args"] = True
+                    cfg = Config(**filtered_config)
+
+                    if cfg.qa_dataset:
+                        try:
+                            dataset = get_qa_dataset(cfg)
+                            limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
+                            references = [row.correct_answers for row in dataset.itertuples()][:limit]
+                            u_print(f"On-the-fly: Loaded {len(references)} references for {cfg.qa_dataset}")
+                        except Exception as e:
+                            u_print(f"Warning: Could not load references on-the-fly for {cfg.qa_dataset}: {e}")
 
         metrics = self.evaluate(texts, references=references)
         data["metrics"] = metrics
@@ -997,6 +1022,7 @@ class MathEvaluator:
         force: bool = False,
         k_values: list[int] | None = None,
         num_workers: int = 1,
+        load_references: bool = False,
     ) -> dict[str, float | str] | None:
         """Load a math results JSON file and compute (or refresh) metrics in-place.
 
@@ -1042,6 +1068,38 @@ class MathEvaluator:
 
         if not generations:
             return None
+
+        if load_references:
+            # For MathEvaluator, we also check "references" (which might be the lists of correct answers)
+            # or we rely on the logic below that will use gold_answers.
+            # However, if we want full references for string metrics, we should load them.
+            stored_refs = data.get("references")
+            if stored_refs is not None:
+                string_references = stored_refs
+            else:
+                config_dict = data.get("config")
+                if config_dict:
+                    from dataclasses import fields
+
+                    from d5p4.config import Config
+
+                    valid_fields = {f.name for f in fields(Config)}
+                    filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
+                    filtered_config["disable_sys_args"] = True
+                    cfg = Config(**filtered_config)
+
+                    if cfg.qa_dataset:
+                        try:
+                            from d5p4.data import get_qa_dataset
+
+                            dataset = get_qa_dataset(cfg)
+                            limit = cfg.qa_dataset_len if cfg.qa_dataset_len > 0 else len(dataset)
+                            string_references = [row.correct_answers for row in dataset.itertuples()][:limit]
+                            u_print(
+                                f"On-the-fly: Loaded {len(string_references)} references for {cfg.qa_dataset} (Math)",
+                            )
+                        except Exception as e:
+                            u_print(f"Warning: Could not load references on-the-fly for {cfg.qa_dataset}: {e}")
 
         math_metrics = self.evaluate(
             generations,
