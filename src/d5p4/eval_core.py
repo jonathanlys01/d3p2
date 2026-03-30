@@ -1135,6 +1135,11 @@ def main():
         help="CPU workers for string/math metric aggregation.",
     )
     parser.add_argument("--force", action="store_true", help="Re-evaluate even when metrics already exist.")
+    parser.add_argument(
+        "--load_references",
+        action="store_true",
+        help="Load references from dataset if missing from file.",
+    )
     args = parser.parse_args()
     input_path = args.input_path
     if os.path.isfile(input_path):
@@ -1161,7 +1166,12 @@ def main():
                     cos_model_id=args.cos_model_id,
                     batch_size=args.batch_size,
                 )
-            math_evaluator.eval_from_file(file_path, force=args.force, num_workers=args.num_workers)
+            math_evaluator.eval_from_file(
+                file_path,
+                force=args.force,
+                num_workers=args.num_workers,
+                load_references=args.load_references,
+            )
         else:
             if evaluator is None:
                 evaluator = Evaluator(
@@ -1171,7 +1181,7 @@ def main():
                     args.cos_model_id,
                     show_timings=True,
                 )
-            evaluator.eval_from_file(file_path)
+            evaluator.eval_from_file(file_path, load_references=args.load_references)
 
 
 if __name__ == "__main__":
