@@ -15,6 +15,8 @@ fi
 N_QUESTIONS=${N_QUESTIONS:-100}
 export OMP_NUM_THREADS=1
 
+sleep 5
+
 # Node-local scratch for this job
 JOB_ROOT="${SCRATCH}/uv-${SLURM_JOB_NAME}"
 mkdir -p "${JOB_ROOT}"
