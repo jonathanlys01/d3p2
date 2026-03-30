@@ -237,6 +237,15 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
                 references=[["ref-a"]],
             )
 
+    def test_reference_alignment_requires_aligned_references(self):
+        metrics = StringMetrics()
+
+        with self.assertRaisesRegex(ValueError, "reference group per prediction group"):
+            metrics.reference_alignment(
+                [["candidate-a"], ["candidate-b"]],
+                references=[["ref-a"]],
+            )
+
     def test_oversample_baseline_evaluates_selected_groups_directly(self):
         class _RecordingEvaluator:
             def __init__(self):

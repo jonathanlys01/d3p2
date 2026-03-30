@@ -410,6 +410,11 @@ class StringMetrics(torch.nn.Module):
         """Compute lexical overlap metrics against references (F1, BLEU)."""
         if not (references and any(refs for refs in references)):
             return {}
+        if len(references) != len(predictions):
+            raise ValueError(
+                "Expected one reference group per prediction group, got "
+                f"{len(references)} references for {len(predictions)} groups.",
+            )
 
         grouped_pairs = [(preds, refs) for preds, refs in zip(predictions, references) if preds and refs]
         flattened_predictions = [pred for preds, _ in grouped_pairs for pred in preds]
