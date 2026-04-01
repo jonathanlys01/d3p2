@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="1128">
+<rect width="100%" height="100%" fill="#ffffff" />
+<style>
+  text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  .title { font-size: 15px; font-weight: 700; fill: #111827; }
+  .subtitle { font-size: 11px; fill: #4b5563; }
+  .label { font-size: 12px; font-weight: 600; fill: #374151; }
+  .axis-label { font-size: 11px; fill: #6b7280; }
+  .value-label { font-size: 11px; fill: #111827; font-weight: 600; }
+  .meta-info { font-size: 10px; fill: #9ca3af; }
+  .category-title { font-size: 13px; font-weight: 700; fill: #111827; }
+</style>
+<text x="12" y="24" class="title">First demasked position for logits [4.0, 2.0, 1.0, 0.0]</text>
+<text x="12" y="42" class="subtitle">raw logits: [4.0, 2.0, 1.0, 0.0]   confidence: [0.982, 0.881, 0.731, 0.500]</text>
+<text x="12" y="58" class="subtitle">selection probs over top-2 @ T=0.25: [0.600, 0.400]</text>
+<text x="12" y="98" class="label">raw logits</text>
+<rect x="180" y="110" width="68" height="100" fill="#2563eb" rx="4" fill-opacity="0.9" />
+<text x="214.0" y="230" class="axis-label" text-anchor="middle">p0</text>
+<text x="214.0" y="258" class="value-label" text-anchor="middle">4.000</text>
+<rect x="304" y="160" width="68" height="50" fill="#2563eb" rx="4" fill-opacity="0.9" />
+<text x="338.0" y="230" class="axis-label" text-anchor="middle">p1</text>
+<text x="338.0" y="258" class="value-label" text-anchor="middle">2.000</text>
+<rect x="428" y="185" width="68" height="25" fill="#2563eb" rx="4" fill-opacity="0.9" />
+<text x="462.0" y="230" class="axis-label" text-anchor="middle">p2</text>
+<text x="462.0" y="258" class="value-label" text-anchor="middle">1.000</text>
+<rect x="552" y="208" width="68" height="2" fill="#2563eb" rx="4" fill-opacity="0.9" />
+<text x="586.0" y="230" class="axis-label" text-anchor="middle">p3</text>
+<text x="586.0" y="258" class="value-label" text-anchor="middle">0.000</text>
+<text x="12" y="288" class="label">confidence p(x0)</text>
+<rect x="180" y="302" width="68" height="98" fill="#059669" rx="4" fill-opacity="0.9" />
+<text x="214.0" y="420" class="axis-label" text-anchor="middle">p0</text>
+<text x="214.0" y="448" class="value-label" text-anchor="middle">0.982</text>
+<rect x="304" y="312" width="68" height="88" fill="#059669" rx="4" fill-opacity="0.9" />
+<text x="338.0" y="420" class="axis-label" text-anchor="middle">p1</text>
+<text x="338.0" y="448" class="value-label" text-anchor="middle">0.881</text>
+<rect x="428" y="327" width="68" height="73" fill="#059669" rx="4" fill-opacity="0.9" />
+<text x="462.0" y="420" class="axis-label" text-anchor="middle">p2</text>
+<text x="462.0" y="448" class="value-label" text-anchor="middle">0.731</text>
+<rect x="552" y="350" width="68" height="50" fill="#059669" rx="4" fill-opacity="0.9" />
+<text x="586.0" y="420" class="axis-label" text-anchor="middle">p3</text>
+<text x="586.0" y="448" class="value-label" text-anchor="middle">0.500</text>
+<text x="12" y="478" class="label">top-2 selection p</text>
+<rect x="180" y="531" width="68" height="59" fill="#d97706" rx="4" fill-opacity="0.9" />
+<text x="214.0" y="610" class="axis-label" text-anchor="middle">p0</text>
+<text x="214.0" y="638" class="value-label" text-anchor="middle">0.600</text>
+<rect x="304" y="550" width="68" height="40" fill="#d97706" rx="4" fill-opacity="0.9" />
+<text x="338.0" y="610" class="axis-label" text-anchor="middle">p1</text>
+<text x="338.0" y="638" class="value-label" text-anchor="middle">0.400</text>
+<text x="660" y="140" class="meta-info">min-max norm [0.0, 4.0]</text>
+<text x="660" y="330" class="meta-info">already normalized [0, 1]</text>
+<text x="660" y="520" class="meta-info">restricted to top-2</text>
+<line x1="12" y1="648" x2="828" y2="648" stroke="#e5e7eb" stroke-width="1.5" />
+<text x="12" y="672" class="category-title">low_confidence</text>
+<text x="62" y="698" class="axis-label">p0</text>
+<rect x="110" y="684" width="480" height="16" fill="#059669" rx="3" />
+<text x="600" y="697" class="value-label">64</text>
+<text x="62" y="722" class="axis-label">p1</text>
+<rect x="110" y="708" width="0" height="16" fill="#f3f4f6" rx="3" />
+<text x="62" y="746" class="axis-label">p2</text>
+<rect x="110" y="732" width="0" height="16" fill="#f3f4f6" rx="3" />
+<text x="62" y="770" class="axis-label">p3</text>
+<rect x="110" y="756" width="0" height="16" fill="#f3f4f6" rx="3" />
+<text x="12" y="820" class="category-title">random</text>
+<text x="62" y="846" class="axis-label">p0</text>
+<rect x="110" y="832" width="105" height="16" fill="#059669" rx="3" />
+<text x="225" y="845" class="value-label">14</text>
+<text x="62" y="870" class="axis-label">p1</text>
+<rect x="110" y="856" width="142" height="16" fill="#059669" rx="3" />
+<text x="262" y="869" class="value-label">19</text>
+<text x="62" y="894" class="axis-label">p2</text>
+<rect x="110" y="880" width="97" height="16" fill="#059669" rx="3" />
+<text x="217" y="893" class="value-label">13</text>
+<text x="62" y="918" class="axis-label">p3</text>
+<rect x="110" y="904" width="135" height="16" fill="#059669" rx="3" />
+<text x="255" y="917" class="value-label">18</text>
+<text x="12" y="968" class="category-title">selection_temperature</text>
+<text x="62" y="994" class="axis-label">p0</text>
+<rect x="110" y="980" width="285" height="16" fill="#059669" rx="3" />
+<text x="405" y="993" class="value-label">38</text>
+<text x="62" y="1018" class="axis-label">p1</text>
+<rect x="110" y="1004" width="195" height="16" fill="#059669" rx="3" />
+<text x="315" y="1017" class="value-label">26</text>
+<text x="62" y="1042" class="axis-label">p2</text>
+<rect x="110" y="1028" width="0" height="16" fill="#f3f4f6" rx="3" />
+<text x="62" y="1066" class="axis-label">p3</text>
+<rect x="110" y="1052" width="0" height="16" fill="#f3f4f6" rx="3" />
+</svg>

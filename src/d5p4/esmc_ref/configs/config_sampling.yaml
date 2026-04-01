@@ -24,6 +24,7 @@ data:
   streaming: false
 
 seed: 1
+compile_model: true
 
 loader:
   global_batch_size: 512

@@ -53,7 +53,8 @@ class Config:
     llada_steps: int = 128
     gen_length: int = 128
     block_length: int = 32
-    remasking: str = "low_confidence"  # "low_confidence" or "random"
+    remasking: str = "low_confidence"  # "low_confidence", "selection_temperature", or "random"
+    selection_temperature: float = 1.0
     logits_eos_inf: bool = False
     confidence_eos_eot_inf: bool = True
     guidance_start: int = 0  # step at which to start applying CFG (0-indexed)
@@ -180,10 +181,15 @@ class Config:
         assert self.method in AVAIL, f"Method {self.method} not recognized. Available methods: {list(AVAIL)}"
 
         if self.model == "llada":
-            assert self.remasking in ["low_confidence", "random"], f"Remasking method {self.remasking} not recognized."
+            assert self.remasking in ["low_confidence", "selection_temperature", "random"], (
+                f"Remasking method {self.remasking} not recognized."
+            )
+            assert self.selection_temperature >= 0.0, "selection_temperature must be non-negative"
             assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
             num_blocks = self.gen_length // self.block_length
             assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
+            if self.remasking == "selection_temperature":
+                assert self.cat_temperature == 0.0, "selection_temperature remasking requires cat_temperature == 0.0"
 
             # Set guidance_end to steps if not explicitly set
             if self.guidance_end == -1:

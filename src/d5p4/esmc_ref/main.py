@@ -29,7 +29,10 @@ from samplers.utils import (
 import warnings
 from time import perf_counter
 
+from d5p4.eval_core import Evaluator
+
 warnings.filterwarnings("ignore", category=FutureWarning)
+torch.set_float32_matmul_precision("high")
 
 
 def _register_resolvers():
@@ -63,13 +66,47 @@ def _register_resolvers():
     def cwd_resolver():
         return os.getcwd()
 
+    def env_path_or_resolver(env_name, suffix, fallback):
+        env_value = os.getenv(str(env_name))
+        return os.path.join(env_value, str(suffix)) if env_value else str(fallback)
+
     omegaconf.OmegaConf.register_new_resolver("eval", eval_resolver, replace=True)
     omegaconf.OmegaConf.register_new_resolver("div_up", div_up_resolver, replace=True)
     omegaconf.OmegaConf.register_new_resolver("device_count", device_count_resolver, replace=True)
     omegaconf.OmegaConf.register_new_resolver("cwd", cwd_resolver, replace=True)
+    omegaconf.OmegaConf.register_new_resolver("env_path_or", env_path_or_resolver, replace=True)
 
 
 _register_resolvers()
+
+
+def _resolve_d5p4_eval_defaults():
+    """Load evaluator model defaults from the main project's config."""
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "_default.yaml"))
+    cfg = omegaconf.OmegaConf.load(config_path)
+    resolved = omegaconf.OmegaConf.to_container(cfg, resolve=True)
+    return {
+        "ppl_model_id": resolved["ppl_model_id"],
+        "cos_model_id": resolved["cos_model_id"],
+        "eval_batch_size": resolved["eval_batch_size"],
+    }
+
+
+def _maybe_compile_backbone(model, config):
+    """Compile the generation backbone when requested."""
+    if not getattr(config, "compile_model", True):
+        return model
+
+    if not hasattr(model, "backbone"):
+        return model
+
+    print("Compiling generation backbone...")
+    try:
+        model.backbone = torch.compile(model.backbone)
+    except Exception as exc:  # pragma: no cover - fallback path
+        print(f"Backbone compilation failed, continuing without compile: {exc}")
+
+    return model
 
 
 def _build_esmc_metrics(results):
@@ -420,6 +457,7 @@ def main(config):
 
     # Load model
     model = load_model(config, tokenizer)
+    model = _maybe_compile_backbone(model, config)
 
     num_runs = config.sampling.num_sample_batches
     base_seed = config.seed
@@ -441,8 +479,20 @@ def main(config):
 
     # Restore model and save results
     restore_model(model)
+    print(f"OUTPUT_PATH:{json_path}")
     print(f"Text samples saved to: {json_path}")
     save_results(results, method, config, output_dir=output_dir)
+    print("Running evaluation...")
+    eval_defaults = _resolve_d5p4_eval_defaults()
+    evaluator = Evaluator(
+        batch_size=config.eval.perplexity_batch_size or eval_defaults["eval_batch_size"],
+        force=True,
+        ppl_model_id=config.eval.gen_ppl_eval_model_name_or_path or eval_defaults["ppl_model_id"],
+        cos_model_id=eval_defaults["cos_model_id"],
+    )
+    metrics = evaluator.eval_from_file(json_path)
+    assert metrics is not None and metrics["metrics_summary"] is not None
+    print(f"Evaluation complete: {metrics['metrics_summary']}")
     print_summary(results, method)
 
 

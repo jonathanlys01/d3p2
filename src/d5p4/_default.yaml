@@ -45,6 +45,8 @@ cfg_scale: 2.5
 llada_steps: 128
 gen_length: 256
 block_length: 32
+remasking: low_confidence
+selection_temperature: 1.0
 
 
 n_groups: 2

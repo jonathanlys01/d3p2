@@ -138,7 +138,7 @@ class LLADASampler(nn.Module):
             logits[:, :, 126348] = -torch.inf
             logits[:, :, 126081] = -torch.inf
 
-        if self.config.remasking == "low_confidence":
+        if self.config.remasking in {"low_confidence", "selection_temperature"}:
             p = torch.exp(logits) if is_log_probs else F.softmax(logits, dim=-1)
             x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
         elif self.config.remasking == "random":
@@ -149,7 +149,7 @@ class LLADASampler(nn.Module):
         x0_p[:, prompt_len + (num_block + 1) * self.config.block_length :] = -torch.inf
         return x0_p
 
-    def sample(self, prompt: str):  # noqa: PLR0915
+    def sample(self, prompt: str):  # noqa: C901, PLR0912, PLR0915
         with torch.no_grad():
             num_blocks = self.config.gen_length // self.config.block_length
             steps = self.config.llada_steps // num_blocks
@@ -253,7 +253,30 @@ class LLADASampler(nn.Module):
 
                     transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                     for j in range(x.shape[0]):
-                        _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, step])
+                        k = int(num_transfer_tokens[j, step].item())
+                        if k <= 0:
+                            continue
+
+                        if self.config.remasking == "selection_temperature":
+                            valid_mask = torch.isfinite(confidence[j])
+                            valid_indices = torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
+
+                            if valid_indices.numel() <= k:
+                                select_index = valid_indices
+                            else:
+                                candidate_count = min(2 * k, valid_indices.numel())
+                                top_vals, top_pos = torch.topk(confidence[j], k=candidate_count)
+
+                                sel_temp = self.config.selection_temperature
+                                if sel_temp <= 0:
+                                    select_index = top_pos[:k]
+                                else:
+                                    probs = F.softmax(top_vals / sel_temp, dim=-1)
+                                    sampled_rel = torch.multinomial(probs, num_samples=k, replacement=False)
+                                    select_index = top_pos[sampled_rel]
+                        else:
+                            _, select_index = torch.topk(confidence[j], k=k)
+
                         transfer_index[j, select_index] = True
                     x[transfer_index] = x0[transfer_index]
 
