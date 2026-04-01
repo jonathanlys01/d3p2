@@ -30,6 +30,22 @@ def compute_entropy_reward(model, particles: torch.Tensor, t: torch.Tensor) -> t
     return rewards
 
 
+def compute_entropies_and_rewards(
+    model,
+    particles: torch.Tensor,
+    t: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute entropies and normalized rewards for a batch of particles."""
+    with torch.no_grad():
+        entropies = model._compute_mask_conditional_entropy(particles, t)
+        max_entropy = torch.log2(
+            torch.tensor(model.vocab_size, dtype=torch.float32, device=particles.device)
+        )
+        rewards = max_entropy - entropies
+        rewards = torch.clamp(rewards / max_entropy, 0.0, 1.0)
+    return entropies, rewards
+
+
 def compute_potential_scores(
     rewards: torch.Tensor, 
     lambda_weight: float, 
@@ -104,55 +120,25 @@ def smc_sampling(
         logs['timesteps'].append(t_val.item())
         
         # Compute entropy and rewards
-        current_entropies = []
-        current_rewards = []
-        with torch.no_grad():
-            for i in range(num_particles):
-                particle = particles[i:i+1]
-                t_particle = t[i:i+1]
-                entropy = model._compute_mask_conditional_entropy(particle, t_particle)
-                reward = compute_entropy_reward(model, particle, t_particle)
-                current_entropies.append(entropy)
-                current_rewards.append(reward)
-        
-        current_entropies = torch.stack(current_entropies).squeeze(-1)
-        current_rewards = torch.stack(current_rewards).squeeze(-1)
+        current_entropies, current_rewards = compute_entropies_and_rewards(model, particles, t)
         logs['particle_entropies'][step] = current_entropies.detach().cpu().numpy()
         logs['particle_rewards'][step] = current_rewards.detach().cpu().numpy()
         
         # Generate next state for all particles
-        new_particles = []
-        for i in range(num_particles):
-            particle = particles[i:i+1]
-            t_particle = t[i:i+1]
-            
-            if model.sampler == 'ddpm':
-                new_particle = model._ddpm_update(particle, t_particle, dt)
-            elif model.sampler == 'ddpm_cache':
-                new_particle = model._ddpm_update(particle, t_particle, dt)
-            else:
-                new_particle = model._analytic_update(particle, t_particle, dt)
-            new_particles.append(new_particle)
-        
-        particles = torch.cat(new_particles, dim=0)
+        if model.sampler == 'ddpm':
+            particles = model._ddpm_update(particles, t, dt)
+        elif model.sampler == 'ddpm_cache':
+            particles = model._ddpm_update(particles, t, dt)
+        else:
+            particles = model._analytic_update(particles, t, dt)
         
         # Resampling
         if (step + 1) % resample_interval == 0 and step < num_steps - 1:
             t_resample = timesteps[step + 1] * torch.ones(num_particles, 1, device=device)
             
-            resample_entropies = []
-            resample_rewards = []
-            with torch.no_grad():
-                for i in range(num_particles):
-                    particle = particles[i:i+1]
-                    t_particle = t_resample[i:i+1]
-                    entropy = model._compute_mask_conditional_entropy(particle, t_particle)
-                    reward = compute_entropy_reward(model, particle, t_particle)
-                    resample_entropies.append(entropy)
-                    resample_rewards.append(reward)
-            
-            resample_entropies = torch.stack(resample_entropies).squeeze(-1)
-            resample_rewards = torch.stack(resample_rewards).squeeze(-1)
+            resample_entropies, resample_rewards = compute_entropies_and_rewards(
+                model, particles, t_resample
+            )
             
             potential_scores = compute_potential_scores(
                 resample_rewards, lambda_weight, potential_type
@@ -184,65 +170,25 @@ def smc_sampling(
     if model.config.sampling.noise_removal:
         t_final = timesteps[-1] * torch.ones(particles.shape[0], 1, device=device)
         
-        final_entropies = []
-        final_rewards = []
-        with torch.no_grad():
-            for i in range(num_particles):
-                particle = particles[i:i+1]
-                t_particle = t_final[i:i+1]
-                entropy = model._compute_mask_conditional_entropy(particle, t_particle)
-                reward = compute_entropy_reward(model, particle, t_particle)
-                final_entropies.append(entropy)
-                final_rewards.append(reward)
-        
-        final_entropies = torch.stack(final_entropies).squeeze(-1)
-        final_rewards = torch.stack(final_rewards).squeeze(-1)
+        final_entropies, final_rewards = compute_entropies_and_rewards(model, particles, t_final)
         logs['particle_entropies'][num_steps] = final_entropies.detach().cpu().numpy()
         logs['particle_rewards'][num_steps] = final_rewards.detach().cpu().numpy()
         
-        final_particles = []
-        for i in range(num_particles):
-            particle = particles[i:i+1]
-            t_particle = t_final[i:i+1]
-            
-            if model.sampler == 'analytic':
-                denoised = model._denoiser_update(particle, t_particle)
-            else:
-                unet_conditioning = model.noise(t_particle)[0]
-                denoised = model.forward(particle, unet_conditioning).argmax(dim=-1)
-            final_particles.append(denoised)
-        
-        particles = torch.cat(final_particles, dim=0)
+        if model.sampler == 'analytic':
+            particles = model._denoiser_update(particles, t_final)
+        else:
+            unet_conditioning = model.noise(t_final)[0]
+            particles = model.forward(particles, unet_conditioning).argmax(dim=-1)
     else:
         t_final = eps * torch.ones(particles.shape[0], 1, device=device)
         
-        final_entropies = []
-        final_rewards = []
-        with torch.no_grad():
-            for i in range(num_particles):
-                particle = particles[i:i+1]
-                t_particle = t_final[i:i+1]
-                entropy = model._compute_mask_conditional_entropy(particle, t_particle)
-                reward = compute_entropy_reward(model, particle, t_particle)
-                final_entropies.append(entropy)
-                final_rewards.append(reward)
-        
-        final_entropies = torch.stack(final_entropies).squeeze(-1)
-        final_rewards = torch.stack(final_rewards).squeeze(-1)
+        final_entropies, final_rewards = compute_entropies_and_rewards(model, particles, t_final)
         logs['particle_entropies'][num_steps] = final_entropies.detach().cpu().numpy()
         logs['particle_rewards'][num_steps] = final_rewards.detach().cpu().numpy()
     
     # Select best sample
     t_final = eps * torch.ones(particles.shape[0], 1, device=device)
-    final_rewards_for_selection = []
-    with torch.no_grad():
-        for i in range(num_particles):
-            particle = particles[i:i+1]
-            t_particle = t_final[i:i+1]
-            reward = compute_entropy_reward(model, particle, t_particle)
-            final_rewards_for_selection.append(reward)
-    
-    final_rewards = torch.stack(final_rewards_for_selection).squeeze(-1)
+    final_rewards = compute_entropy_reward(model, particles, t_final)
     best_idx = torch.argmax(final_rewards)
     best_sample = particles[best_idx:best_idx+1]
     
@@ -261,4 +207,3 @@ def smc_sampling(
     logs['best_u_denoise'] = u_denoise
     
     return best_sample, particles, logs
-

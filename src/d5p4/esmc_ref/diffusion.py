@@ -914,19 +914,17 @@ class Diffusion(L.LightningModule):
         log_probs = torch.log2(probs + 1e-10)  # Add small epsilon to avoid log(0)
         shannon_entropy = -torch.sum(probs * log_probs, dim=-1)  # shape: (batch_size, seq_len)
 
-        # Average entropy over masked positions for each sample
-        batch_entropies = []
-        for i in range(x.shape[0]):
-            sample_masked_positions = masked_positions[i]
-            if sample_masked_positions.sum() > 0:
-                # Average entropy over masked positions
-                avg_entropy = shannon_entropy[i][sample_masked_positions].mean()
-            else:
-                # If no positions are masked, entropy is 0
-                avg_entropy = torch.tensor(0.0, device=x.device, dtype=torch.float32)
-            batch_entropies.append(avg_entropy)
+        # Average entropy over masked positions for each sample.
+        masked_positions_f = masked_positions.to(shannon_entropy.dtype)
+        masked_entropy_sum = (shannon_entropy * masked_positions_f).sum(dim=-1)
+        masked_counts = masked_positions_f.sum(dim=-1)
+        batch_entropies = torch.where(
+            masked_counts > 0,
+            masked_entropy_sum / masked_counts.clamp_min(1),
+            torch.zeros_like(masked_entropy_sum),
+        )
 
-        return torch.stack(batch_entropies)
+        return batch_entropies
 
     @torch.no_grad()
     def _sample_with_entropy(self, num_steps=None, eps=1e-5):
