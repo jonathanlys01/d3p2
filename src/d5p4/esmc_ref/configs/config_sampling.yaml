@@ -16,8 +16,12 @@ T: 0  # 0 (continuous time) / 1000
 subs_masking: False
 
 data:
+  train: openwebtext-train
+  valid: openwebtext-valid
   tokenizer_name_or_path: gpt2
   cache_dir: .cache
+  wrap: false
+  streaming: false
 
 seed: 1
 
@@ -111,7 +115,6 @@ hydra:
     chdir: true
 
 checkpointing:
-  save_dir: ${hydra:run.dir}
+  save_dir: ${cwd:}
   resume_from_ckpt: true
   resume_ckpt_path: ${.save_dir}/checkpoints/last.ckpt
-
