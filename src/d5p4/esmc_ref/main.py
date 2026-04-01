@@ -42,6 +42,8 @@ def _register_resolvers():
             "int": int,
             "float": float,
             "round": round,
+            "getattr": getattr,
+            "range": range,
             "__import__": __import__,
         }
         return eval(expr, {"__builtins__": allowed_builtins}, {})  # noqa: S307
