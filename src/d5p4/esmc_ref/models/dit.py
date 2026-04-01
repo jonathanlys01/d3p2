@@ -1,5 +1,6 @@
 import math
 import typing
+from contextlib import nullcontext
 
 import flash_attn
 import flash_attn.layers.rotary
@@ -9,6 +10,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+
+SUPPORTS_FLASH = torch.cuda.get_device_properties(0).major >= 8 if torch.cuda.is_available() else False
 
 # Flags required to enable jit fusion kernels
 torch._C._jit_set_profiling_mode(False)
@@ -112,8 +117,8 @@ def apply_rotary_pos_emb(qkv, cos, sin):
 
 
 # function overload
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+# def modulate(x, shift, scale):  # noqa: F811
+#     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 #################################################################################
@@ -235,7 +240,7 @@ class DDiTBlock(nn.Module):
         else:
             return bias_dropout_add_scale_fused_inference
 
-    def forward(self, x, rotary_cos_sin, c, seqlens=None):
+    def forward(self, x, rotary_cos_sin, c, seqlens: torch.Tensor = None):
         batch_size, seq_len = x.shape[0], x.shape[1]
 
         bias_dropout_scale_fn = self._get_bias_dropout_scale()
@@ -254,13 +259,25 @@ class DDiTBlock(nn.Module):
             cos, sin = rotary_cos_sin
             qkv = apply_rotary_pos_emb(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))
         qkv = rearrange(qkv, "b s ... -> (b s) ...")
-        if seqlens is None:
-            cu_seqlens = torch.arange(0, (batch_size + 1) * seq_len, step=seq_len, dtype=torch.int32, device=qkv.device)
+
+        if SUPPORTS_FLASH:
+            if seqlens is None:
+                cu_seqlens = torch.arange(
+                    0,
+                    (batch_size + 1) * seq_len,
+                    step=seq_len,
+                    dtype=torch.int32,
+                    device=qkv.device,
+                )
+            else:
+                cu_seqlens = seqlens.cumsum(-1)
+            x = flash_attn.flash_attn_varlen_qkvpacked_func(qkv, cu_seqlens, seq_len, 0.0, causal=False)
         else:
-            cu_seqlens = seqlens.cumsum(-1)
-        x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
-            qkv, cu_seqlens, seq_len, 0.0, causal=False
-        )
+            q, k, v = qkv.chunk(3, dim=1)
+            (q, k, v) = map(lambda t: rearrange(t.squeeze(1), "(b s) h d -> b h s d", b=batch_size), (q, k, v))
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+                x = F.scaled_dot_product_attention(q, k, v)
+            x = rearrange(x, "b h s d -> (b s) h d")
 
         x = rearrange(x, "(b s) h d -> b s (h d)", b=batch_size)
 
@@ -334,12 +351,18 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             return bias_dropout_add_scale_fused_inference
 
     def forward(self, indices, sigma):
+        if not self.config.time_conditioning or sigma is None:
+            batch_size = indices.shape[0]
+            sigma = torch.zeros(batch_size, device=indices.device)
+
         x = self.vocab_embed(indices)
         c = F.silu(self.sigma_map(sigma))
 
         rotary_cos_sin = self.rotary_emb(x)
 
-        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+        ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if SUPPORTS_FLASH else nullcontext()
+
+        with ctx:
             for i in range(len(self.blocks)):
                 x = self.blocks[i](x, rotary_cos_sin, c, seqlens=None)
             x = self.output_layer(x, c)
