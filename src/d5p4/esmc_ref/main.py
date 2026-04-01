@@ -27,6 +27,7 @@ from samplers.utils import (
     compute_generative_perplexity,
 )
 import warnings
+from time import perf_counter
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -115,6 +116,7 @@ def run_random_sampling(model, config, num_runs, base_seed, json_path, experimen
     results = []
     text_samples = []
     for run_id in range(num_runs):
+        run_start = perf_counter()
         seed = base_seed + run_id * 10000
 
         sample, logs = random_sampling(model=model, num_steps=config.sampling.steps, seed=seed)
@@ -135,10 +137,11 @@ def run_random_sampling(model, config, num_runs, base_seed, json_path, experimen
         }
         results.append(result)
         save_json(text_samples, results, config, json_path, experiment_id)
+        elapsed = perf_counter() - run_start
 
         print(
             f"Run {run_id + 1}/{num_runs}: U_denoise={logs['u_denoise']:.4f}, "
-            f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}"
+            f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}, Time={elapsed:.2f}s"
         )
 
     return results
@@ -158,6 +161,7 @@ def run_bon_sampling(model, config, num_runs, base_seed, json_path, experiment_i
     results = []
     text_samples = []
     for run_id in range(num_runs):
+        run_start = perf_counter()
         particle_seeds = generate_particle_seeds(base_seed, num_particles, run_id)
 
         best_sample, all_samples, logs = bon_sampling(
@@ -182,10 +186,11 @@ def run_bon_sampling(model, config, num_runs, base_seed, json_path, experiment_i
         }
         results.append(result)
         save_json(text_samples, results, config, json_path, experiment_id)
+        elapsed = perf_counter() - run_start
 
         print(
             f"Run {run_id + 1}/{num_runs}: U_denoise={logs['best_u_denoise']:.4f}, "
-            f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}"
+            f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}, Time={elapsed:.2f}s"
         )
 
     return results
@@ -211,6 +216,7 @@ def run_smc_sampling(model, config, num_runs, base_seed, json_path, experiment_i
     results = []
     text_samples = []
     for run_id in range(num_runs):
+        run_start = perf_counter()
         particle_seeds = generate_particle_seeds(base_seed, num_particles, run_id)
 
         best_sample, all_particles, logs = smc_sampling(
@@ -242,11 +248,12 @@ def run_smc_sampling(model, config, num_runs, base_seed, json_path, experiment_i
         }
         results.append(result)
         save_json(text_samples, results, config, json_path, experiment_id)
+        elapsed = perf_counter() - run_start
 
         print(
             f"Run {run_id + 1}/{num_runs}: U_denoise={logs['best_u_denoise']:.4f}, "
             f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}, "
-            f"Resamples={len(logs['resampling_steps'])}"
+            f"Resamples={len(logs['resampling_steps'])}, Time={elapsed:.2f}s"
         )
 
     return results
@@ -268,6 +275,7 @@ def run_greedy_sampling(model, config, num_runs, base_seed, json_path, experimen
     results = []
     text_samples = []
     for run_id in range(num_runs):
+        run_start = perf_counter()
         seed = base_seed + run_id * 10000
 
         best_sample, all_beams, logs = greedy_sampling(
@@ -294,10 +302,11 @@ def run_greedy_sampling(model, config, num_runs, base_seed, json_path, experimen
         }
         results.append(result)
         save_json(text_samples, results, config, json_path, experiment_id)
+        elapsed = perf_counter() - run_start
 
         print(
             f"Run {run_id + 1}/{num_runs}: U_denoise={logs['best_u_denoise']:.4f}, "
-            f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}"
+            f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}, Time={elapsed:.2f}s"
         )
 
     return results
