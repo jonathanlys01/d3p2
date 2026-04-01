@@ -111,7 +111,7 @@ hydra:
     chdir: true
 
 checkpointing:
-  save_dir: ${cwd:}
+  save_dir: ${hydra:run.dir}
   resume_from_ckpt: true
   resume_ckpt_path: ${.save_dir}/checkpoints/last.ckpt
 
