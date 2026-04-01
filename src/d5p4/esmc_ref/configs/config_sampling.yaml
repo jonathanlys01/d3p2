@@ -111,7 +111,7 @@ wandb:
 
 hydra:
   run:
-    dir: ./outputs/${sampling.method}/${now:%Y.%m.%d}/${now:%H%M%S}
+    dir: ./outputs/
   job:
     chdir: true
 

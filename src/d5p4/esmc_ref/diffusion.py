@@ -98,11 +98,22 @@ class Diffusion(L.LightningModule):
                 self.config, vocab_size=self.vocab_size, mask_index=self.mask_index
             )
         elif self.config.backbone == "hf_dit":
-            self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-                config.eval.checkpoint_path, trust_remote_code=True
-            )
+            backbone_args = {
+                "pretrained_model_name_or_path": config.eval.checkpoint_path,
+                "trust_remote_code": True,
+                "cache_dir": self.config.data.cache_dir,
+            }
+            if os.path.isdir(config.eval.checkpoint_path):
+                backbone_args["local_files_only"] = True
+            self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(**backbone_args)
         elif self.config.backbone == "mdlm_ref":
-            self.backbone = MDLM.from_pretrained(config.eval.checkpoint_path)
+            mdlm_args = {
+                "pretrained_model_name_or_path": config.eval.checkpoint_path,
+                "cache_dir": self.config.data.cache_dir,
+            }
+            if os.path.isdir(config.eval.checkpoint_path):
+                mdlm_args["local_files_only"] = True
+            self.backbone = MDLM.from_pretrained(**mdlm_args)
         else:
             raise ValueError(f"Unknown backbone: {self.config.backbone}")
 
@@ -125,7 +136,13 @@ class Diffusion(L.LightningModule):
 
         # generative perplexity
         self.gen_ppl_metric = Perplexity()
-        self.eval_model_tokenizer = transformers.AutoTokenizer.from_pretrained(self.gen_ppl_eval_model_name_or_path)
+        eval_tokenizer_args = {
+            "pretrained_model_name_or_path": self.gen_ppl_eval_model_name_or_path,
+            "cache_dir": self.config.data.cache_dir,
+        }
+        if os.path.isdir(self.gen_ppl_eval_model_name_or_path):
+            eval_tokenizer_args["local_files_only"] = True
+        self.eval_model_tokenizer = transformers.AutoTokenizer.from_pretrained(**eval_tokenizer_args)
         if self.eval_model_tokenizer.pad_token is None:
             self.eval_model_tokenizer.pad_token = self.eval_model_tokenizer.eos_token
             self.eval_model_tokenizer.pad_token_id = self.eval_model_tokenizer.eos_token_id
@@ -482,7 +499,13 @@ class Diffusion(L.LightningModule):
             pre-trained AR model (e.g., GPT2).
         """
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        eval_model = transformers.AutoModelForCausalLM.from_pretrained(self.gen_ppl_eval_model_name_or_path).eval()
+        eval_model_args = {
+            "pretrained_model_name_or_path": self.gen_ppl_eval_model_name_or_path,
+            "cache_dir": self.config.data.cache_dir,
+        }
+        if os.path.isdir(self.gen_ppl_eval_model_name_or_path):
+            eval_model_args["local_files_only"] = True
+        eval_model = transformers.AutoModelForCausalLM.from_pretrained(**eval_model_args).eval()
         if max_length is None:
             max_length = self.config.model.length
         if "llama2" not in self.gen_ppl_eval_model_name_or_path:

@@ -109,6 +109,26 @@ def _maybe_compile_backbone(model, config):
     return model
 
 
+def _prepare_cache_paths(config):
+    """Resolve cache paths against the original Hydra launch directory."""
+    original_cwd = hydra.utils.get_original_cwd()
+    cache_dir = config.data.cache_dir
+    if not os.path.isabs(cache_dir):
+        cache_dir = os.path.abspath(os.path.join(original_cwd, cache_dir))
+        config.data.cache_dir = cache_dir
+
+    hf_home = os.environ.get("HF_HOME")
+    if not hf_home:
+        hf_home = os.path.join(cache_dir, "huggingface")
+        os.environ["HF_HOME"] = hf_home
+
+    transformers_cache = os.environ.get("TRANSFORMERS_CACHE")
+    if not transformers_cache:
+        os.environ["TRANSFORMERS_CACHE"] = hf_home
+
+    return cache_dir
+
+
 def _build_esmc_metrics(results):
     """Store only average summary metrics in the JSON payload."""
     if not results:
@@ -453,6 +473,7 @@ def main(config):
     # Setup
     L.seed_everything(config.seed)
     logger = utils.get_logger(__name__)
+    _prepare_cache_paths(config)
     tokenizer = dataloader.get_tokenizer(config)
 
     # Load model

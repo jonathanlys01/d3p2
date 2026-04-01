@@ -84,9 +84,22 @@ def compute_generative_perplexity(
     eval_model_name: str = "gpt2-large"
 ) -> float:
     """Compute generative perplexity for a single text sample."""
+    cache_dir = model.config.data.cache_dir
+    model_args = {
+        "pretrained_model_name_or_path": eval_model_name,
+        "cache_dir": cache_dir,
+    }
+    tokenizer_args = {
+        "pretrained_model_name_or_path": eval_model_name,
+        "cache_dir": cache_dir,
+    }
+    if os.path.isdir(eval_model_name):
+        model_args["local_files_only"] = True
+        tokenizer_args["local_files_only"] = True
+
     eval_model = AutoModelForCausalLM.from_pretrained(
-        eval_model_name).eval().to(model.device)
-    eval_tokenizer = AutoTokenizer.from_pretrained(eval_model_name)
+        **model_args).eval().to(model.device)
+    eval_tokenizer = AutoTokenizer.from_pretrained(**tokenizer_args)
     
     if eval_tokenizer.pad_token is None:
         eval_tokenizer.pad_token = eval_tokenizer.eos_token

@@ -490,10 +490,14 @@ def get_tokenizer(config):
     tokenizer = Text8Tokenizer()
   elif config.data.tokenizer_name_or_path == 'bert-base-uncased':
     tokenizer = transformers.BertTokenizer.\
-      from_pretrained('bert-base-uncased')
+      from_pretrained('bert-base-uncased', cache_dir=config.data.cache_dir)
   else:
+    tokenizer_path = config.data.tokenizer_name_or_path
+    tokenizer_args = {'cache_dir': config.data.cache_dir}
+    if os.path.isdir(tokenizer_path):
+      tokenizer_args['local_files_only'] = True
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-      config.data.tokenizer_name_or_path)
+      tokenizer_path, **tokenizer_args)
 
   if (isinstance(tokenizer, transformers.GPT2TokenizerFast)
       or isinstance(tokenizer, transformers.GPT2Tokenizer)):
