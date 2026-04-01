@@ -280,7 +280,7 @@ class Diffusion(L.LightningModule):
     def forward(self, x, sigma):
         """Returns log score."""
         sigma = self._process_sigma(sigma)
-        with torch.amp.autocast(dtype=torch.float32):
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
             logits = self.backbone(x, sigma)
 
         if self.parameterization == "subs":
