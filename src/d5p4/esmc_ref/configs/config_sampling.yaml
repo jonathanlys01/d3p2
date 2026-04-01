@@ -1,6 +1,5 @@
 defaults:
   - /callbacks: [checkpoint_every_n_steps, checkpoint_monitor, learning_rate_monitor]
-  - /data: openwebtext
   - /model: small
   - /strategy: ddp
   - /noise: loglinear
