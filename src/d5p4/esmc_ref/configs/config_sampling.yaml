@@ -15,6 +15,9 @@ time_conditioning: False
 T: 0  # 0 (continuous time) / 1000 
 subs_masking: False
 
+data:
+  tokenizer_name_or_path: gpt2
+
 seed: 1
 
 loader:
