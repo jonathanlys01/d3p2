@@ -17,6 +17,7 @@ subs_masking: False
 
 data:
   tokenizer_name_or_path: gpt2
+  cache_dir: .cache
 
 seed: 1
 
