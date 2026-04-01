@@ -30,7 +30,7 @@ loader:
   eval_global_batch_size: ${.global_batch_size}
   batch_size: ${div_up:${.global_batch_size}, ${eval:${trainer.devices} * ${trainer.num_nodes}}}
   eval_batch_size: ${div_up:${.eval_global_batch_size}, ${eval:${trainer.devices} * ${trainer.num_nodes}}}
-  num_workers: ${eval:"len(getattr(__import__('os'), 'sched_getaffinity', lambda _: range(__import__('os').cpu_count() or 1))(0))"}
+  num_workers: 0
   pin_memory: True
 
 sampling:
