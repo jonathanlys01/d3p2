@@ -93,7 +93,7 @@ PREDICTOR="${PREDICTOR:-ddpm_cache}"
 ACCELERATOR="${ACCELERATOR:-cuda}"
 DEVICES="${DEVICES:-1}"
 DRY_RUN="${DRY_RUN:-0}"
-RUN_NAME="${RUN_NAME:-smc_mdlm_$(date +%Y%m%d_%H%M%S)}"
+RUN_NAME="${RUN_NAME:-smc_mdlm}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ESMC_ROOT}/outputs/smc/${RUN_NAME}}"
 
 export HF_HOME="${HF_HOME:-${CACHE_DIR}/huggingface}"
