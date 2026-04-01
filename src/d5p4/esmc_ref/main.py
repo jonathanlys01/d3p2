@@ -484,7 +484,7 @@ def main(config):
     base_seed = config.seed
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_id = uuid.uuid4()
-    output_dir = "results"
+    output_dir = os.path.join(hydra.utils.get_original_cwd(), "results")
     json_path = os.path.join(output_dir, f"exp-{method}_{timestamp}_{experiment_id}.json")
     print(f"Experiment ID: {experiment_id}")
 

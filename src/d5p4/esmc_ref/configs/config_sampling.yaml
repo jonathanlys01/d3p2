@@ -113,7 +113,7 @@ hydra:
   run:
     dir: ./outputs/
   job:
-    chdir: true
+    chdir: false
 
 checkpointing:
   save_dir: ${cwd:}
