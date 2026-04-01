@@ -1,6 +1,7 @@
 import itertools
 import math
 import os
+import sys
 import typing
 from dataclasses import dataclass
 
@@ -17,6 +18,12 @@ import dataloader
 import models
 import noise_schedule
 import utils
+
+SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if SRC_ROOT not in sys.path:
+    sys.path.insert(0, SRC_ROOT)
+
+from d5p4.mdlm_ref.modeling_mdlm import MDLM
 
 LOG2 = math.log(2)
 
@@ -94,6 +101,8 @@ class Diffusion(L.LightningModule):
             self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
                 config.eval.checkpoint_path, trust_remote_code=True
             )
+        elif self.config.backbone == "mdlm_ref":
+            self.backbone = MDLM.from_pretrained(config.eval.checkpoint_path)
         else:
             raise ValueError(f"Unknown backbone: {self.config.backbone}")
 
@@ -281,7 +290,14 @@ class Diffusion(L.LightningModule):
         """Returns log score."""
         sigma = self._process_sigma(sigma)
         with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
-            logits = self.backbone(x, sigma)
+            backbone_output = self.backbone(x, sigma)
+
+        if hasattr(backbone_output, "logits"):
+            logits = backbone_output.logits
+        elif isinstance(backbone_output, tuple):
+            logits = backbone_output[0]
+        else:
+            logits = backbone_output
 
         if self.parameterization == "subs":
             return self._subs_parameterization(logits=logits, xt=x)

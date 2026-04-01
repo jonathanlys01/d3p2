@@ -9,7 +9,7 @@ defaults:
 
 mode: sampling_eval
 diffusion: absorbing_state
-backbone: hf_dit  # dit / dimamba / ar / hf_dit (for HuggingFace models)
+backbone: mdlm_ref  # dit / dimamba / ar / hf_dit / mdlm_ref
 parameterization: subs  # subs / d3pm / sedd
 time_conditioning: False
 T: 0  # 0 (continuous time) / 1000 

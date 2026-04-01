@@ -13,13 +13,13 @@ import diffusion
 
 def load_model(config, tokenizer):
     """Load model from checkpoint."""
-    if 'hf' in config.backbone:
+    if config.backbone in {"hf_dit", "mdlm_ref"}:
         model = diffusion.Diffusion(config, tokenizer=tokenizer).to('cuda')
     else:
         if not os.path.exists(config.eval.checkpoint_path):
             raise FileNotFoundError(
                 f"Checkpoint file not found: {config.eval.checkpoint_path}. "
-                f"If you're trying to use a HuggingFace model, make sure to set backbone=hf_dit"
+                f"If you're trying to use a local pretrained model directory, make sure to set backbone=mdlm_ref"
             )
         model = diffusion.Diffusion.load_from_checkpoint(
             config.eval.checkpoint_path,
@@ -131,4 +131,3 @@ def compute_generative_perplexity(
     torch.cuda.empty_cache()
     
     return perplexity
-

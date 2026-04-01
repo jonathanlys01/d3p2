@@ -103,7 +103,7 @@ if [[ -z "${BACKBONE:-}" ]]; then
   if [[ "${MDLM_CHECKPOINT_PATH}" == *.ckpt ]]; then
     BACKBONE="dit"
   else
-    BACKBONE="hf_dit"
+    BACKBONE="mdlm_ref"
   fi
 fi
 
