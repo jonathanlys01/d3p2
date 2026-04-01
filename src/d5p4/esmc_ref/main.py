@@ -5,7 +5,9 @@ Supports three sampling methods: random, best-of-n, and smc.
 
 import os
 import csv
+import json
 import pickle
+import uuid
 import numpy as np
 from datetime import datetime
 import hydra
@@ -21,7 +23,40 @@ from samplers.utils import (
 )
 
 
-def run_random_sampling(model, config, num_runs, base_seed):
+def _build_esmc_metrics(results):
+    """Store only average summary metrics in the JSON payload."""
+    if not results:
+        return {}
+
+    u_denoise_values = [r['u_denoise'] for r in results]
+    sent_entropy_values = [r['sentence_entropy'] for r in results]
+    ppl_values = [r['perplexity'] for r in results]
+
+    return {
+        'avg_u_denoise': float(np.mean(u_denoise_values)),
+        'avg_sentence_entropy': float(np.mean(sent_entropy_values)),
+        'avg_perplexity': float(np.mean(ppl_values)),
+    }
+
+
+def save_json(text_samples, results, config, output_path, experiment_id):
+    """Save generated text batches using the project's JSON schema."""
+    payload = {
+        'text_samples': text_samples,
+        'config': omegaconf.OmegaConf.to_container(config, resolve=True),
+        'experiment_id': str(experiment_id),
+        'esmc_metrics': _build_esmc_metrics(results),
+    }
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=4)
+
+
+def run_random_sampling(model, config, num_runs, base_seed, json_path, experiment_id):
     """Run random sampling experiments."""
     print(f"\n{'='*60}")
     print(f"Running Random Sampling")
@@ -30,6 +65,7 @@ def run_random_sampling(model, config, num_runs, base_seed):
     print(f"{'='*60}\n")
     
     results = []
+    text_samples = []
     for run_id in range(num_runs):
         seed = base_seed + run_id * 10000
         
@@ -38,7 +74,9 @@ def run_random_sampling(model, config, num_runs, base_seed):
             num_steps=config.sampling.steps,
             seed=seed
         )
-        
+
+        batch_texts = model.tokenizer.batch_decode(sample, skip_special_tokens=True)
+        text_samples.append(batch_texts)
         text = model.tokenizer.decode(sample[0])
         sent_entropy = compute_sentence_entropy(sample[0])
         ppl = compute_generative_perplexity(
@@ -54,6 +92,7 @@ def run_random_sampling(model, config, num_runs, base_seed):
             'seed': seed
         }
         results.append(result)
+        save_json(text_samples, results, config, json_path, experiment_id)
         
         print(f"Run {run_id + 1}/{num_runs}: U_denoise={logs['u_denoise']:.4f}, "
               f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}")
@@ -61,7 +100,7 @@ def run_random_sampling(model, config, num_runs, base_seed):
     return results
 
 
-def run_bon_sampling(model, config, num_runs, base_seed):
+def run_bon_sampling(model, config, num_runs, base_seed, json_path, experiment_id):
     """Run best-of-n sampling experiments."""
     num_particles = config.sampling.num_particles
     
@@ -73,6 +112,7 @@ def run_bon_sampling(model, config, num_runs, base_seed):
     print(f"{'='*60}\n")
     
     results = []
+    text_samples = []
     for run_id in range(num_runs):
         particle_seeds = generate_particle_seeds(base_seed, num_particles, run_id)
         
@@ -82,7 +122,9 @@ def run_bon_sampling(model, config, num_runs, base_seed):
             num_steps=config.sampling.steps,
             particle_seeds=particle_seeds
         )
-        
+
+        batch_texts = model.tokenizer.batch_decode(all_samples, skip_special_tokens=True)
+        text_samples.append(batch_texts)
         text = model.tokenizer.decode(best_sample[0])
         sent_entropy = compute_sentence_entropy(best_sample[0])
         ppl = compute_generative_perplexity(
@@ -100,6 +142,7 @@ def run_bon_sampling(model, config, num_runs, base_seed):
             'particle_seeds': particle_seeds
         }
         results.append(result)
+        save_json(text_samples, results, config, json_path, experiment_id)
         
         print(f"Run {run_id + 1}/{num_runs}: U_denoise={logs['best_u_denoise']:.4f}, "
               f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}")
@@ -107,7 +150,7 @@ def run_bon_sampling(model, config, num_runs, base_seed):
     return results
 
 
-def run_smc_sampling(model, config, num_runs, base_seed):
+def run_smc_sampling(model, config, num_runs, base_seed, json_path, experiment_id):
     """Run SMC sampling experiments."""
     num_particles = config.smc.num_particles
     resample_interval = config.smc.resample_interval
@@ -125,6 +168,7 @@ def run_smc_sampling(model, config, num_runs, base_seed):
     print(f"{'='*60}\n")
     
     results = []
+    text_samples = []
     for run_id in range(num_runs):
         particle_seeds = generate_particle_seeds(base_seed, num_particles, run_id)
         
@@ -137,7 +181,9 @@ def run_smc_sampling(model, config, num_runs, base_seed):
             potential_type=potential_type,
             particle_seeds=particle_seeds
         )
-        
+
+        batch_texts = model.tokenizer.batch_decode(all_particles, skip_special_tokens=True)
+        text_samples.append(batch_texts)
         text = model.tokenizer.decode(best_sample[0])
         sent_entropy = compute_sentence_entropy(best_sample[0])
         ppl = compute_generative_perplexity(
@@ -156,6 +202,7 @@ def run_smc_sampling(model, config, num_runs, base_seed):
             'detailed_logs': logs
         }
         results.append(result)
+        save_json(text_samples, results, config, json_path, experiment_id)
         
         print(f"Run {run_id + 1}/{num_runs}: U_denoise={logs['best_u_denoise']:.4f}, "
               f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}, "
@@ -164,7 +211,7 @@ def run_smc_sampling(model, config, num_runs, base_seed):
     return results
 
 
-def run_greedy_sampling(model, config, num_runs, base_seed):
+def run_greedy_sampling(model, config, num_runs, base_seed, json_path, experiment_id):
     """Run greedy entropy minimization sampling experiments."""
     num_candidates = config.greedy.num_candidates
     beam_size = config.greedy.beam_size
@@ -178,6 +225,7 @@ def run_greedy_sampling(model, config, num_runs, base_seed):
     print(f"{'='*60}\n")
     
     results = []
+    text_samples = []
     for run_id in range(num_runs):
         seed = base_seed + run_id * 10000
         
@@ -188,7 +236,9 @@ def run_greedy_sampling(model, config, num_runs, base_seed):
             beam_size=beam_size,
             seed=seed
         )
-        
+
+        batch_texts = model.tokenizer.batch_decode(all_beams, skip_special_tokens=True)
+        text_samples.append(batch_texts)
         text = model.tokenizer.decode(best_sample[0])
         sent_entropy = compute_sentence_entropy(best_sample[0])
         ppl = compute_generative_perplexity(
@@ -208,6 +258,7 @@ def run_greedy_sampling(model, config, num_runs, base_seed):
             'detailed_logs': logs
         }
         results.append(result)
+        save_json(text_samples, results, config, json_path, experiment_id)
         
         print(f"Run {run_id + 1}/{num_runs}: U_denoise={logs['best_u_denoise']:.4f}, "
               f"Sent_Entropy={sent_entropy:.4f}, PPL={ppl:.4f}")
@@ -326,23 +377,28 @@ def main(config):
     
     num_runs = config.sampling.num_sample_batches
     base_seed = config.seed
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_id = uuid.uuid4()
+    output_dir = 'results'
+    json_path = os.path.join(output_dir, f"exp-{method}_{timestamp}_{experiment_id}.json")
+    print(f"Experiment ID: {experiment_id}")
     
     # Run sampling
     if method == 'random':
-        results = run_random_sampling(model, config, num_runs, base_seed)
+        results = run_random_sampling(model, config, num_runs, base_seed, json_path, experiment_id)
     elif method == 'bon':
-        results = run_bon_sampling(model, config, num_runs, base_seed)
+        results = run_bon_sampling(model, config, num_runs, base_seed, json_path, experiment_id)
     elif method == 'smc':
-        results = run_smc_sampling(model, config, num_runs, base_seed)
+        results = run_smc_sampling(model, config, num_runs, base_seed, json_path, experiment_id)
     elif method == 'greedy':
-        results = run_greedy_sampling(model, config, num_runs, base_seed)
+        results = run_greedy_sampling(model, config, num_runs, base_seed, json_path, experiment_id)
     
     # Restore model and save results
     restore_model(model)
-    save_results(results, method, config)
+    print(f"Text samples saved to: {json_path}")
+    save_results(results, method, config, output_dir=output_dir)
     print_summary(results, method)
 
 
 if __name__ == '__main__':
     main()
-
