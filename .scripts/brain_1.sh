@@ -23,5 +23,6 @@ for W_INTERACTION in "${INTERACTION_VALUES[@]}"; do
     group_size="${GROUP_SIZE}" \
     n_groups="${N_GROUPS}" \
     mdlm_steps="${MDLM_STEPS}" \
+    transversal=false \
     minimal_log=true
 done
