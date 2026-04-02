@@ -5,8 +5,8 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT/src/d5p4/"
 
-INTERACTION_VALUES=(8 16 32)
-N_RUNS="${N_RUNS:-400}"
+INTERACTION_VALUES=(${INTERACTION_VALUES:-1 2 4 8 16 32})
+N_RUNS="${N_RUNS:-8}"
 MDLM_STEPS="${MDLM_STEPS:-256}"
 N_GROUPS="${N_GROUPS:-2}"
 GROUP_SIZE="${GROUP_SIZE:-2}"
