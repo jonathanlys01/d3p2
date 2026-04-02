@@ -39,7 +39,8 @@ COMMON_ARGS=(
   qa_n_shots=4
   qa_dataset_len=$N_QUESTIONS
   cat_temperature=1.0
-  remasking=low_confidence
+  #remasking=low_confidence
+  remasking=selection_temperature
   logits_eos_inf=False
   cfg_scale=2.0
   llada_steps=256
@@ -70,13 +71,22 @@ set -ex
 #     comment="full Independent pure baseline"
 
 
+# run_llada_math \
+#   method=diverse_beam \
+#   n_groups=2 \
+#   group_size=2 \
+#   subsample_end=128 \
+#   _diversity_alpha=20.0 \
+#   comment="hcfg divbs pure partial @ alpha=20"
+
+
 run_llada_math \
-  method=diverse_beam \
+  method=greedy_map \
   n_groups=2 \
   group_size=2 \
   subsample_end=128 \
-  _diversity_alpha=20.0 \
-  comment="hcfg divbs pure partial @ alpha=20"
+  _w_interaction=25.0 \
+  comment="hcfg D5P4 pure partial @ w_inter=25.0 order select"
 
 
 # for w_interaction in "${list_w_interaction[@]}"; do
