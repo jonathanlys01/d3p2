@@ -5,13 +5,15 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT/src/d5p4/"
 
-MASTER_PORT="${MASTER_PORT:-29500}"
+MASTER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 N_RUNS="${N_RUNS:-400}"
 MDLM_STEPS="${MDLM_STEPS:-256}"
 N_GROUPS="${N_GROUPS:-2}"
 GROUP_SIZE="${GROUP_SIZE:-2}"
 METHOD="${METHOD:-greedy_map}"
+
+
 
 torchrun \
   --nproc_per_node="${NPROC_PER_NODE}" \
