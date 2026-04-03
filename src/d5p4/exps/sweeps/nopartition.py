@@ -15,7 +15,7 @@ from d5p4.config import Config
 
 
 SWEEP_NAME = "d3p2_np_restart_optuna_study"
-BOOTSTRAP_TRIALS = (
+BOOTSTRAP_TRIALS: tuple[dict, ...] = (
     {"w_interaction": 1.0, "values": [39.99, 1.0]},
     {"w_interaction": 2.0, "values": [39.35, 1.0]},
     {"w_interaction": 4.0, "values": [40.33, 0.9991]},
@@ -30,6 +30,10 @@ BOOTSTRAP_TRIALS = (
     {"w_interaction": 10.56, "values": [47.47364214060177, 0.8980215181410313]},
     {"w_interaction": 10.879999999999999, "values": [47.72794090827429, 0.8919494514167309]},
 )
+
+# Add dummy metrics for compatibility with the sweep
+for t in BOOTSTRAP_TRIALS:
+    t["metrics"] = {}
 
 INTERACTION_MIN = min(t["w_interaction"] for t in BOOTSTRAP_TRIALS)
 INTERACTION_MAX = max(t["w_interaction"] for t in BOOTSTRAP_TRIALS)
