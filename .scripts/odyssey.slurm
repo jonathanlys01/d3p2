@@ -41,6 +41,7 @@ COMMON_ARGS=(
   cat_temperature=0.0
   #remasking=low_confidence
   remasking=selection_temperature
+  selection_temperature=0.1
   logits_eos_inf=False
   cfg_scale=2.0
   llada_steps=256
@@ -68,7 +69,7 @@ run_llada_math \
     method=baseline \
     n_groups=4 \
     group_size=1 \
-    comment="full Independent pure baseline order select"
+    comment="Independent pure baseline sel_temp=0.1"
 
 
 run_llada_math \
@@ -77,16 +78,16 @@ run_llada_math \
   group_size=2 \
   subsample_end=128 \
   _diversity_alpha=20.0 \
-  comment="hcfg divbs pure partial @ alpha=20 order select"
+  comment="hcfg divbs pure partial @ alpha=20,sel_temp=0.1"
 
 
-# run_llada_math \
-#   method=greedy_map \
-#   n_groups=2 \
-#   group_size=2 \
-#   subsample_end=128 \
-#   _w_interaction=25.0 \
-#   comment="hcfg D5P4 pure partial @ w_inter=25.0 order select"
+run_llada_math \
+  method=greedy_map \
+  n_groups=2 \
+  group_size=2 \
+  subsample_end=128 \
+  _w_interaction=25.0 \
+  comment="hcfg D5P4 pure partial @ w_inter=25.0, sel_temp=0.1"
 
 
 # for w_interaction in "${list_w_interaction[@]}"; do

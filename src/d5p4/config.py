@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Optional
 
 from omegaconf import OmegaConf
 
+import idr_torch
+
 
 if TYPE_CHECKING:
     import torch
@@ -188,8 +190,11 @@ class Config:
             assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
             num_blocks = self.gen_length // self.block_length
             assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
-            if self.remasking == "selection_temperature":
-                assert self.cat_temperature == 0.0, "selection_temperature remasking requires cat_temperature == 0.0"
+            if self.remasking == "selection_temperature" and self.cat_temperature != 0.0 and idr_torch.rank == 0:
+                print(
+                    "Warning: remasking=selection_temperature with cat_temperature != 0.0. "
+                    "This mixes stochastic token sampling with stochastic remasking.",
+                )
 
             # Set guidance_end to steps if not explicitly set
             if self.guidance_end == -1:
