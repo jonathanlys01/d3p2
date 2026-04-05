@@ -2,7 +2,7 @@
 #SBATCH --job-name=llada-test
 #SBATCH --partition=Odyssey
 #SBATCH --cpus-per-gpu=47
-#SBATCH --gres=gpu:h200:2
+#SBATCH --gres=gpu:h100:2
 #SBATCH --qos normal
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
@@ -18,7 +18,7 @@ export OMP_NUM_THREADS=1
 sleep 5
 
 # Node-local scratch for this job
-JOB_ROOT="${SCRATCH}/uv-${SLURM_JOB_NAME}"
+JOB_ROOT="/SCRATCH/uv-${SLURM_JOB_NAME}"
 mkdir -p "${JOB_ROOT}"
 
 # uv caches (env)
@@ -65,40 +65,42 @@ cd $TOP_DIR/src/d5p4
 
 set -ex
 
-run_llada_math \
-    method=baseline \
-    n_groups=4 \
-    group_size=1 \
-    comment="Independent pure baseline sel_temp=0.1"
+# run_llada_math \
+#     method=baseline \
+#     n_groups=4 \
+#     group_size=1 \
+#     comment="Independent pure baseline sel_temp=0.1"
 
 
-run_llada_math \
-  method=diverse_beam \
-  n_groups=2 \
-  group_size=2 \
-  subsample_end=128 \
-  _diversity_alpha=20.0 \
-  comment="hcfg divbs pure partial @ alpha=20,sel_temp=0.1"
+# run_llada_math \
+#   method=diverse_beam \
+#   n_groups=2 \
+#   group_size=2 \
+#   subsample_end=128 \
+#   _diversity_alpha=20.0 \
+#   comment="hcfg divbs pure partial @ alpha=20,sel_temp=0.1"
 
 
-run_llada_math \
-  method=greedy_map \
-  n_groups=2 \
-  group_size=2 \
-  subsample_end=128 \
-  _w_interaction=25.0 \
-  comment="hcfg D5P4 pure partial @ w_inter=25.0, sel_temp=0.1"
+# run_llada_math \
+#   method=greedy_map \
+#   n_groups=2 \
+#   group_size=2 \
+#   subsample_end=128 \
+#   _w_interaction=25.0 \
+#   comment="hcfg D5P4 pure partial @ w_inter=25.0, sel_temp=0.1"
 
 
-# for w_interaction in "${list_w_interaction[@]}"; do
-#   run_llada_math \
-#     method=greedy_map \
-#     n_groups=2 \
-#     group_size=2 \
-#     subsample_end=128 \
-#     comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}" \
-#     _w_interaction=$w_interaction
-# done
+list_w_interaction=(6.0 12.0)
+
+for w_interaction in "${list_w_interaction[@]}"; do
+  run_llada_math \
+    method=greedy_map \
+    n_groups=2 \
+    group_size=2 \
+    subsample_end=128 \
+    comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}, sel_temp=0.1" \
+    _w_interaction=$w_interaction
+done
 
 
 echo All done
