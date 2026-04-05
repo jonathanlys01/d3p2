@@ -56,8 +56,7 @@ run_llada_math() {
   torchrun --nproc_per_node=gpu --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
-TOP_DIR=$(git rev-parse --show-toplevel)
-cd $TOP_DIR/src/d5p4
+cd $(pwd)/src/d5p4
 
 # list_w_interaction=(0.0 1.0 2.5 5.0 10.0)
 # list_w_interaction=(6.4 8.0 11.5 15.0 20.0)
@@ -94,12 +93,12 @@ list_w_interaction=(6.0 12.0)
 
 for w_interaction in "${list_w_interaction[@]}"; do
   run_llada_math \
-    method=greedy_map \
+    method=diverse_beam \
     n_groups=2 \
     group_size=2 \
     subsample_end=128 \
-    comment="hcfg D5P4 pure partial @ w_inter=${w_interaction}, sel_temp=0.1" \
-    _w_interaction=$w_interaction
+    comment="hcfg divbs pure partial @ alpha=${w_interaction}, sel_temp=0.1" \
+    _diversity_alpha=$w_interaction
 done
 
 
