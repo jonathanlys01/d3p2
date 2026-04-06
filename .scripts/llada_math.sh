@@ -33,15 +33,29 @@ run_llada_math() {
   torchrun --nproc_per_node=$NPROC --master_port=$MASTER_PORT llada_math.py "${COMMON_ARGS[@]}" "$@"
 }
 
-list_w_interaction=(50.0 75.0 100.0 120.0)
-set -ex
+run_llada_math \
+    method=baseline \
+    n_groups=4 \
+    group_size=1 \
+    seed=1337 \
+    comment="Independent pure baseline sel_temp=0.1, seed=1337"
 
-for w_interaction in "${list_w_interaction[@]}"; do
-  run_llada_math \
-    method=greedy_map \
-    n_groups=2 \
-    group_size=2 \
-    subsample_end=128 \
-    comment="D5P4 pure partial @ w_inter=${w_interaction}, sel_temp=0.1" \
-    _w_interaction=$w_interaction
-done
+run_llada_math \
+    method=baseline \
+    n_groups=4 \
+    group_size=1 \
+    seed=1338 \
+    comment="Independent pure baseline sel_temp=0.1, seed=1338"
+
+# list_w_interaction=(50.0 75.0 100.0 120.0)
+# set -ex
+
+# for w_interaction in "${list_w_interaction[@]}"; do
+#   run_llada_math \
+#     method=greedy_map \
+#     n_groups=2 \
+#     group_size=2 \
+#     subsample_end=128 \
+#     comment="D5P4 pure partial @ w_inter=${w_interaction}, sel_temp=0.1" \
+#     _w_interaction=$w_interaction
+# done
