@@ -9,10 +9,12 @@ QA_DATASET_LEN="${QA_DATASET_LEN:--1}"
 EXTRA_ARGS=("$@")
 CFG_VALUES=(1.0 1.25 1.5 1.75 2.0 2.25 2.5 2.75 3.0)
 
+config_path="${config_path:-src/d5p4/_default.yaml}"
+
 for cfg in "${CFG_VALUES[@]}"; do
   echo "=== Baseline | CFG=${cfg} ==="
   python -m d5p4.exps.llada \
-    --config=_default.yaml \
+    --config="${config_path}" \
     model=llada \
     qa_dataset=truthful_qa \
     qa_dataset_len="${QA_DATASET_LEN}" \
@@ -25,7 +27,7 @@ for cfg in "${CFG_VALUES[@]}"; do
 
   echo "=== D5P4 | CFG=${cfg} ==="
   python -m d5p4.exps.llada \
-    --config=_default.yaml \
+    --config="${config_path}" \
     model=llada \
     qa_dataset=truthful_qa \
     qa_dataset_len="${QA_DATASET_LEN}" \
