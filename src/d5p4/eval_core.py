@@ -623,12 +623,15 @@ class Evaluator:
 
         return metrics
 
-    def evaluate_baseline(  # noqa: C901
+    def evaluate_baseline(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         full_sequences: list[list[str]],
         metric: str,
         k: int,
         references: list[list[str]] | None = None,
+        transversal: bool = False,
+        group_size: int = 1,
+        internal_scores: list[list[float]] | None = None,
     ) -> list[list[str]]:
         """Select the *k* best sequences per group according to *metric*.
 
@@ -638,6 +641,8 @@ class Evaluator:
             Lower is better.
         ``"f1"``
             Higher is better. Requires *references*.
+        ``"int"``
+            Higher is better. Requires *internal_scores*.
         """
         flattened_texts = [text for sublist in full_sequences for text in sublist]
         group_sizes = [len(sublist) for sublist in full_sequences]
@@ -675,11 +680,61 @@ class Evaluator:
             ]
             reverse_sort = True
 
+        elif metric.lower() == "int":
+            if internal_scores is None:
+                raise ValueError("internal_scores must be provided for the int metric.")
+            if len(internal_scores) != len(full_sequences):
+                raise ValueError(
+                    f"Expected one internal score group per candidate group, got {len(internal_scores)} "
+                    f"scores for {len(full_sequences)} groups.",
+                )
+            for group_texts, group_scores in zip(full_sequences, internal_scores):
+                if len(group_texts) != len(group_scores):
+                    raise ValueError(
+                        f"Expected one internal score per candidate, got {len(group_scores)} "
+                        f"scores for {len(group_texts)} candidates.",
+                    )
+            unflattened_scores = internal_scores
+            reverse_sort = True
+
         else:
-            raise ValueError(f"Metric '{metric}' not supported. Choose 'ppl' or 'f1'.")
+            raise ValueError(f"Metric '{metric}' not supported. Choose 'ppl', 'f1', or 'int'.")
 
         selected_sequences = []
         for group_texts, group_scores in zip(full_sequences, unflattened_scores):
+            if transversal:
+                if group_size <= 1:
+                    raise ValueError("transversal selection requires group_size > 1")
+                if len(group_texts) % group_size != 0:
+                    raise ValueError(
+                        f"Expected group length divisible by group_size, got {len(group_texts)} and {group_size}.",
+                    )
+                if k != 1:
+                    raise ValueError("transversal grouped selection currently supports k=1 only")
+
+                selected = []
+                for start in range(0, len(group_texts), group_size):
+                    subgroup_texts = group_texts[start : start + group_size]
+                    subgroup_scores = group_scores[start : start + group_size]
+                    if len(set(subgroup_texts)) == 1:
+                        selected.append(subgroup_texts[0])
+                        continue
+
+                    subgroup_top_idx = sorted(
+                        [
+                            idx
+                            for idx, _ in sorted(
+                                enumerate(subgroup_scores),
+                                key=lambda x: x[1],
+                                reverse=reverse_sort,
+                            )[:1]
+                        ],
+                    )[0]
+                    selected.append(subgroup_texts[subgroup_top_idx])
+
+                selected_sequences.append(selected)
+                continue
+
             top_k_indices = sorted(
                 [idx for idx, _ in sorted(enumerate(group_scores), key=lambda x: x[1], reverse=reverse_sort)[:k]],
             )
@@ -700,7 +755,9 @@ class Evaluator:
         if not self.force and metrics is not None:
             return
 
-        texts = data.get("text_samples", None)
+        texts = data.get("eval_text_samples")
+        if texts is None:
+            texts = data.get("text_samples", None)
 
         if texts is None:
             raw = data if isinstance(data, list) else data.get("results")

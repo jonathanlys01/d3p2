@@ -105,6 +105,8 @@ class Config:
     eval_batch_size: int = 8  # batch size for evaluation (separate from inference batch_size)
     ppl_model_id: str = "gpt2"
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
+    eval_selection_metric: str = "ppl"  # "ppl", "f1", or "int" for final sequence selection
+    eval_transversal_group_representatives: bool = False  # pick one final representative per transversal group
 
     qa_dataset: str = "truthful_qa"  # "truthful_qa", "commonsense_qa", or "gsm8k"
     qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
@@ -125,7 +127,7 @@ class Config:
     minimal_log: bool = False
     quiet: bool = False
 
-    def __post_init__(self):  # noqa: C901, PLR0912
+    def __post_init__(self):  # noqa: C901, PLR0912, PLR0915
         # Always set model-specific embedding_dim and batch_size first
         if self.model == "mdlm":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
@@ -164,6 +166,9 @@ class Config:
 
         if self.subsample_k > 0:
             assert self.method == "baseline", "subsample_k only makes sense for baseline method"
+        assert self.eval_selection_metric in {"ppl", "f1", "int"}, (
+            f"eval_selection_metric must be 'ppl', 'f1', or 'int', got {self.eval_selection_metric!r}"
+        )
 
         # Re-set embedding_dim and batch_size in case model/n_groups/group_size changed via CLI
         if self.model == "mdlm":
@@ -186,6 +191,9 @@ class Config:
             assert self.remasking in ["low_confidence", "selection_temperature", "random"], (
                 f"Remasking method {self.remasking} not recognized."
             )
+            if self.eval_transversal_group_representatives:
+                assert self.transversal, "eval_transversal_group_representatives requires transversal=True"
+                assert self.group_size > 1, "eval_transversal_group_representatives requires group_size > 1"
             assert self.selection_temperature >= 0.0, "selection_temperature must be non-negative"
             assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
             num_blocks = self.gen_length // self.block_length

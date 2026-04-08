@@ -9,6 +9,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
+import idr_torch
 import optuna
 import torch
 import torch.distributed as dist
@@ -16,7 +17,6 @@ from optuna import Study
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
-import idr_torch
 from d5p4.config import RESULTS_DIR, Config
 from d5p4.diffusion_mdlm import MDLMSampler
 from d5p4.eval_core import Evaluator
@@ -44,9 +44,10 @@ def _bcast(obj):
     return obj_list[0]
 
 
-def _save(text, config, uid, rank=0):
+def _save(text, eval_text, config, uid, rank=0):
     samples = {
         "text_samples": text,  # list of lists of strings
+        "eval_text_samples": eval_text,
         "config": asdict(config),
     }
 
@@ -65,6 +66,7 @@ def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: E
 
     seed_all(config.seed + offset)
     texts = []
+    eval_texts = []
 
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}, n_runs: {config.n_runs}")
@@ -85,18 +87,21 @@ def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: E
             print(f"Selecting {config.subsample_k} best sequences from {len(decoded)} candidates (metric: ppl)...")
             selected_groups = evaluator.evaluate_baseline([decoded], metric="ppl", k=config.subsample_k)
             selected = selected_groups[0]
-            texts.append(selected)
+            texts.append(decoded)
+            eval_texts.append(selected)
         elif is_master or config.subsample_k == 0:
             # Save sequences if: (1) master rank, or (2) no K-subsampling
             # Workers skip saving when subsample_k > 0 since only master creates final output
             texts.append(decoded)
+            eval_texts.append(decoded)
 
         # Only save temp files if we're actually collecting texts
         if is_master or config.subsample_k == 0:
-            _save(texts, config, unique_id, rank=offset)
+            _save(texts, eval_texts, config, unique_id, rank=offset)
 
     samples = {
         "text_samples": texts,
+        "eval_text_samples": eval_texts,
         "config": asdict(config),
         "experiment_id": str(unique_id),
     }

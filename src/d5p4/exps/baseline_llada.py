@@ -16,9 +16,10 @@ from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, print, seed_all
 
 
-def save(text, config, uid, rank=0):
+def save(text, eval_text, config, uid, rank=0):
     samples = {
         "text_samples": text,  # list of lists of strings
+        "eval_text_samples": eval_text,
         "config": asdict(config),
     }
 
@@ -40,6 +41,7 @@ def main():  # noqa: C901, PLR0915
 
     seed_all(config.seed + offset)
     texts = []
+    eval_texts = []
 
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}")
@@ -85,11 +87,13 @@ def main():  # noqa: C901, PLR0915
         else:
             selected = decoded
 
-        texts.append(selected)
-        save(texts, config, unique_id, rank=offset)
+        texts.append(decoded)
+        eval_texts.append(selected)
+        save(texts, eval_texts, config, unique_id, rank=offset)
 
     samples = {
-        "text_samples": texts,  # list of lists of strings
+        "text_samples": texts,  # raw list of lists of strings
+        "eval_text_samples": eval_texts,
         "config": asdict(config),
         "experiment_id": str(unique_id),
     }

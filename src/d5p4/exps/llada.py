@@ -3,11 +3,15 @@ import os
 from dataclasses import asdict
 from datetime import datetime
 
+import torch
+import torch.nn.functional as F
+
 from d5p4 import utils
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import RESULTS_DIR, Cache, Config
 from d5p4.data.qa import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
+from d5p4.subsample import get_subsample_selector
 from d5p4.utils import compile_model, seed_all
 from d5p4.utils import print as u_print
 
@@ -33,7 +37,7 @@ def main():  # noqa: PLR0915
 
     u_print(f"Evaluating {len(dataset)} samples from {cfg.qa_dataset}...")
 
-    all_generations, all_good_refs, all_bad_refs = [], [], []
+    raw_generations, eval_generations, all_good_refs, all_bad_refs = [], [], [], []
 
     wd_good_scores: list[float] = []
     wd_bad_scores: list[float] = []
@@ -63,7 +67,36 @@ def main():  # noqa: PLR0915
             batch_gen.append(gen_text)
             u_print(f"  Generated: {gen_text}", verbose=True)
 
-        all_generations.append(batch_gen)
+        raw_generations.append(batch_gen.copy())
+
+        if cfg.eval_transversal_group_representatives:
+            internal_scores = None
+            if cfg.eval_selection_metric == "int":
+                prompt_tokens = sampler._preprocess_prompt(prompt)
+                prompt_len = prompt_tokens.shape[1]
+                with torch.no_grad():
+                    logits, all_hidden = sampler._forward_model(sample_ids.to(sampler.device))
+                    cache = Cache(
+                        log_p_x0=F.log_softmax(logits, dim=-1)[:, prompt_len:],
+                        embeddings=all_hidden[-1][:, prompt_len:],
+                        x=sample_ids.to(sampler.device)[:, prompt_len:],
+                    )
+                    selector = get_subsample_selector(cfg)
+                    scores = selector.compute_scores(cache)
+                    assert scores is not None
+                    internal_scores = [scores.detach().cpu().tolist()]
+
+            batch_gen = evaluator.evaluate_baseline(
+                [batch_gen],
+                metric=cfg.eval_selection_metric,
+                k=1,
+                references=[correct_answers],
+                transversal=True,
+                group_size=cfg.group_size,
+                internal_scores=internal_scores,
+            )[0]
+
+        eval_generations.append(batch_gen)
         all_good_refs.append(correct_answers)
         all_bad_refs.append(incorrect_answers)
 
@@ -78,9 +111,9 @@ def main():  # noqa: PLR0915
 
     # 4. Global Metrics
     # PPL and Average Cosine expect list[list[str]] (batches)
-    global_metrics = evaluator.evaluate(all_generations)
+    global_metrics = evaluator.evaluate(eval_generations)
 
-    string_metrics = evaluator.compute_string_metrics(all_generations, all_good_refs)
+    string_metrics = evaluator.compute_string_metrics(eval_generations, all_good_refs)
     global_metrics.update(string_metrics)  # add bleu and f1
 
     # Wasserstein Distance metrics
@@ -110,7 +143,8 @@ def main():  # noqa: PLR0915
             {
                 "config": asdict(cfg),
                 "results": global_metrics,
-                "text_samples": all_generations,
+                "text_samples": raw_generations,
+                "eval_text_samples": eval_generations,
             },
             f,
             indent=4,
