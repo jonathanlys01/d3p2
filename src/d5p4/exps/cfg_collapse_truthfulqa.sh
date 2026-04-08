@@ -12,19 +12,20 @@ CFG_VALUES=(1.0 1.25 1.5 1.75 2.0 2.25 2.5 2.75 3.0)
 for cfg in "${CFG_VALUES[@]}"; do
   echo "=== Baseline | CFG=${cfg} ==="
   python -m d5p4.exps.llada \
+    --config=_default.yaml \
     model=llada \
     qa_dataset=truthful_qa \
     qa_dataset_len="${QA_DATASET_LEN}" \
     method=baseline \
     n_groups=3 \
     group_size=1 \
-    transversal=False \
     cfg_scale="${cfg}" \
     eval_transversal_group_representatives=False \
     "${EXTRA_ARGS[@]}"
 
   echo "=== D5P4 | CFG=${cfg} ==="
   python -m d5p4.exps.llada \
+    --config=_default.yaml \
     model=llada \
     qa_dataset=truthful_qa \
     qa_dataset_len="${QA_DATASET_LEN}" \
