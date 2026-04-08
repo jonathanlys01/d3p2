@@ -4,7 +4,6 @@ set -euo pipefail
 # To launch from the root directory:
 
 
-METHOD="${METHOD:-greedy_map}"
 QA_DATASET_LEN="${QA_DATASET_LEN:--1}"
 EXTRA_ARGS=("$@")
 CFG_VALUES=(1.0 1.25 1.5 1.75 2.0 2.25 2.5 2.75 3.0)
@@ -23,6 +22,7 @@ for cfg in "${CFG_VALUES[@]}"; do
     group_size=1 \
     cfg_scale="${cfg}" \
     eval_transversal_group_representatives=False \
+    comment="baseline cfg collapse truthfulqa cfg=${cfg}" \
     "${EXTRA_ARGS[@]}"
 
   echo "=== D5P4 | CFG=${cfg} ==="
@@ -31,12 +31,13 @@ for cfg in "${CFG_VALUES[@]}"; do
     model=llada \
     qa_dataset=truthful_qa \
     qa_dataset_len="${QA_DATASET_LEN}" \
-    method="${METHOD}" \
+    method=greedy_map \
     n_groups=3 \
     group_size=3 \
     transversal=True \
     cfg_scale="${cfg}" \
     eval_transversal_group_representatives=True \
     eval_selection_metric=ppl \
+    comment="d5p4 cfg collapse truthfulqa cfg=${cfg}" \
     "${EXTRA_ARGS[@]}"
 done
