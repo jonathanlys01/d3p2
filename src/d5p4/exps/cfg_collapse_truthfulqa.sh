@@ -36,8 +36,12 @@ run_experiments() {
   done
 }
 
-run_experiments 0 "${CFG_VALUES_0[@]}" &
-run_experiments 1 "${CFG_VALUES_1[@]}" &
+echo "Starting experiments..."
+echo "GPU 0 logs will be written to: cfg_collapse_gpu0.log"
+echo "GPU 1 logs will be written to: cfg_collapse_gpu1.log"
+
+run_experiments 0 "${CFG_VALUES_0[@]}" > "cfg_collapse_gpu0.log" 2>&1 &
+run_experiments 1 "${CFG_VALUES_1[@]}" > "cfg_collapse_gpu1.log" 2>&1 &
 
 wait
 echo "All parsing finished."
