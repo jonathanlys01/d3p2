@@ -18,7 +18,7 @@ run_experiments() {
 
   for cfg in "${cfgs[@]}"; do
     echo "=== D5P4 | GPU=${gpu_id} | CFG=${cfg} ==="
-    CUDA_VISIBLE_DEVICES="${gpu_id}" python -m d5p4.exps.llada \
+    CUDA_VISIBLE_DEVICES="${gpu_id}" PYTHONUNBUFFERED=1 python -m d5p4.exps.llada \
       --config="${config_path}" \
       model=llada \
       qa_dataset=truthful_qa \
