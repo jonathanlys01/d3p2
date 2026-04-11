@@ -73,13 +73,14 @@ for worker_idx in "${!GPU_IDS[@]}"; do
   cfg_chunk=("${CFG_VALUES[@]:start:chunk_len}")
   log_path="${RUN_OUTPUT_DIR}/cfg_collapse_worker${worker_idx}_gpu${GPU_IDS[worker_idx]}.log"
   echo "Worker ${worker_idx} logs will be written to: ${log_path}"
-  run_experiments "${worker_idx}" "${GPU_IDS[worker_idx]}" "${cfg_chunk[@]}" > "${log_path}" 2>&1 &
+  run_experiments "${worker_idx}" "${GPU_IDS[worker_idx]}" "${cfg_chunk[@]}" 2>&1 | tee "${log_path}" &
 done
 
 wait
 
 if [[ "${RUN_OVERSAMPLE_BASELINE}" == "1" ]]; then
   echo "Running oversample baseline post-processing from: ${OVERSAMPLE_BASELINE_PATH}"
+  oversample_log_path="${RUN_OUTPUT_DIR}/oversample_baseline.log"
   OVERSAMPLE_BASELINE_PATH="${OVERSAMPLE_BASELINE_PATH}" PYTHONUNBUFFERED=1 \
     python -m d5p4._oversample_baseline \
       --config="${config_path}" \
@@ -89,7 +90,8 @@ if [[ "${RUN_OVERSAMPLE_BASELINE}" == "1" ]]; then
       qa_dataset_len="${QA_DATASET_LEN}" \
       n_groups="${SUBSET_K}" \
       group_size=1 \
-      subsample_k="${OVERSAMPLE_SUBSAMPLE_K}"
+      subsample_k="${OVERSAMPLE_SUBSAMPLE_K}" \
+      2>&1 | tee "${oversample_log_path}"
 fi
 
 echo "All parsing finished."
