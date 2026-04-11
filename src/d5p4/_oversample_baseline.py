@@ -2,19 +2,30 @@ import json
 import os
 from dataclasses import fields
 
-from d5p4.config import Config
+from d5p4.config import RESULTS_DIR, Config
 from d5p4.data import get_qa_dataset
 from d5p4.eval_core import Evaluator
 
 
-def _select_and_evaluate_baseline(
+def _stable_variant_seed(base_seed: int, variant_name: str) -> int:
+    return base_seed + sum(ord(ch) for ch in variant_name)
+
+
+def _select_and_evaluate_baseline(  # noqa: PLR0913
     evaluator: Evaluator,
     texts: list[list[str]],
     metric: str,
     subsample_k: int,
     references: list[list[str]] | None = None,
+    random_seed: int | None = None,
 ) -> tuple[list[list[str]], dict[str, float | str]]:
-    selected = evaluator.evaluate_baseline(texts, metric, subsample_k, references=references)
+    selected = evaluator.evaluate_baseline(
+        texts,
+        metric,
+        subsample_k,
+        references=references,
+        random_seed=random_seed,
+    )
     metrics = evaluator.evaluate(selected, references=references)
     return selected, metrics
 
@@ -42,6 +53,43 @@ def _load_references(current_config: Config, expected_groups: int) -> list[list[
     return references
 
 
+def _iter_text_groups(file_name: str, data: dict) -> list[tuple[str, dict, list[list[str]]]]:
+    file_config_dict = data.get("config", {})
+    texts = data.get("text_samples")
+    if isinstance(texts, list):
+        return [(file_name.removesuffix(".json"), file_config_dict, texts)]
+
+    results_by_cfg = data.get("results_by_cfg")
+    if not isinstance(results_by_cfg, dict):
+        return []
+
+    extracted_groups: list[tuple[str, dict, list[list[str]]]] = []
+    for cfg_key, cfg_result in results_by_cfg.items():
+        samples = cfg_result.get("samples")
+        if not isinstance(samples, list):
+            continue
+
+        cfg_texts: list[list[str]] = []
+        for sample in samples:
+            if not isinstance(sample, dict):
+                cfg_texts = []
+                break
+            pool = sample.get("independent_pool_n")
+            if not isinstance(pool, list):
+                cfg_texts = []
+                break
+            cfg_texts.append(pool)
+
+        if not cfg_texts:
+            continue
+
+        cfg_config_dict = dict(file_config_dict)
+        cfg_config_dict["cfg_scale"] = float(cfg_key)
+        extracted_groups.append((f"{file_name.removesuffix('.json')}-cfg-{cfg_key}", cfg_config_dict, cfg_texts))
+
+    return extracted_groups
+
+
 if __name__ == "__main__":
     config = Config()
     evaluator = Evaluator(
@@ -50,7 +98,11 @@ if __name__ == "__main__":
         cos_model_id=config.cos_model_id,
     )
 
-    path = os.path.expanduser("~/src/tries/2026-03-30-fixing-baseline")
+    path = os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", RESULTS_DIR))
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"OVERSAMPLE_BASELINE_PATH does not exist: {path}")
+
+    print(f"Scanning oversample baseline files in: {path}")
     files = sorted([f for f in os.listdir(path) if f.endswith(".json") and "-bon-" not in f])
 
     subsample_k = config.subsample_k
@@ -63,44 +115,46 @@ if __name__ == "__main__":
         with open(file_path, "r") as f:
             data = json.load(f)
 
-        # Try to load config from the result file
-        file_config_dict = data.get("config", {})
-        current_config = config
-        if file_config_dict:
-            # Create a new config object with values from the file
-            # filter only valid fields
-            valid_fields = {f.name for f in fields(Config)}
-            filtered_config = {k: v for k, v in file_config_dict.items() if k in valid_fields}
-            filtered_config.pop("disable_sys_args", None)
-            current_config = Config(disable_sys_args=True, **filtered_config)
+        grouped_sources = _iter_text_groups(file, data)
+        if not grouped_sources:
+            print(f"Skipping {file}: no compatible oversample candidate groups found")
+            continue
 
-        texts = data["text_samples"]
+        for output_stem, file_config_dict, texts in grouped_sources:
+            current_config = config
+            if file_config_dict:
+                valid_fields = {f.name for f in fields(Config)}
+                filtered_config = {k: v for k, v in file_config_dict.items() if k in valid_fields}
+                filtered_config.pop("disable_sys_args", None)
+                current_config = Config(disable_sys_args=True, **filtered_config)
 
-        references = _load_references(current_config, len(texts))
-        metrics_to_run = ["ppl", "f1"] if references is not None else ["ppl"]
+            references = _load_references(current_config, len(texts))
+            metrics_to_run = ["ppl", "f1", "random"] if references is not None else ["ppl", "random"]
 
-        for metric in metrics_to_run:
-            print(f"File: {file} | Metric: {metric}")
-            selected, metrics = _select_and_evaluate_baseline(
-                evaluator,
-                texts,
-                metric,
-                subsample_k,
-                references=references,
-            )
+            for metric in metrics_to_run:
+                print(f"File: {output_stem}.json | Metric: {metric}")
+                selected, metrics = _select_and_evaluate_baseline(
+                    evaluator,
+                    texts,
+                    metric,
+                    subsample_k,
+                    references=references,
+                    random_seed=_stable_variant_seed(current_config.seed, output_stem),
+                )
 
-            # Save dummy result file
-            save_data = {
-                "config": file_config_dict,
-                "metrics": metrics,
-                "text_samples": selected,
-                "experiment_id": data.get("experiment_id", ""),
-            }
-            out_name = file.replace(".json", f"-bon-{metric}.json")
-            with open(os.path.join(path, out_name), "w") as f_out:
-                json.dump(save_data, f_out, indent=4)
+                save_data = {
+                    "config": file_config_dict,
+                    "metrics": metrics,
+                    "text_samples": selected,
+                    "raw_text_samples": texts,
+                    "experiment_id": data.get("experiment_id", ""),
+                    "source_file": file,
+                }
+                out_name = f"{output_stem}-bon-{metric}.json"
+                with open(os.path.join(path, out_name), "w") as f_out:
+                    json.dump(save_data, f_out, indent=4)
 
-            print("-" * 80)
-            for key, value in metrics.items():
-                print(f"{metric}_{key}: {value}")
-            print("-" * 80)
+                print("-" * 80)
+                for key, value in metrics.items():
+                    print(f"{metric}_{key}: {value}")
+                print("-" * 80)

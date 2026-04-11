@@ -52,8 +52,13 @@ class LLADASampler(nn.Module):
     def update_config(self, config: Config):
         """Update model and selector config (for reusing model across sweep trials)."""
         configure_runtime(config)
+        rebuild_selector = config.method != self.config.method
         self.config = config
-        self.selector.config = config
+        if rebuild_selector:
+            self.selector = get_subsample_selector(config)
+        else:
+            self.selector.config = config
+        self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
     def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore

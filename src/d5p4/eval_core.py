@@ -623,38 +623,32 @@ class Evaluator:
 
         return metrics
 
-    def evaluate_baseline(  # noqa: C901, PLR0912, PLR0913, PLR0915
+    def score_baseline_candidates(  # noqa: C901, PLR0912
         self,
         full_sequences: list[list[str]],
         metric: str,
-        k: int,
         references: list[list[str]] | None = None,
-        transversal: bool = False,
-        group_size: int = 1,
         internal_scores: list[list[float]] | None = None,
-    ) -> list[list[str]]:
-        """Select the *k* best sequences per group according to *metric*.
+        random_seed: int | None = None,
+    ) -> tuple[list[list[float]], bool]:
+        """Score candidate groups for post-hoc subset selection.
 
-        Supported metrics
-        -----------------
-        ``"ppl"``
-            Lower is better.
-        ``"f1"``
-            Higher is better. Requires *references*.
-        ``"int"``
-            Higher is better. Requires *internal_scores*.
+        Returns ``(scores, reverse_sort)`` where ``reverse_sort`` indicates whether
+        larger scores are better.
         """
         flattened_texts = [text for sublist in full_sequences for text in sublist]
         group_sizes = [len(sublist) for sublist in full_sequences]
 
-        def unflatten(flat_list: list) -> list[list]:
+        def unflatten(flat_list: list[float]) -> list[list[float]]:
             out, cursor = [], 0
             for size in group_sizes:
                 out.append(flat_list[cursor : cursor + size])
                 cursor += size
             return out
 
-        if metric.lower() == "ppl":
+        metric_lower = metric.lower()
+
+        if metric_lower == "ppl":
             batch_size = self.batch_size or len(flattened_texts)
             nlls: list[float] = []
             for start in range(0, len(flattened_texts), batch_size):
@@ -663,10 +657,9 @@ class Evaluator:
                     nlls.extend(result["mean_nll"].cpu().tolist())
                 else:
                     u_print("Skipping batch of empty texts", flattened_texts[start : start + batch_size])
-            unflattened_scores = unflatten(nlls)
-            reverse_sort = False
+            return unflatten(nlls), False
 
-        elif metric.lower() == "f1":
+        if metric_lower == "f1":
             if references is None:
                 raise ValueError("References must be provided for the f1 metric.")
             if len(references) != len(full_sequences):
@@ -674,13 +667,13 @@ class Evaluator:
                     f"Expected one reference group per candidate group, got {len(references)} "
                     f"references for {len(full_sequences)} groups.",
                 )
-            unflattened_scores = [
+            scores = [
                 [max((_compute_f1_score(cand, ref) for ref in group_refs), default=0.0) for cand in group_cands]
                 for group_cands, group_refs in zip(full_sequences, references)
             ]
-            reverse_sort = True
+            return scores, True
 
-        elif metric.lower() == "int":
+        if metric_lower == "int":
             if internal_scores is None:
                 raise ValueError("internal_scores must be provided for the int metric.")
             if len(internal_scores) != len(full_sequences):
@@ -694,11 +687,46 @@ class Evaluator:
                         f"Expected one internal score per candidate, got {len(group_scores)} "
                         f"scores for {len(group_texts)} candidates.",
                     )
-            unflattened_scores = internal_scores
-            reverse_sort = True
+            return internal_scores, True
 
-        else:
-            raise ValueError(f"Metric '{metric}' not supported. Choose 'ppl', 'f1', or 'int'.")
+        if metric_lower == "random":
+            rng = np.random.default_rng(random_seed)
+            scores = [rng.random(len(group_cands)).tolist() for group_cands in full_sequences]
+            return scores, True
+
+        raise ValueError(f"Metric '{metric}' not supported. Choose 'ppl', 'f1', 'int', or 'random'.")
+
+    def evaluate_baseline(  # noqa: C901, PLR0912, PLR0913, PLR0915
+        self,
+        full_sequences: list[list[str]],
+        metric: str,
+        k: int,
+        references: list[list[str]] | None = None,
+        transversal: bool = False,
+        group_size: int = 1,
+        internal_scores: list[list[float]] | None = None,
+        random_seed: int | None = None,
+    ) -> list[list[str]]:
+        """Select the *k* best sequences per group according to *metric*.
+
+        Supported metrics
+        -----------------
+        ``"ppl"``
+            Lower is better.
+        ``"f1"``
+            Higher is better. Requires *references*.
+        ``"int"``
+            Higher is better. Requires *internal_scores*.
+        ``"random"``
+            Uniform random subsampling. Higher sampled score is better.
+        """
+        unflattened_scores, reverse_sort = self.score_baseline_candidates(
+            full_sequences,
+            metric,
+            references=references,
+            internal_scores=internal_scores,
+            random_seed=random_seed,
+        )
 
         selected_sequences = []
         for group_texts, group_scores in zip(full_sequences, unflattened_scores):
