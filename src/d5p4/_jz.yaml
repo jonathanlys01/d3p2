@@ -23,6 +23,8 @@ single_init: true
 # Datasets
 truthful_qa_path: ${oc.env:WORK}/datasets/truthfulqa/truthful_qa
 commonsense_qa_path: ${oc.env:WORK}/datasets/tau/commonsense_qa
+ai2_arc_path: ${oc.env:WORK}/datasets/allenai/ai2_arc
+ai2_arc_subset: ARC-Challenge
 gsm8k_path: ${oc.env:WORK}/datasets/openai/gsm8k
 
 

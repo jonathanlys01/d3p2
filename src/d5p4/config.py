@@ -108,11 +108,13 @@ class Config:
     eval_selection_metric: str = "ppl"  # "ppl", "f1", or "int" for final sequence selection
     eval_transversal_group_representatives: bool = False  # pick one final representative per transversal group
 
-    qa_dataset: str = "truthful_qa"  # "truthful_qa", "commonsense_qa", or "gsm8k"
+    qa_dataset: str = "truthful_qa"  # "truthful_qa", "commonsense_qa", "ai2_arc", or "gsm8k"
     qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
     qa_n_shots: int = 0  # number of few-shot examples for QA
     truthful_qa_path: str = "truthfulqa/truthful_qa"
     commonsense_qa_path: str = "tau/commonsense_qa"
+    ai2_arc_path: str = "allenai/ai2_arc"
+    ai2_arc_subset: str = "ARC-Challenge"
     gsm8k_path: str = "openai/gsm8k"
 
     # cache

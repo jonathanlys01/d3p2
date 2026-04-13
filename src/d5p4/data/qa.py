@@ -2,28 +2,57 @@ import pandas as pd
 from datasets import load_dataset
 
 from d5p4.config import Config
+from d5p4.data.math_ds import gsm8k
+
+
+QA_DATASET_SPLITS = {
+    "truthful_qa": "validation",
+    "commonsense_qa": "validation",
+    "ai2_arc": "test",
+}
+
+
+def _get_choice_lookup(item: dict) -> dict[str, str]:
+    choices = item["choices"]["text"]
+    labels = item["choices"].get("label")
+
+    if labels is not None:
+        return dict(zip(labels, choices, strict=True))
+
+    return {chr(ord("A") + i): choice for i, choice in enumerate(choices)}
+
+
+def _extract_choice_answer_sets(item: dict) -> tuple[list[str], list[str]]:
+    answer_key = item["answerKey"]
+    choice_lookup = _get_choice_lookup(item)
+
+    if answer_key not in choice_lookup:
+        raise ValueError(f"Answer key {answer_key!r} missing from choices for question {item['question']!r}")
+
+    correct = choice_lookup[answer_key]
+    incorrect = [choice for label, choice in choice_lookup.items() if label != answer_key]
+    return [correct], incorrect
 
 
 def _format_few_shot_prefix(examples: list[dict]) -> str:
     """
-    Format a list of examples from CommonsenseQA into a few-shot prefix string.
+    Format a list of multiple-choice QA examples into a few-shot prefix string.
 
     Expected example format:
     {
         "question": "...",
         "answerKey": "A",
-        "choices": {"text": ["choice1", "choice2", ...]}
+        "choices": {
+            "text": ["choice1", "choice2", ...],
+            "label": ["A", "B", ...],  # optional
+        }
     }
     """
     prefix = ""
     for item in examples:
         q = item["question"]
-        key = item["answerKey"]
-        choices = item["choices"]["text"]
-        # answerKey is 'A', 'B', 'C', 'D', 'E'
-        # Convert to index 0-4
-        ans_idx = ord(key) - ord("A")
-        a = choices[ans_idx]
+        correct_answers, _ = _extract_choice_answer_sets(item)
+        a = correct_answers[0]
 
         prefix += f"Question: {q}\nAnswer: {a}\n\n"
 
@@ -32,7 +61,9 @@ def _format_few_shot_prefix(examples: list[dict]) -> str:
 
 def truthful_qa(cfg: Config) -> pd.DataFrame:
     assert cfg.qa_n_shots == 0, "TruthfulQA does not support n_shots"
-    dataset = load_dataset(cfg.truthful_qa_path, "generation", cache_dir=cfg.cache_dir)["validation"]
+    dataset = load_dataset(cfg.truthful_qa_path, "generation", cache_dir=cfg.cache_dir)[
+        QA_DATASET_SPLITS["truthful_qa"]
+    ]
     dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
     questions = [item["question"] for item in dataset]
     good = [item["correct_answers"] for item in dataset]
@@ -42,23 +73,24 @@ def truthful_qa(cfg: Config) -> pd.DataFrame:
     return df
 
 
-def commonsense_qa(cfg: Config) -> pd.DataFrame:
-    dataset = load_dataset(cfg.commonsense_qa_path, cache_dir=cfg.cache_dir)["validation"]
-    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
+def _multiple_choice_qa(cfg: Config, dataset_path: str, dataset_name: str, subset: str | None = None) -> pd.DataFrame:
+    if subset is None:
+        dataset_splits = load_dataset(dataset_path, cache_dir=cfg.cache_dir)
+    else:
+        dataset_splits = load_dataset(dataset_path, subset, cache_dir=cfg.cache_dir)
+
+    dataset = dataset_splits[QA_DATASET_SPLITS[dataset_name]].shuffle(seed=cfg.seed)  # type: ignore
 
     questions = []
     good = []
     bad = []
 
-    train_dataset = None
-    if cfg.qa_n_shots > 0:
-        train_dataset = load_dataset(cfg.commonsense_qa_path, cache_dir=cfg.cache_dir)["train"]
+    train_dataset = dataset_splits["train"] if cfg.qa_n_shots > 0 else None
 
     for i, item in enumerate(dataset):
-        answer_key = item["answerKey"]
-        choices = item["choices"]["text"]
-        good.append([choices[ord(answer_key) - ord("A")]])
-        bad.append([choice for i, choice in enumerate(choices) if i != ord(answer_key) - ord("A")])
+        correct_answers, incorrect_answers = _extract_choice_answer_sets(item)
+        good.append(correct_answers)
+        bad.append(incorrect_answers)
 
         q = item["question"]
         if cfg.qa_n_shots > 0:
@@ -78,15 +110,23 @@ def commonsense_qa(cfg: Config) -> pd.DataFrame:
     return df
 
 
+def commonsense_qa(cfg: Config) -> pd.DataFrame:
+    return _multiple_choice_qa(cfg, cfg.commonsense_qa_path, "commonsense_qa")
+
+
+def ai2_arc(cfg: Config) -> pd.DataFrame:
+    return _multiple_choice_qa(cfg, cfg.ai2_arc_path, "ai2_arc", cfg.ai2_arc_subset)
+
+
 def get_qa_dataset(cfg: Config) -> pd.DataFrame:
     """Get the QA dataset based on the config's qa_dataset field."""
     if cfg.qa_dataset == "truthful_qa":
         return truthful_qa(cfg)
     elif cfg.qa_dataset == "commonsense_qa":
         return commonsense_qa(cfg)
+    elif cfg.qa_dataset == "ai2_arc":
+        return ai2_arc(cfg)
     elif cfg.qa_dataset == "gsm8k":
-        from d5p4.data.math_ds import gsm8k
-
         df = gsm8k(cfg)
         # Ensure compatibility with standard QA evaluator by providing correct_answers
         if "correct_answers" not in df.columns and "answer_str" in df.columns:
@@ -94,22 +134,41 @@ def get_qa_dataset(cfg: Config) -> pd.DataFrame:
         return df
     else:
         raise ValueError(
-            f"Unknown qa_dataset: {cfg.qa_dataset}. Available: 'truthful_qa', 'commonsense_qa', 'gsm8k'",
+            f"Unknown qa_dataset: {cfg.qa_dataset}. Available: 'truthful_qa', 'commonsense_qa', 'ai2_arc', 'gsm8k'",
         )
 
 
 if __name__ == "__main__":
     cfg = Config()
-    for name, func in [("TruthfulQA", truthful_qa), ("CommonsenseQA", commonsense_qa)]:
-        print(f"Loading {name} dataset...")
+    pd.set_option("display.max_colwidth", 60)
+    pd.set_option("display.expand_frame_repr", False)
+
+    for name, func in [("TruthfulQA", truthful_qa), ("CommonsenseQA", commonsense_qa), ("AI2 ARC", ai2_arc)]:
+        print("\n" + "=" * 50)
+        print(f" DATASET: {name}")
+        print("=" * 50)
+
         df = func(cfg)
-        print(df.head())
-        print(f"Total samples: {len(df)}")
+        print("\nSample Data (Top 3):")
+        print(df.head(3))
 
-        # average number of correct answers
-        avg_correct = df["correct_answers"].apply(len).mean()
-        print(f"Average number of correct answers: {avg_correct}")
+        print("\n--- Statistics ---")
+        print(f"{'Total samples:':<35} {len(df)}")
 
-        # average number of incorrect answers
-        avg_incorrect = df["incorrect_answers"].apply(len).mean()
-        print(f"Average number of incorrect answers: {avg_incorrect}")
+        # Helper to compute stats
+        def get_stats(col):
+            lengths = df[col].apply(len)
+            avg_count = lengths.mean()
+
+            all_answers = [str(ans) for labels in df[col] for ans in labels]
+            avg_chars = sum(len(a) for a in all_answers) / len(all_answers) if all_answers else 0
+            return avg_count, avg_chars
+
+        avg_correct_n, avg_correct_chars = get_stats("correct_answers")
+        avg_incorrect_n, avg_incorrect_chars = get_stats("incorrect_answers")
+
+        print(f"{'Avg # correct answers:':<35} {avg_correct_n:.2f}")
+        print(f"{'Avg chars per correct answer:':<35} {avg_correct_chars:.2f}")
+        print(f"{'Avg # incorrect answers:':<35} {avg_incorrect_n:.2f}")
+        print(f"{'Avg chars per incorrect answer:':<35} {avg_incorrect_chars:.2f}")
+        print("=" * 50)
