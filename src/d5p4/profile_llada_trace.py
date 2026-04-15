@@ -57,7 +57,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         default=False,
         help="Export the Chrome trace JSON. Disabled by default to avoid large output files.",
     )
-    parser.add_argument("--warmup-runs", type=int, default=1, help="Unprofiled runs before tracing.")
+    parser.add_argument("--warmup-runs", type=int, default=5, help="Unprofiled runs before tracing.")
     parser.add_argument("--profile-runs", type=int, default=1, help="Profiled runs to include in the trace.")
     parser.add_argument(
         "--steps-per-block",
