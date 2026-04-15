@@ -3,9 +3,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from omegaconf import OmegaConf
-
 import idr_torch
+from omegaconf import OmegaConf
 
 
 if TYPE_CHECKING:
@@ -128,6 +127,7 @@ class Config:
     interactive: bool = True
     minimal_log: bool = False
     quiet: bool = False
+    standalone_job: bool = False  # ignore launcher-provided distributed metadata for this process
 
     def __post_init__(self):  # noqa: C901, PLR0912, PLR0915
         # Always set model-specific embedding_dim and batch_size first

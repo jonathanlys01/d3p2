@@ -188,6 +188,9 @@ def run_sweep(sweep_name, og_config, objective_fn, init_trials=None, study_to_re
     global _shutdown_requested  # noqa: PLW0603
     _shutdown_requested = False  # Reset in case of prior runs
 
+    if og_config.standalone_job:
+        raise ValueError("run_sweep requires a real distributed launch; use standalone_job=False for this path.")
+
     n_trials = og_config.n_trials
 
     # Register signal handler for graceful shutdown (SLURM --signal=B:SIGTERM@120)

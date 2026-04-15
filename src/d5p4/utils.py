@@ -6,14 +6,14 @@ from datetime import datetime
 from time import monotonic
 from typing import TypeVar
 
+import idr_torch
 import numpy as np
 import torch
 import transformers
+from idr_torch import IdrTorchWarning
 from tqdm import tqdm as tqdm_
 
-import idr_torch
 from d5p4.config import Config
-from idr_torch import IdrTorchWarning
 
 
 T = TypeVar("T")
@@ -35,13 +35,41 @@ def _format_duration(seconds: float) -> str:
 
 MINIMAL_LOG: bool = False
 QUIET: bool = False
+STANDALONE_JOB: bool = False
 
 
 def configure_runtime(cfg: Config):
-    global INTERACTIVE, MINIMAL_LOG, QUIET  # noqa: PLW0603
+    global INTERACTIVE, MINIMAL_LOG, QUIET, STANDALONE_JOB  # noqa: PLW0603
     INTERACTIVE = cfg.interactive
     MINIMAL_LOG = cfg.minimal_log
     QUIET = cfg.quiet
+    STANDALONE_JOB = cfg.standalone_job
+
+
+def is_standalone_job(cfg: Config | None = None) -> bool:
+    if cfg is None:
+        return STANDALONE_JOB
+    return cfg.standalone_job
+
+
+def get_runtime_rank(cfg: Config | None = None) -> int:
+    return 0 if is_standalone_job(cfg) else idr_torch.rank
+
+
+def get_runtime_local_rank(cfg: Config | None = None) -> int:
+    return 0 if is_standalone_job(cfg) else idr_torch.local_rank
+
+
+def get_runtime_world_size(cfg: Config | None = None) -> int:
+    return 1 if is_standalone_job(cfg) else idr_torch.world_size
+
+
+def is_runtime_distributed(cfg: Config | None = None) -> bool:
+    return get_runtime_world_size(cfg) > 1
+
+
+def is_primary_process(cfg: Config | None = None) -> bool:
+    return get_runtime_rank(cfg) == 0
 
 
 class _MinimalProgress(Iterator[T]):
@@ -112,7 +140,7 @@ def print(*args, verbose: bool = False, progress: bool = False, **kwargs):
         return
     if verbose and not INTERACTIVE:
         return
-    if kwargs.pop("force", False) or idr_torch.rank == 0:
+    if kwargs.pop("force", False) or is_primary_process():
         bprint(*args, **kwargs)
 
 
@@ -241,13 +269,16 @@ class DistributedUtils:
     """Utility class for distributed inference and data gathering."""
 
     @classmethod
+    def should_enable(cls, cfg: Config) -> bool:
+        return is_runtime_distributed(cfg)
+
     def is_distributed(self) -> bool:
-        return idr_torch.world_size > 1
+        return is_runtime_distributed(self.cfg)
 
     def __init__(self, cfg: Config):
-        self.rank: int = idr_torch.rank
-        self.local_rank: int = idr_torch.local_rank
-        self.world_size: int = idr_torch.world_size
+        self.rank: int = get_runtime_rank(cfg)
+        self.local_rank: int = get_runtime_local_rank(cfg)
+        self.world_size: int = get_runtime_world_size(cfg)
         self.cfg = cfg
 
         if self.is_distributed():
@@ -553,7 +584,7 @@ class DistributedUtils:
             torch.cuda.set_device(device)
 
     def cleanup(self):
-        if not self.is_distributed():
+        if not self.is_distributed() or not torch.distributed.is_initialized():
             return
         torch.distributed.destroy_process_group()
 

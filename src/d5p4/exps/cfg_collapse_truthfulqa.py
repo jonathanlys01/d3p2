@@ -24,13 +24,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import idr_torch
 from d5p4.config import RESULTS_DIR, Cache, Config
 from d5p4.data.qa import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
 from d5p4.subsample import get_subsample_selector
-from d5p4.utils import compile_model, seed_all
+from d5p4.utils import compile_model, is_primary_process, seed_all
 from d5p4.utils import print as u_print
 
 
@@ -616,7 +615,7 @@ def main() -> None:
     cfg = Config()
     results, output_path = run_cfg_collapse_experiment(cfg)
 
-    if idr_torch.rank == 0:
+    if is_primary_process(cfg):
         _save_results(output_path, results)
         u_print(f"\nSaved results to {output_path}")
 

@@ -13,6 +13,7 @@ RUN_OUTPUT_DIR="results/${CFG_COLLAPSE_RESULTS_SUBDIR}"
 OVERSAMPLE_BASELINE_PATH="${OVERSAMPLE_BASELINE_PATH:-${RUN_OUTPUT_DIR}}"
 RUN_OVERSAMPLE_BASELINE="${RUN_OVERSAMPLE_BASELINE:-1}"
 OVERSAMPLE_SUBSAMPLE_K="${OVERSAMPLE_SUBSAMPLE_K:-${SUBSET_K}}"
+STANDALONE_JOB="${STANDALONE_JOB:-1}"
 EXTRA_ARGS=("$@")
 CFG_VALUES=(1.0 1.25 1.5 1.75 2.0 2.25 2.5 2.75 3.0)
 
@@ -49,6 +50,7 @@ run_experiments() {
     n_groups="${SUBSET_K}" \
     group_size="${GROUP_SIZE}" \
     transversal=True \
+    standalone_job="${STANDALONE_JOB}" \
     eval_selection_metric=ppl \
     comment="d5p4 cfg collapse truthfulqa sweep cfgs=${cfg_csv}" \
     "${EXTRA_ARGS[@]}"
@@ -90,6 +92,7 @@ if [[ "${RUN_OVERSAMPLE_BASELINE}" == "1" ]]; then
       qa_dataset_len="${QA_DATASET_LEN}" \
       n_groups="${SUBSET_K}" \
       group_size=1 \
+      standalone_job="${STANDALONE_JOB}" \
       subsample_k="${OVERSAMPLE_SUBSAMPLE_K}" \
       2>&1 | tee "${oversample_log_path}"
 fi

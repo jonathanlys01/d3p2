@@ -18,13 +18,12 @@ from datetime import datetime
 import numpy as np
 import torch
 
-import idr_torch
 from d5p4 import utils
 from d5p4.config import RESULTS_DIR, Config
 from d5p4.data.qa import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
-from d5p4.utils import compile_model, seed_all
+from d5p4.utils import compile_model, is_primary_process, seed_all
 from d5p4.utils import print as u_print
 
 
@@ -113,7 +112,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
             wd_bad_scores.append(wd_bad)
 
         # Only Rank 0 computes and prints metrics
-        if idr_torch.rank == 0:
+        if is_primary_process(iter_cfg):
             # Compute all metrics for this CFG value
             metrics = evaluator.evaluate(all_generations, references=all_good_refs)
 
@@ -163,7 +162,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     torch.cuda.empty_cache()
 
     # Summary table (Rank 0 only)
-    if idr_torch.rank == 0 and len(cfg_values) > 1:
+    if is_primary_process(cfg) and len(cfg_values) > 1:
         u_print(f"\n{'=' * 105}")
         u_print("SUMMARY: CFG vs All Metrics")
         u_print(f"{'=' * 105}")
@@ -190,7 +189,7 @@ def main():
     results = run_cfg_experiment(cfg)
 
     # Save results (Rank 0 only)
-    if idr_torch.rank == 0:
+    if is_primary_process(cfg):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         cfg_suffix = f"_cfg{cfg.cfg_scale:.2f}" if cfg.cfg_scale != 0.0 else "_sweep"
         save_path = f"{RESULTS_DIR}/cfg_exp_{timestamp}{cfg_suffix}.json"

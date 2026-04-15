@@ -52,7 +52,13 @@ class LLADASampler(nn.Module):
     def update_config(self, config: Config):
         """Update model and selector config (for reusing model across sweep trials)."""
         configure_runtime(config)
-        rebuild_selector = config.method != self.config.method
+        rebuild_selector = (
+            config.method != self.config.method
+            or config.n_groups != self.config.n_groups
+            or config.group_size != self.config.group_size
+            or config.transversal != self.config.transversal
+            or config.standalone_job != self.config.standalone_job
+        )
         self.config = config
         if rebuild_selector:
             self.selector = get_subsample_selector(config)
