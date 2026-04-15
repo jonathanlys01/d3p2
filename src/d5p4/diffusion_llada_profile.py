@@ -9,6 +9,7 @@ This keeps the production sampler untouched and exposes profiler scopes around:
 - token transfer / state updates
 """
 
+import math
 from contextlib import nullcontext
 
 import torch
@@ -20,6 +21,88 @@ from d5p4.config import Cache, Config
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from d5p4.subsample import get_subsample_selector
 from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
+
+
+CUDA_TIMING_SCOPE_ORDER = [
+    "llada.block_transfer_plan",
+    "llada.guidance",
+    "llada.forward_pass",
+    "llada.log_softmax",
+    "llada.selection.slice",
+    "llada.selection.expand",
+    "llada.sampling",
+    "llada.selection.confidence",
+    "llada.selection.mask",
+    "llada.selection.transfer",
+    "llada.state_update",
+]
+
+
+class CUDAScopeTimer:
+    def __init__(self):
+        self.enabled = torch.cuda.is_available()
+        self._events: dict[str, list[tuple[torch.cuda.Event, torch.cuda.Event]]] = {
+            name: [] for name in CUDA_TIMING_SCOPE_ORDER
+        }
+
+    def set_enabled(self, enabled: bool = True):
+        self.enabled = enabled and torch.cuda.is_available()
+
+    def reset(self):
+        self._events = {name: [] for name in CUDA_TIMING_SCOPE_ORDER}
+
+    def scope(self, name: str):
+        if not self.enabled or name not in self._events:
+            return nullcontext()
+        return _CUDAScopeTimerContext(self._events[name])
+
+    def summarize(self) -> list[dict[str, float | int | str]]:
+        if not self.enabled:
+            return []
+
+        torch.cuda.synchronize()
+        summary = []
+        for name in CUDA_TIMING_SCOPE_ORDER:
+            durations_ms = [start.elapsed_time(end) for start, end in self._events[name]]
+            count = len(durations_ms)
+            if count == 0:
+                continue
+
+            avg_ms = sum(durations_ms) / count
+            if count > 1:
+                variance = sum((value - avg_ms) ** 2 for value in durations_ms) / (count - 1)
+                stderr_ms = math.sqrt(variance) / math.sqrt(count)
+            else:
+                stderr_ms = 0.0
+
+            summary.append(
+                {
+                    "name": name,
+                    "count": count,
+                    "avg_ms": avg_ms,
+                    "stderr_ms": stderr_ms,
+                    "avg_us": avg_ms * 1000.0,
+                    "stderr_us": stderr_ms * 1000.0,
+                },
+            )
+
+        return summary
+
+
+class _CUDAScopeTimerContext:
+    def __init__(self, sink: list[tuple[torch.cuda.Event, torch.cuda.Event]]):
+        self.sink = sink
+        self.start = torch.cuda.Event(enable_timing=True)
+        self.end = torch.cuda.Event(enable_timing=True)
+
+    def __enter__(self):
+        self.start.record()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.end.record()
+        self.sink.append((self.start, self.end))
+        return False
 
 
 class LLADAProfilerSampler(nn.Module):
@@ -47,6 +130,7 @@ class LLADAProfilerSampler(nn.Module):
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
         self.enable_profiling_scopes = False
+        self.cuda_timer = CUDAScopeTimer()
 
     def update_config(self, config: Config):
         configure_runtime(config)
@@ -55,6 +139,15 @@ class LLADAProfilerSampler(nn.Module):
 
     def set_profiling_scopes(self, enabled: bool = True):
         self.enable_profiling_scopes = enabled
+
+    def set_cuda_timing(self, enabled: bool = True):
+        self.cuda_timer.set_enabled(enabled)
+
+    def reset_cuda_timing(self):
+        self.cuda_timer.reset()
+
+    def summarize_cuda_timing(self) -> list[dict[str, float | int | str]]:
+        return self.cuda_timer.summarize()
 
     def _scope(self, name: str):
         if not self.enable_profiling_scopes:
@@ -188,7 +281,7 @@ class LLADAProfilerSampler(nn.Module):
                 end = prompt_len + (num_block + 1) * self.config.block_length
                 block_mask_index = x[:, start:end] == self.mask_index
 
-                with self._scope("llada.block_transfer_plan"):
+                with self._scope("llada.block_transfer_plan"), self.cuda_timer.scope("llada.block_transfer_plan"):
                     num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
 
                 step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
@@ -202,7 +295,7 @@ class LLADAProfilerSampler(nn.Module):
                         )
 
                         if apply_cfg:
-                            with self._scope("llada.guidance"):
+                            with self._scope("llada.guidance"), self.cuda_timer.scope("llada.guidance"):
                                 un_x = x.clone()
                                 un_x[prompt_index] = self.mask_index
                                 x_ = torch.cat([x, un_x], dim=0)
@@ -215,14 +308,14 @@ class LLADAProfilerSampler(nn.Module):
 
                                 logits = uncond_logits + self.config.cfg_scale * (cond_logits - uncond_logits)
                         else:
-                            with self._scope("llada.forward_pass"):
+                            with self._scope("llada.forward_pass"), self.cuda_timer.scope("llada.forward_pass"):
                                 logits, out = self._forward_model(x)
                                 embeddings = out[-1]
 
                         if self.config.logits_eos_inf:
                             logits[:, :, 126081] = -torch.inf
 
-                        with self._scope("llada.log_softmax"):
+                        with self._scope("llada.log_softmax"), self.cuda_timer.scope("llada.log_softmax"):
                             log_p_x0 = F.log_softmax(logits, dim=-1)
 
                         cache = Cache(
@@ -230,7 +323,7 @@ class LLADAProfilerSampler(nn.Module):
                             embeddings=embeddings[:, start:end],
                             x=x[:, start:end],
                         )
-                        with self._scope("llada.selection.slice"):
+                        with self._scope("llada.selection.slice"), self.cuda_timer.scope("llada.selection.slice"):
                             subsample_step, slice_idx = self._get_slice(step, cache)
 
                         assert slice_idx is not None
@@ -239,7 +332,7 @@ class LLADAProfilerSampler(nn.Module):
                             logits_to_sample = torch.index_select(log_p_x0, 0, slice_idx)
 
                         if subsample_step:
-                            with self._scope("llada.selection.expand"):
+                            with self._scope("llada.selection.expand"), self.cuda_timer.scope("llada.selection.expand"):
                                 expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
                                 x = torch.index_select(x, 0, expanded_idx)
                                 log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
@@ -251,17 +344,20 @@ class LLADAProfilerSampler(nn.Module):
                                     f"Expanded batch size mismatch: {x.size(0)} != {self.config.batch_size}"
                                 )
 
-                        with self._scope("llada.sampling"):
+                        with self._scope("llada.sampling"), self.cuda_timer.scope("llada.sampling"):
                             x0 = self._block_sample(logits_to_sample, subsample_step)
 
-                        with self._scope("llada.selection.confidence"):
+                        with (
+                            self._scope("llada.selection.confidence"),
+                            self.cuda_timer.scope("llada.selection.confidence"),
+                        ):
                             x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
 
-                        with self._scope("llada.selection.mask"):
+                        with self._scope("llada.selection.mask"), self.cuda_timer.scope("llada.selection.mask"):
                             x0 = torch.where(mask_index, x0, x)
                             confidence = torch.where(mask_index, x0_p, -torch.inf)
 
-                        with self._scope("llada.selection.transfer"):
+                        with self._scope("llada.selection.transfer"), self.cuda_timer.scope("llada.selection.transfer"):
                             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                             for j in range(x.shape[0]):
                                 k = int(num_transfer_tokens[j, step].item())
@@ -290,7 +386,7 @@ class LLADAProfilerSampler(nn.Module):
 
                                 transfer_index[j, select_index] = True
 
-                        with self._scope("llada.state_update"):
+                        with self._scope("llada.state_update"), self.cuda_timer.scope("llada.state_update"):
                             x[transfer_index] = x0[transfer_index]
 
             if self.distributed_utils:

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 import uuid
 from dataclasses import asdict
@@ -27,26 +26,8 @@ from torch.profiler import ProfilerActivity, profile, record_function
 
 from d5p4.config import RESULTS_DIR, Config
 from d5p4.data import get_qa_dataset
-from d5p4.diffusion_llada_profile import LLADAProfilerSampler
+from d5p4.diffusion_llada_profile import CUDA_TIMING_SCOPE_ORDER, LLADAProfilerSampler
 from d5p4.utils import compile_model, print, seed_all
-
-
-ANNOTATED_SCOPE_ORDER = [
-    "llada.block_transfer_plan",
-    "llada.diffusion_step",
-    "llada.guidance",
-    "llada.forward_pass",
-    "llada.model_forward",
-    "llada.log_softmax",
-    "llada.selection.slice",
-    "llada.selection.index",
-    "llada.selection.expand",
-    "llada.sampling",
-    "llada.selection.confidence",
-    "llada.selection.mask",
-    "llada.selection.transfer",
-    "llada.state_update",
-]
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -69,6 +50,12 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         type=str,
         default=None,
         help="Optional run name. Shared across ranks when distributed.",
+    )
+    parser.add_argument(
+        "--save-trace",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Export the Chrome trace JSON. Disabled by default to avoid large output files.",
     )
     parser.add_argument("--warmup-runs", type=int, default=1, help="Unprofiled runs before tracing.")
     parser.add_argument("--profile-runs", type=int, default=1, help="Profiled runs to include in the trace.")
@@ -171,76 +158,18 @@ def save_metadata(output_dir: Path, metadata: dict, rank: int):
         json.dump(metadata, f, indent=2)
 
 
-def _get_event_name(event) -> str | None:
-    for attr in ("name", "key"):
-        value = getattr(event, attr, None)
-        if isinstance(value, str):
-            return value
-    return None
-
-
-def _get_gpu_time_us(event) -> float | None:
-    for attr in ("device_time_total", "cuda_time_total"):
-        value = getattr(event, attr, None)
-        if value is None:
-            continue
-        if callable(value):
-            value = value()
-        if value is None:
-            continue
-        value = float(value)
-        if value > 0:
-            return value
-    return None
-
-
-def summarize_gpu_wall_clock(prof) -> list[dict[str, float | int | str]]:
-    samples: dict[str, list[float]] = {name: [] for name in ANNOTATED_SCOPE_ORDER}
-
-    for event in prof.events():
-        name = _get_event_name(event)
-        if name not in samples:
-            continue
-
-        gpu_time_us = _get_gpu_time_us(event)
-        if gpu_time_us is None:
-            continue
-
-        assert name
-        samples[name].append(gpu_time_us)
-
-    summary = []
-    for name in ANNOTATED_SCOPE_ORDER:
-        values = samples[name]
-        count = len(values)
-        if count == 0:
-            continue
-
-        avg_us = sum(values) / count
-        if count > 1:
-            variance = sum((value - avg_us) ** 2 for value in values) / (count - 1)
-            stderr_us = math.sqrt(variance) / math.sqrt(count)
-        else:
-            stderr_us = 0.0
-
-        summary.append(
-            {
-                "name": name,
-                "count": count,
-                "avg_us": avg_us,
-                "avg_ms": avg_us / 1000.0,
-                "stderr_us": stderr_us,
-                "stderr_ms": stderr_us / 1000.0,
-            },
-        )
-
-    return summary
-
-
 def print_wall_clock_summary(summary: list[dict[str, float | int | str]]):
-    print("Average GPU time per annotated scope (rank 0)")
-    for row in summary:
-        print((f"  {row['name']}: {row['avg_ms']:.3f} +- {row['stderr_ms']:.3f} ms over {row['count']} calls"))
+    print("Average isolated GPU time per annotated scope (rank 0):", force=True)
+    seen = {str(row["name"]) for row in summary}
+
+    for name in CUDA_TIMING_SCOPE_ORDER:
+        if name not in seen:
+            continue
+        row = next(row for row in summary if row["name"] == name)
+        print(
+            f"  {row['name']}: {row['avg_ms']:.3f} +- {row['stderr_ms']:.3f} ms over {row['count']} calls",
+            force=True,
+        )
 
 
 def main():
@@ -252,6 +181,7 @@ def main():
     seed_all(config.seed + offset)
 
     sampler.set_profiling_scopes(True)
+    sampler.set_cuda_timing(torch.cuda.is_available())
     sampler.model = compile_model(sampler.model, config, dynamic=True)
 
     prompt = resolve_prompt(config, args.prompt, args.prompt_index)
@@ -267,6 +197,8 @@ def main():
         with record_function(f"llada.warmup_{warmup_idx}"):
             _ = sampler.sample(prompt)
             sync_device()
+
+    sampler.reset_cuda_timing()
 
     activities = [ProfilerActivity.CPU]
     if torch.cuda.is_available():
@@ -285,7 +217,7 @@ def main():
                 sync_device()
 
     if offset == 0:
-        summary = summarize_gpu_wall_clock(prof)
+        summary = sampler.summarize_cuda_timing()
         print_wall_clock_summary(summary)
         prof.export_chrome_trace(str(trace_path))
         save_metadata(
@@ -293,10 +225,11 @@ def main():
             {
                 "rank": offset,
                 "prompt": prompt,
-                "trace_path": str(trace_path),
+                "trace_path": str(trace_path) if args.save_trace else None,
                 "scope_wall_clock_summary": summary,
                 "config": asdict(config),
                 "profiler_args": {
+                    "save_trace": args.save_trace,
                     "warmup_runs": args.warmup_runs,
                     "profile_runs": args.profile_runs,
                     "steps_per_block": args.steps_per_block,
@@ -309,7 +242,9 @@ def main():
             },
             offset,
         )
-        print(f"Saved trace to {trace_path}")
+        if args.save_trace:
+            prof.export_chrome_trace(str(trace_path))
+            print(f"Saved trace to {trace_path}")
 
     if sampler.distributed_utils:
         sampler.distributed_utils.cleanup()
