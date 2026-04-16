@@ -88,6 +88,7 @@ fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
+known-third-party = ["idr_torch"]
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
