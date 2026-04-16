@@ -7,7 +7,6 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 
 RUN_RESULTS_SUBDIR="${RUN_RESULTS_SUBDIR:-${SCRIPT_NAME}}"
 RUN_OUTPUT_DIR="${ROOT}/results/${RUN_RESULTS_SUBDIR}"
-WORK_DIR="${ROOT}/.scripts_next_work/${RUN_RESULTS_SUBDIR}"
 
 NPROC="${NPROC:-1}"
 QA_DATASET="gsm8k"
@@ -53,6 +52,7 @@ INDEP_N_GROUPS_PER_GPU=$((INDEP_N_GROUPS / WORLD_SIZE))
 COMMON_ARGS=(
   --config="${SRC_ROOT}/_default.yaml"
   cache_dir="${ROOT}/.cache"
+  results_dir="${RUN_OUTPUT_DIR}"
   minimal_log=true
   model=llada
   qa_dataset="${QA_DATASET}"
@@ -69,10 +69,9 @@ COMMON_ARGS=(
   confidence_eos_eot_inf="${CONFIDENCE_EOS_EOT_INF}"
 )
 
-mkdir -p "${RUN_OUTPUT_DIR}" "${WORK_DIR}" "${ROOT}/.cache"
-ln -sfn "${RUN_OUTPUT_DIR}" "${WORK_DIR}/results"
+mkdir -p "${RUN_OUTPUT_DIR}" "${ROOT}/.cache"
 
-cd "${WORK_DIR}"
+cd "${ROOT}"
 export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 

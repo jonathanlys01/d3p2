@@ -7,7 +7,6 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 
 RUN_RESULTS_SUBDIR="${RUN_RESULTS_SUBDIR:-${SCRIPT_NAME}}"
 RUN_OUTPUT_DIR="${ROOT}/results/${RUN_RESULTS_SUBDIR}"
-WORK_DIR="${ROOT}/.scripts_next_work/${RUN_RESULTS_SUBDIR}"
 
 QA_DATASET="ai2_arc"
 QA_DATASET_LEN="${QA_DATASET_LEN:-500}"
@@ -20,16 +19,17 @@ PARTIAL_GUIDANCE_END="${PARTIAL_GUIDANCE_END:-64}"
 COMMON_ARGS=(
   --config="${SRC_ROOT}/_default.yaml"
   cache_dir="${ROOT}/.cache"
+  results_dir="${RUN_OUTPUT_DIR}"
   minimal_log=true
+  standalone_job=true
   model=llada
   qa_dataset="${QA_DATASET}"
   qa_dataset_len="${QA_DATASET_LEN}"
 )
 
-mkdir -p "${RUN_OUTPUT_DIR}" "${WORK_DIR}" "${ROOT}/.cache"
-ln -sfn "${RUN_OUTPUT_DIR}" "${WORK_DIR}/results"
+mkdir -p "${RUN_OUTPUT_DIR}" "${ROOT}/.cache"
 
-cd "${WORK_DIR}"
+cd "${ROOT}"
 export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 

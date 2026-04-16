@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from d5p4 import utils
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.diffusion_mdlm import MDLMSampler
 from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, seed_all
@@ -112,8 +112,8 @@ def run_entropy_sweep(cfg: Config) -> dict:
 
 def _save_results(cfg: Config, sweep_results: dict) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    output_path = os.path.join(RESULTS_DIR, f"mdlm_entropy_sweep_{timestamp}.json")
+    os.makedirs(cfg.results_dir, exist_ok=True)
+    output_path = os.path.join(cfg.results_dir, f"mdlm_entropy_sweep_{timestamp}.json")
 
     with open(output_path, "w") as f:
         json.dump(

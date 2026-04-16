@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from d5p4 import utils
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.data.qa import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
@@ -192,8 +192,8 @@ def main():
     if is_primary_process(cfg):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         cfg_suffix = f"_cfg{cfg.cfg_scale:.2f}" if cfg.cfg_scale != 0.0 else "_sweep"
-        save_path = f"{RESULTS_DIR}/cfg_exp_{timestamp}{cfg_suffix}.json"
-        os.makedirs(RESULTS_DIR, exist_ok=True)
+        save_path = os.path.join(cfg.results_dir, f"cfg_exp_{timestamp}{cfg_suffix}.json")
+        os.makedirs(cfg.results_dir, exist_ok=True)
 
         with open(save_path, "w") as f:
             json.dump(

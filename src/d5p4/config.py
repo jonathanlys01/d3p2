@@ -118,6 +118,7 @@ class Config:
 
     # cache
     cache_dir: str = CACHE_DIR
+    results_dir: str = RESULTS_DIR
 
     # optuna
     n_trials: int = 100  # number of Optuna trials for hyperparameter sweeps

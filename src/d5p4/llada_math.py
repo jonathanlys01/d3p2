@@ -12,7 +12,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.data.math_ds import gsm8k
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import MathEvaluator
@@ -26,8 +26,8 @@ def save(results: dict, config: Config, uid: uuid.UUID, rank: int = 0) -> None:
         "config": asdict(config),
     }
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{uid}"
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
+    os.makedirs(config.results_dir, exist_ok=True)
+    with open(os.path.join(config.results_dir, f"{name}.json"), "w") as f:
         json.dump(payload, f, indent=4)
 
 
@@ -123,16 +123,16 @@ def main() -> None:  # noqa: PLR0912, PLR0915
 
     if model.distributed_utils is None or model.distributed_utils.rank == 0:
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        out_path = f"{RESULTS_DIR}/math-{name}.json"
+        os.makedirs(config.results_dir, exist_ok=True)
+        out_path = os.path.join(config.results_dir, f"math-{name}.json")
         with open(out_path, "w") as f:
             json.dump(payload, f, indent=4)
         print(f"Saved results to {out_path}")
 
     # Clean up temp files
-    for file in os.listdir(RESULTS_DIR):
+    for file in os.listdir(config.results_dir):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
-            os.remove(os.path.join(RESULTS_DIR, file))
+            os.remove(os.path.join(config.results_dir, file))
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

@@ -24,7 +24,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from d5p4.config import RESULTS_DIR, Cache, Config
+from d5p4.config import Cache, Config
 from d5p4.data.qa import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
@@ -61,9 +61,9 @@ def _parse_float_list_env(env_name: str, default: list[float]) -> list[float]:
     return parsed or default
 
 
-def _get_results_output_dir() -> str:
+def _get_results_output_dir(cfg: Config) -> str:
     subdir = os.getenv("CFG_COLLAPSE_RESULTS_SUBDIR", "cfg_collapse_truthfulqa").strip().strip("/")
-    return os.path.join(RESULTS_DIR, subdir) if subdir else RESULTS_DIR
+    return os.path.join(cfg.results_dir, subdir) if subdir else cfg.results_dir
 
 
 def _sanitize_path_component(value: str) -> str:
@@ -418,7 +418,7 @@ def run_cfg_collapse_experiment(cfg: Config, cfg_values: list[float] | None = No
         dataset = dataset.head(cfg.qa_dataset_len)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = _get_results_output_dir()
+    output_dir = _get_results_output_dir(cfg)
     standard_export_dir = os.path.join(output_dir, "standard_exports")
     cfg_tag = f"{cfg_values[0]:g}-{cfg_values[-1]:g}" if cfg_values else "empty"
     output_path = os.path.join(output_dir, f"cfg_collapse_truthfulqa_{cfg_tag}_{timestamp}.json")

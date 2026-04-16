@@ -2,7 +2,7 @@ import json
 import os
 from dataclasses import fields
 
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.eval_core import Evaluator
 
@@ -98,7 +98,7 @@ if __name__ == "__main__":
         cos_model_id=config.cos_model_id,
     )
 
-    path = os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", RESULTS_DIR))
+    path = os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", config.results_dir))
     if not os.path.isdir(path):
         raise FileNotFoundError(f"OVERSAMPLE_BASELINE_PATH does not exist: {path}")
 

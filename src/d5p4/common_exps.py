@@ -17,7 +17,7 @@ from optuna import Study
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.diffusion_mdlm import MDLMSampler
 from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, print, seed_all
@@ -52,8 +52,8 @@ def _save(text, eval_text, config, uid, rank=0):
     }
 
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
+    os.makedirs(config.results_dir, exist_ok=True)
+    with open(os.path.join(config.results_dir, f"{name}.json"), "w") as f:
         json.dump(samples, f, indent=4)
 
 
@@ -108,13 +108,13 @@ def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: E
     master = model.distributed_utils is None or model.distributed_utils.rank == 0
     if master:
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        with open(f"{RESULTS_DIR}/exp-{name}.json", "w") as f:
+        os.makedirs(config.results_dir, exist_ok=True)
+        with open(os.path.join(config.results_dir, f"exp-{name}.json"), "w") as f:
             json.dump(samples, f, indent=4)
 
-    for file in os.listdir(RESULTS_DIR):
+    for file in os.listdir(config.results_dir):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
-            os.remove(os.path.join(RESULTS_DIR, file))
+            os.remove(os.path.join(config.results_dir, file))
 
     return unique_id, master
 
@@ -142,9 +142,9 @@ def eval_samples(
 
     metrics = {}
     # Evaluation expects the result file to exist
-    for file in os.listdir(RESULTS_DIR):
+    for file in os.listdir(config.results_dir):
         if file.endswith(f"{unique_id}.json"):
-            file_path = os.path.join(RESULTS_DIR, file)
+            file_path = os.path.join(config.results_dir, file)
             metrics = evaluator.eval_from_file(file_path, references=references)
 
     return metrics

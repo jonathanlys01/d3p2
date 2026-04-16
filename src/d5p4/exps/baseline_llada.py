@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from d5p4.common_exps import eval_samples
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
@@ -24,8 +24,8 @@ def save(text, eval_text, config, uid, rank=0):
     }
 
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(f"{RESULTS_DIR}/{name}.json", "w") as f:
+    os.makedirs(config.results_dir, exist_ok=True)
+    with open(os.path.join(config.results_dir, f"{name}.json"), "w") as f:
         json.dump(samples, f, indent=4)
 
 
@@ -100,16 +100,16 @@ def main():  # noqa: C901, PLR0915
 
     if model.distributed_utils is None or model.distributed_utils.rank == 0:  # save on master only (or non-distributed)
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        output_path = f"{RESULTS_DIR}/exp-{name}.json"
+        os.makedirs(config.results_dir, exist_ok=True)
+        output_path = os.path.join(config.results_dir, f"exp-{name}.json")
         with open(output_path, "w") as f:
             json.dump(samples, f, indent=4)
         print(f"OUTPUT_PATH:{output_path}")
 
     # Cleanup temp files
-    for file in os.listdir(RESULTS_DIR):
+    for file in os.listdir(config.results_dir):
         if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
-            os.remove(os.path.join(RESULTS_DIR, file))
+            os.remove(os.path.join(config.results_dir, file))
 
     # Evaluate samples on master only
     if model.distributed_utils is None or model.distributed_utils.rank == 0:

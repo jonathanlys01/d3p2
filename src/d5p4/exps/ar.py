@@ -18,7 +18,7 @@ import torch
 
 from d5p4 import utils
 from d5p4.autoregressive import AutoregressiveSampler
-from d5p4.config import RESULTS_DIR, Config
+from d5p4.config import Config
 from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, seed_all
 from d5p4.utils import print as u_print
@@ -143,8 +143,8 @@ def main():
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"_interaction{cfg._w_interaction:.4f}" if cfg._w_interaction != 0.0 else "_sweep"
-    save_path = f"{RESULTS_DIR}/ar_interaction_{timestamp}{suffix}.json"
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    save_path = os.path.join(cfg.results_dir, f"ar_interaction_{timestamp}{suffix}.json")
+    os.makedirs(cfg.results_dir, exist_ok=True)
 
     with open(save_path, "w") as f:
         json.dump(

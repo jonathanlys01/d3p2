@@ -31,6 +31,7 @@ data_path: ${env_path_or:WORK,projects/nanoGPT-but-looped/src/data/fineweb-edu/v
 
 seed: 42
 cache_dir: ./.cache
+results_dir: results
 n_runs: 8
 qa_dataset_len: -1  # number of QA samples to use (-1 for all)
 eval_batch_size: 8  # batch size for evaluation (low to avoid OOM with llama 8B)
