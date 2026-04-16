@@ -74,6 +74,7 @@ mkdir -p "${RUN_OUTPUT_DIR}" "${ROOT}/.cache"
 cd "${ROOT}"
 export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export PYTHONUNBUFFERED=1
 
 echo "WORLD_SIZE=${WORLD_SIZE}"
 echo "Grouped runs total groups=${N_GROUPS}, per-rank groups=${N_GROUPS_PER_GPU}"

@@ -8,14 +8,10 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-import torch
-import torch.nn.functional as F
-
-from d5p4.config import Cache, Config
+from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
-from d5p4.subsample.base import _compute_scores
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -48,39 +44,6 @@ def save(  # noqa: PLR0913
         json.dump(samples, f, indent=4)
 
 
-def _final_step_uses_cfg(config: Config) -> bool:
-    num_blocks = config.gen_length // config.block_length
-    steps_per_block = config.llada_steps // num_blocks
-    final_step = steps_per_block - 1
-    guidance_end = config.llada_steps if config.guidance_end == -1 else config.guidance_end
-    return config.cfg_scale != 1.0 and config.guidance_start <= final_step < guidance_end
-
-
-def _compute_final_internal_scores(model: LLADASampler, samples: torch.Tensor, prompt_len: int) -> list[float]:
-    sample_ids = samples.to(model.device)
-
-    with torch.no_grad():
-        if _final_step_uses_cfg(model.config):
-            uncond_ids = sample_ids.clone()
-            uncond_ids[:, :prompt_len] = model.mask_index
-            logits_all, _ = model._forward_model(torch.cat([sample_ids, uncond_ids], dim=0))
-            cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
-            logits = uncond_logits + model.config.cfg_scale * (cond_logits - uncond_logits)
-        else:
-            logits, _ = model._forward_model(sample_ids)
-
-        if model.config.logits_eos_inf:
-            logits[:, :, 126081] = -torch.inf
-
-        cache = Cache(
-            log_p_x0=F.log_softmax(logits[:, prompt_len:], dim=-1),
-            x=sample_ids[:, prompt_len:],
-        )
-        scores = _compute_scores(cache, model.config._score_method, model=model.config.model)
-
-    return [float(score) for score in scores.detach().cpu().tolist()]
-
-
 def _select_group_representatives(
     texts: list[str],
     scores: list[float],
@@ -107,7 +70,7 @@ def _select_group_representatives(
     return selected_texts, selected_indices
 
 
-def main():  # noqa: C901, PLR0915
+def main():  # noqa: C901, PLR0912, PLR0915
     config = Config()
 
     model = LLADASampler(config)
@@ -138,7 +101,12 @@ def main():  # noqa: C901, PLR0915
 
     for i, prompt in enumerate(prompts):
         print(f"Sampling batch {i + 1}/{len(prompts)}...", progress=True)
-        samples = model.sample(prompt=prompt)
+        if use_internal_representatives:
+            samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
+        else:
+            samples = model.sample(prompt=prompt)
+            internal_scores = None
+
         prompt_tokens = model._preprocess_prompt(prompt)
         prompt_len = prompt_tokens.shape[1]
         texts_ = []
@@ -149,7 +117,8 @@ def main():  # noqa: C901, PLR0915
 
         texts.append(texts_)
         if use_internal_representatives and master:
-            scores = _compute_final_internal_scores(model, samples, prompt_len)
+            assert internal_scores is not None
+            scores = [float(score) for score in internal_scores.detach().cpu().tolist()]
             eval_texts_, selected_indices = _select_group_representatives(texts_, scores, config.group_size)
             eval_texts.append(eval_texts_)
             eval_internal_scores.append(scores)
@@ -192,7 +161,7 @@ def main():  # noqa: C901, PLR0915
         samples["eval_selected_indices"] = eval_selected_indices
         samples["eval_selection"] = {
             "method": "final_internal_signal",
-            "score_method": config._score_method,
+            "score_method": "final_step_mean_token_logprob",
             "group_size": config.group_size,
         }
     if metrics is not None:

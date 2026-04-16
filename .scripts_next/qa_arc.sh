@@ -22,6 +22,9 @@ COMMON_ARGS=(
   results_dir="${RUN_OUTPUT_DIR}"
   minimal_log=true
   standalone_job=true
+  llada_steps= 128
+  gen_length=128
+  block_length=128
   model=llada
   qa_dataset="${QA_DATASET}"
   qa_dataset_len="${QA_DATASET_LEN}"
@@ -32,6 +35,7 @@ mkdir -p "${RUN_OUTPUT_DIR}" "${ROOT}/.cache"
 cd "${ROOT}"
 export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export PYTHONUNBUFFERED=1
 
 # Indep
 python \

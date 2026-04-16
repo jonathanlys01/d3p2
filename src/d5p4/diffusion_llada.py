@@ -160,7 +160,15 @@ class LLADASampler(nn.Module):
         x0_p[:, prompt_len + (num_block + 1) * self.config.block_length :] = -torch.inf
         return x0_p
 
-    def sample(self, prompt: str):  # noqa: C901, PLR0912, PLR0915
+    @staticmethod
+    def _score_final_step_sequences(log_p_x0: torch.Tensor, x0: torch.Tensor, prompt_len: int) -> torch.Tensor:
+        generation_log_p = log_p_x0[:, prompt_len:].float()
+        generation_ids = x0[:, prompt_len:].unsqueeze(-1)
+        token_log_p = torch.gather(generation_log_p, dim=-1, index=generation_ids).squeeze(-1)
+        token_log_p = torch.nan_to_num(token_log_p, nan=-1e9, neginf=-1e9, posinf=0.0)
+        return token_log_p.mean(dim=-1)
+
+    def sample(self, prompt: str, return_internal_scores: bool = False):  # noqa: C901, PLR0912, PLR0915
         with torch.no_grad():
             num_blocks = self.config.gen_length // self.config.block_length
             steps = self.config.llada_steps // num_blocks
@@ -188,6 +196,7 @@ class LLADASampler(nn.Module):
             # When there's only one block, show progress for steps instead
             single_block = num_blocks == 1
             block_iter = range(num_blocks) if single_block else tqdm(range(num_blocks), desc="Blocks", disable=disable)
+            final_internal_scores = None
 
             for num_block in block_iter:
                 start = prompt_len + num_block * self.config.block_length
@@ -198,6 +207,7 @@ class LLADASampler(nn.Module):
 
                 step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
                 for step in step_iter:
+                    is_final_generation_step = num_block == num_blocks - 1 and step == steps - 1
                     mask_index = x == self.mask_index
 
                     # Apply CFG only if step is within the guidance range
@@ -257,9 +267,13 @@ class LLADASampler(nn.Module):
                     x0 = self._block_sample(logits_to_sample, subsample_step)
 
                     # Pass log_probs to _get_confidence
+                    candidate_x0 = torch.where(mask_index, x0, x)
+                    if is_final_generation_step and return_internal_scores:
+                        final_internal_scores = self._score_final_step_sequences(log_p_x0, candidate_x0, prompt_len)
+
                     x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
 
-                    x0 = torch.where(mask_index, x0, x)
+                    x0 = candidate_x0
                     confidence = torch.where(mask_index, x0_p, -torch.inf)
 
                     transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
@@ -293,6 +307,14 @@ class LLADASampler(nn.Module):
 
             if self.distributed_utils:
                 x = self.distributed_utils.all_gather_sequences(x)
+                if return_internal_scores:
+                    assert final_internal_scores is not None
+                    gathered_scores = self.distributed_utils.all_gather_sequences(final_internal_scores.unsqueeze(1))
+                    final_internal_scores = gathered_scores.squeeze(1)
+
+            if return_internal_scores:
+                assert final_internal_scores is not None
+                return x, final_internal_scores
 
             return x
 

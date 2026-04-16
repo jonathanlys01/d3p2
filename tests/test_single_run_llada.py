@@ -1,12 +1,50 @@
 import os
 import sys
 import unittest
+from types import MethodType, SimpleNamespace
+
+import torch
+from torch import nn
 
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from d5p4.config import Config
-from d5p4.single_run_llada import _final_step_uses_cfg, _select_group_representatives
+from d5p4.diffusion_llada import LLADASampler
+from d5p4.single_run_llada import _select_group_representatives
+
+
+MASK_INDEX = 99
+PROMPT_TOKENS = torch.tensor([[7]], dtype=torch.long)
+VOCAB_SIZE = 3
+
+
+def _build_test_sampler(config: Config) -> LLADASampler:
+    sampler = LLADASampler.__new__(LLADASampler)
+    nn.Module.__init__(sampler)
+    sampler.config = config
+    sampler.device = "cpu"
+    sampler.mask_index = MASK_INDEX
+    sampler.sequence_length = PROMPT_TOKENS.shape[1] + config.gen_length
+    sampler.selector = SimpleNamespace(distributed_utils=None)
+    sampler.distributed_utils = None
+    sampler.forward_calls = 0
+
+    def _preprocess_prompt(_self, prompt: str) -> torch.Tensor:
+        del prompt
+        return PROMPT_TOKENS.clone()
+
+    def _forward_model(self, x: torch.Tensor):
+        self.forward_calls += 1
+        logits = torch.zeros((x.shape[0], x.shape[1], VOCAB_SIZE), dtype=torch.float32)
+        logits[:, :, 0] = 3.0
+        logits[:, :, 1] = 1.0
+        embeddings = [torch.zeros((x.shape[0], x.shape[1], 1), dtype=torch.float32)]
+        return logits, embeddings
+
+    sampler._preprocess_prompt = MethodType(_preprocess_prompt, sampler)
+    sampler._forward_model = MethodType(_forward_model, sampler)
+    return sampler
 
 
 class TestSingleRunLlada(unittest.TestCase):
@@ -27,19 +65,31 @@ class TestSingleRunLlada(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "divisible by group_size"):
             _select_group_representatives(["a0", "a1", "b0"], [0.1, 0.2, 0.3], group_size=2)
 
-    def test_final_step_uses_cfg_handles_default_guidance_end(self):
+    def test_sample_returns_internal_scores_without_extra_forward(self):
         cfg = Config(
             disable_sys_args=True,
             model="llada",
-            cfg_scale=0.0,
-            llada_steps=128,
-            gen_length=128,
-            block_length=32,
-            guidance_start=0,
-            guidance_end=-1,
+            cfg_scale=1.0,
+            llada_steps=2,
+            gen_length=2,
+            block_length=2,
+            remasking="low_confidence",
+            cat_temperature=0.0,
+            confidence_eos_eot_inf=False,
+            logits_eos_inf=False,
+            n_groups=1,
+            group_size=2,
+            subsample_start=10,
+            subsample_end=10,
         )
+        sampler = _build_test_sampler(cfg)
 
-        self.assertTrue(_final_step_uses_cfg(cfg))
+        samples, scores = sampler.sample("prompt", return_internal_scores=True)
+
+        self.assertEqual(samples.shape, (2, PROMPT_TOKENS.shape[1] + cfg.gen_length))
+        self.assertEqual(scores.shape, (2,))
+        self.assertTrue(torch.isfinite(scores).all())
+        self.assertEqual(sampler.forward_calls, cfg.llada_steps)
 
 
 if __name__ == "__main__":
