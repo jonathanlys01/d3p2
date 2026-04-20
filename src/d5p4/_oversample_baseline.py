@@ -7,8 +7,20 @@ from d5p4.data import get_qa_dataset
 from d5p4.eval_core import Evaluator
 
 
+# - OVERSAMPLE_BASELINE_PATH: directory to scan for input JSON files.
+# - OVERSAMPLE_BASELINE_SAVE_SAMPLES: when false, omit raw and selected text
+#   samples from the output JSON and keep only metrics/metadata.
+
+
 def _stable_variant_seed(base_seed: int, variant_name: str) -> int:
     return base_seed + sum(ord(ch) for ch in variant_name)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _select_and_evaluate_baseline(  # noqa: PLR0913
@@ -97,6 +109,7 @@ if __name__ == "__main__":
         ppl_model_id=config.ppl_model_id,
         cos_model_id=config.cos_model_id,
     )
+    save_samples = _env_flag("OVERSAMPLE_BASELINE_SAVE_SAMPLES", default=True)
 
     path = os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", config.results_dir))
     if not os.path.isdir(path):
@@ -145,11 +158,12 @@ if __name__ == "__main__":
                 save_data = {
                     "config": file_config_dict,
                     "metrics": metrics,
-                    "text_samples": selected,
-                    "raw_text_samples": texts,
                     "experiment_id": data.get("experiment_id", ""),
                     "source_file": file,
                 }
+                if save_samples:
+                    save_data["text_samples"] = selected
+                    save_data["raw_text_samples"] = texts
                 out_name = f"{output_stem}-bon-{metric}.json"
                 with open(os.path.join(path, out_name), "w") as f_out:
                     json.dump(save_data, f_out, indent=4)
