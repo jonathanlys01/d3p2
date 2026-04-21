@@ -46,6 +46,7 @@ from d5p4.eval_utils import (
     compute_statistics,
 )
 from d5p4.jina_ref.modeling_bert import JinaBertModel
+from d5p4.result_schema import get_eval_text_groups, normalize_result_payload, validate_generation_result_payload
 from d5p4.text_postprocessors import MathParser, universal_math_postprocess
 from d5p4.utils import print as u_print
 from d5p4.utils import process_model_args, tqdm
@@ -779,16 +780,26 @@ class Evaluator:
         with open(file_path) as f:
             data = json.load(f)
 
+        if isinstance(data, list):
+            data = {"results": data}
+        if not isinstance(data, dict):
+            print(f"Skipping {file_path}")
+            return None
+
+        normalize_result_payload(data)
+        try:
+            validate_generation_result_payload(data, require_text_samples=False)
+        except ValueError as exc:
+            raise ValueError(f"Invalid generation result file {file_path}: {exc}") from exc
+
         metrics = data.get("metrics", None)
         if not self.force and metrics is not None:
             return
 
-        texts = data.get("eval_text_samples")
-        if texts is None:
-            texts = data.get("text_samples", None)
+        texts = get_eval_text_groups(data)
 
         if texts is None:
-            raw = data if isinstance(data, list) else data.get("results")
+            raw = data.get("results")
             if isinstance(raw, dict):
                 raw = raw.get("results")
             if isinstance(raw, list):

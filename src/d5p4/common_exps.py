@@ -20,6 +20,7 @@ from optuna.storages.journal import JournalFileBackend
 from d5p4.config import Config
 from d5p4.diffusion_mdlm import MDLMSampler
 from d5p4.eval_core import Evaluator
+from d5p4.result_schema import build_generation_result_payload
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -45,11 +46,7 @@ def _bcast(obj):
 
 
 def _save(text, eval_text, config, uid, rank=0):
-    samples = {
-        "text_samples": text,  # list of lists of strings
-        "eval_text_samples": eval_text,
-        "config": asdict(config),
-    }
+    samples = build_generation_result_payload(text_samples=text, eval_text_samples=eval_text, config=config)
 
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(config.results_dir, exist_ok=True)
@@ -99,12 +96,12 @@ def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: E
         if is_master or config.subsample_k == 0:
             _save(texts, eval_texts, config, unique_id, rank=offset)
 
-    samples = {
-        "text_samples": texts,
-        "eval_text_samples": eval_texts,
-        "config": asdict(config),
-        "experiment_id": str(unique_id),
-    }
+    samples = build_generation_result_payload(
+        text_samples=texts,
+        eval_text_samples=eval_texts,
+        config=config,
+        experiment_id=str(unique_id),
+    )
     master = model.distributed_utils is None or model.distributed_utils.rank == 0
     if master:
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"

@@ -5,21 +5,18 @@ MDLM Baseline: Generate sequences independently and select k best.
 import json
 import os
 import uuid
-from dataclasses import asdict
 from datetime import datetime
 
 from d5p4.common_exps import eval_samples
 from d5p4.config import Config
 from d5p4.diffusion_mdlm import MDLMSampler
 from d5p4.eval_core import Evaluator
+from d5p4.result_schema import build_generation_result_payload
 from d5p4.utils import compile_model, print, seed_all
 
 
 def save(text, config, uid, rank=0):
-    samples = {
-        "text_samples": text,  # list of lists of strings
-        "config": asdict(config),
-    }
+    samples = build_generation_result_payload(text_samples=text, config=config)
 
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(config.results_dir, exist_ok=True)
@@ -71,11 +68,7 @@ def main():
         texts.append(selected)
         save(texts, config, unique_id, rank=offset)
 
-    samples = {
-        "text_samples": texts,  # list of lists of strings
-        "config": asdict(config),
-        "experiment_id": str(unique_id),
-    }
+    samples = build_generation_result_payload(text_samples=texts, config=config, experiment_id=str(unique_id))
 
     if model.distributed_utils is None or model.distributed_utils.rank == 0:  # save on master only (or non-distributed)
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"

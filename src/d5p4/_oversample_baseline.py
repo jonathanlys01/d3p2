@@ -1,6 +1,7 @@
 import json
 import os
 from dataclasses import fields
+from typing import Any
 
 from d5p4.config import Config
 from d5p4.data import get_qa_dataset
@@ -23,20 +24,34 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_list(name: str) -> list[str] | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    items = [item.strip().lower() for item in value.split(",")]
+    return [item for item in items if item]
+
+
 def _select_and_evaluate_baseline(  # noqa: PLR0913
     evaluator: Evaluator,
     texts: list[list[str]],
     metric: str,
     subsample_k: int,
     references: list[list[str]] | None = None,
+    internal_scores: list[list[float]] | None = None,
     random_seed: int | None = None,
 ) -> tuple[list[list[str]], dict[str, float | str]]:
+    baseline_kwargs: dict[str, Any] = {"references": references}
+    if internal_scores is not None:
+        baseline_kwargs["internal_scores"] = internal_scores
+    if random_seed is not None:
+        baseline_kwargs["random_seed"] = random_seed
+
     selected = evaluator.evaluate_baseline(
         texts,
         metric,
         subsample_k,
-        references=references,
-        random_seed=random_seed,
+        **baseline_kwargs,
     )
     metrics = evaluator.evaluate(selected, references=references)
     return selected, metrics
@@ -65,17 +80,34 @@ def _load_references(current_config: Config, expected_groups: int) -> list[list[
     return references
 
 
-def _iter_text_groups(file_name: str, data: dict) -> list[tuple[str, dict, list[list[str]]]]:
+def _get_internal_scores(data: dict, expected_groups: int) -> list[list[float]] | None:
+    scores = data.get("internal_scores")
+    if scores is None:
+        scores = data.get("eval_internal_scores")
+
+    if not isinstance(scores, list):
+        return None
+    if len(scores) != expected_groups:
+        print(
+            "Warning: Internal score count does not match text groups "
+            f"({len(scores)} score groups vs {expected_groups} text groups); skipping int selection.",
+        )
+        return None
+
+    return scores
+
+
+def _iter_text_groups(file_name: str, data: dict) -> list[tuple[str, dict, list[list[str]], list[list[float]] | None]]:
     file_config_dict = data.get("config", {})
     texts = data.get("text_samples")
     if isinstance(texts, list):
-        return [(file_name.removesuffix(".json"), file_config_dict, texts)]
+        return [(file_name.removesuffix(".json"), file_config_dict, texts, _get_internal_scores(data, len(texts)))]
 
     results_by_cfg = data.get("results_by_cfg")
     if not isinstance(results_by_cfg, dict):
         return []
 
-    extracted_groups: list[tuple[str, dict, list[list[str]]]] = []
+    extracted_groups: list[tuple[str, dict, list[list[str]], list[list[float]] | None]] = []
     for cfg_key, cfg_result in results_by_cfg.items():
         samples = cfg_result.get("samples")
         if not isinstance(samples, list):
@@ -97,7 +129,7 @@ def _iter_text_groups(file_name: str, data: dict) -> list[tuple[str, dict, list[
 
         cfg_config_dict = dict(file_config_dict)
         cfg_config_dict["cfg_scale"] = float(cfg_key)
-        extracted_groups.append((f"{file_name.removesuffix('.json')}-cfg-{cfg_key}", cfg_config_dict, cfg_texts))
+        extracted_groups.append((f"{file_name.removesuffix('.json')}-cfg-{cfg_key}", cfg_config_dict, cfg_texts, None))
 
     return extracted_groups
 
@@ -110,6 +142,8 @@ if __name__ == "__main__":
         cos_model_id=config.cos_model_id,
     )
     save_samples = _env_flag("OVERSAMPLE_BASELINE_SAVE_SAMPLES", default=True)
+    method_filter = os.getenv("OVERSAMPLE_BASELINE_METHOD")
+    requested_metrics = _env_list("OVERSAMPLE_BASELINE_METRICS")
 
     path = os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", config.results_dir))
     if not os.path.isdir(path):
@@ -121,7 +155,7 @@ if __name__ == "__main__":
     subsample_k = config.subsample_k
     assert subsample_k != 0
 
-    print("Using global subsample_k: ", subsample_k)
+    print("Using per-group subsample_k: ", subsample_k)
 
     for file in files:
         file_path = os.path.join(path, file)
@@ -133,7 +167,7 @@ if __name__ == "__main__":
             print(f"Skipping {file}: no compatible oversample candidate groups found")
             continue
 
-        for output_stem, file_config_dict, texts in grouped_sources:
+        for output_stem, file_config_dict, texts, internal_scores in grouped_sources:
             current_config = config
             if file_config_dict:
                 valid_fields = {f.name for f in fields(Config)}
@@ -141,8 +175,26 @@ if __name__ == "__main__":
                 filtered_config.pop("disable_sys_args", None)
                 current_config = Config(disable_sys_args=True, **filtered_config)
 
+            if method_filter is not None and current_config.method != method_filter:
+                print(f"Skipping {output_stem}.json: method={current_config.method!r}, expected {method_filter!r}")
+                continue
+
             references = _load_references(current_config, len(texts))
-            metrics_to_run = ["ppl", "f1", "random"] if references is not None else ["ppl", "random"]
+            available_metrics = ["f1", "ppl"] if references is not None else ["ppl"]
+            if internal_scores is not None:
+                available_metrics.append("int")
+            available_metrics.append("random")
+
+            if requested_metrics is None:
+                metrics_to_run = available_metrics
+            else:
+                metrics_to_run = [metric for metric in requested_metrics if metric in available_metrics]
+                skipped_metrics = [metric for metric in requested_metrics if metric not in available_metrics]
+                if skipped_metrics:
+                    print(
+                        f"Skipping unavailable metrics for {output_stem}.json: {', '.join(skipped_metrics)} "
+                        f"(available: {', '.join(available_metrics)})",
+                    )
 
             for metric in metrics_to_run:
                 print(f"File: {output_stem}.json | Metric: {metric}")
@@ -152,7 +204,10 @@ if __name__ == "__main__":
                     metric,
                     subsample_k,
                     references=references,
-                    random_seed=_stable_variant_seed(current_config.seed, output_stem),
+                    internal_scores=internal_scores if metric == "int" else None,
+                    random_seed=_stable_variant_seed(current_config.seed, output_stem)
+                    if metric == "random"
+                    else None,
                 )
 
                 save_data = {
@@ -160,10 +215,14 @@ if __name__ == "__main__":
                     "metrics": metrics,
                     "experiment_id": data.get("experiment_id", ""),
                     "source_file": file,
+                    "selection_metric": metric,
+                    "subsample_k": subsample_k,
                 }
                 if save_samples:
                     save_data["text_samples"] = selected
                     save_data["raw_text_samples"] = texts
+                    if metric == "int" and internal_scores is not None:
+                        save_data["raw_internal_scores"] = internal_scores
                 out_name = f"{output_stem}-bon-{metric}.json"
                 with open(os.path.join(path, out_name), "w") as f_out:
                     json.dump(save_data, f_out, indent=4)

@@ -246,6 +246,54 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
                 references=[["ref-a"]],
             )
 
+    def test_evaluate_baseline_selects_top_k_per_group_not_global_or_transversal(self):
+        evaluator = Evaluator.__new__(Evaluator)
+
+        def _score_baseline_candidates(
+            full_sequences,
+            metric,
+            references=None,
+            internal_scores=None,
+            random_seed=None,
+        ):
+            del full_sequences, metric, references, internal_scores, random_seed
+            return [[0.1, 0.9, 0.8], [0.7, 0.2, 0.6]], True
+
+        evaluator.score_baseline_candidates = _score_baseline_candidates
+
+        selected = evaluator.evaluate_baseline(
+            [["a0", "a1", "a2"], ["b0", "b1", "b2"]],
+            metric="int",
+            k=2,
+        )
+
+        self.assertEqual(selected, [["a1", "a2"], ["b0", "b2"]])
+
+    def test_evaluate_baseline_transversal_selects_one_per_subgroup(self):
+        evaluator = Evaluator.__new__(Evaluator)
+
+        def _score_baseline_candidates(
+            full_sequences,
+            metric,
+            references=None,
+            internal_scores=None,
+            random_seed=None,
+        ):
+            del full_sequences, metric, references, internal_scores, random_seed
+            return [[0.1, 0.9, 0.8, 0.2, 0.3, 0.7]], True
+
+        evaluator.score_baseline_candidates = _score_baseline_candidates
+
+        selected = evaluator.evaluate_baseline(
+            [["g0-a", "g0-b", "g1-a", "g1-b", "g2-a", "g2-b"]],
+            metric="int",
+            k=1,
+            transversal=True,
+            group_size=2,
+        )
+
+        self.assertEqual(selected, [["g0-b", "g1-a", "g2-b"]])
+
     def test_oversample_baseline_evaluates_selected_groups_directly(self):
         class _RecordingEvaluator:
             def __init__(self):
@@ -276,6 +324,35 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(metrics, {"f1": 1.0})
         self.assertEqual(evaluator.evaluate_inputs, selected)
         self.assertEqual(evaluator.evaluate_references, references)
+
+    def test_oversample_baseline_passes_internal_scores_for_int_metric(self):
+        class _RecordingEvaluator:
+            def __init__(self):
+                self.evaluate_baseline_kwargs = None
+
+            def evaluate_baseline(self, texts, metric, k, **kwargs):
+                del texts, metric, k
+                self.evaluate_baseline_kwargs = kwargs
+                return [["selected"]]
+
+            def evaluate(self, texts, references=None):
+                del texts, references
+                return {"f1": 1.0}
+
+        evaluator = _RecordingEvaluator()
+        internal_scores = [[0.1, 0.9]]
+
+        selected, _metrics = _select_and_evaluate_baseline(
+            evaluator,
+            [["a0", "a1"]],
+            metric="int",
+            subsample_k=1,
+            internal_scores=internal_scores,
+        )
+
+        self.assertEqual(selected, [["selected"]])
+        self.assertIsNotNone(evaluator.evaluate_baseline_kwargs)
+        self.assertEqual(evaluator.evaluate_baseline_kwargs["internal_scores"], internal_scores)
 
     def test_math_results_shape_persists_string_metrics_without_model_downloads(self):
         payload = {
