@@ -1,3 +1,35 @@
+"""
+Post-hoc best-of-N selection for oversampled generation result files.
+
+Input files
+- Scans OVERSAMPLE_BASELINE_PATH, or config.results_dir when unset.
+- Reads JSON files with text_samples shaped as list[list[str]], where each outer
+  group is a prompt/question and each inner group is that prompt's N candidates.
+- Also supports aggregate files with results_by_cfg[*].samples[*].independent_pool_n.
+- Skips temp files indirectly by only reading final .json files and ignores outputs
+  already named with "-bon-".
+
+Selection behavior
+- Selects subsample_k candidates per prompt group; this is not a global top-k
+  across prompts.
+- Uses Evaluator.evaluate_baseline with transversal=False, so it does not enforce
+  one item per transversal subgroup.
+- Supported selectors:
+  - f1: enabled only when references can be loaded.
+  - ppl: always enabled.
+  - int: enabled only when internal_scores or legacy eval_internal_scores exists.
+  - random: always enabled; equivalent to k IID candidates from the N-sample pool.
+
+Environment flags
+- OVERSAMPLE_BASELINE_PATH: input/output directory. Default: config.results_dir.
+- OVERSAMPLE_BASELINE_SAVE_SAMPLES: include selected/raw samples in outputs.
+  Default: true. When false, write metrics/metadata only.
+- OVERSAMPLE_BASELINE_METHOD: optional source config.method filter. Default: unset
+  (process every compatible source method).
+- OVERSAMPLE_BASELINE_METRICS: optional comma-separated metric filter, e.g.
+  "f1,ppl,int,random". Default: all available selectors for each source file.
+"""
+
 import json
 import os
 from dataclasses import fields
@@ -6,11 +38,6 @@ from typing import Any
 from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.eval_core import Evaluator
-
-
-# - OVERSAMPLE_BASELINE_PATH: directory to scan for input JSON files.
-# - OVERSAMPLE_BASELINE_SAVE_SAMPLES: when false, omit raw and selected text
-#   samples from the output JSON and keep only metrics/metadata.
 
 
 def _stable_variant_seed(base_seed: int, variant_name: str) -> int:
@@ -205,9 +232,7 @@ if __name__ == "__main__":
                     subsample_k,
                     references=references,
                     internal_scores=internal_scores if metric == "int" else None,
-                    random_seed=_stable_variant_seed(current_config.seed, output_stem)
-                    if metric == "random"
-                    else None,
+                    random_seed=_stable_variant_seed(current_config.seed, output_stem) if metric == "random" else None,
                 )
 
                 save_data = {
