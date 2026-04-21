@@ -21,7 +21,8 @@ Selection behavior
   - random: always enabled; equivalent to k IID candidates from the N-sample pool.
 
 Environment flags
-- OVERSAMPLE_BASELINE_PATH: input/output directory. Default: config.results_dir.
+- OVERSAMPLE_BASELINE_PATH: input directory or single input JSON file. Default:
+  config.results_dir. Outputs are written next to the input file(s).
 - OVERSAMPLE_BASELINE_SAVE_SAMPLES: include selected/raw samples in outputs.
   Default: true. When false, write metrics/metadata only.
 - OVERSAMPLE_BASELINE_METHOD: optional source config.method filter. Default: unset
@@ -161,6 +162,20 @@ def _iter_text_groups(file_name: str, data: dict) -> list[tuple[str, dict, list[
     return extracted_groups
 
 
+def _resolve_input_files(path: str) -> tuple[str, list[str]]:
+    if os.path.isfile(path):
+        if not path.endswith(".json"):
+            raise ValueError(f"OVERSAMPLE_BASELINE_PATH file must be a JSON file: {path}")
+        directory = os.path.dirname(path) or "."
+        return directory, [os.path.basename(path)]
+
+    if os.path.isdir(path):
+        files = sorted([f for f in os.listdir(path) if f.endswith(".json") and "-bon-" not in f])
+        return path, files
+
+    raise FileNotFoundError(f"OVERSAMPLE_BASELINE_PATH does not exist: {path}")
+
+
 if __name__ == "__main__":
     config = Config()
     evaluator = Evaluator(
@@ -172,12 +187,13 @@ if __name__ == "__main__":
     method_filter = os.getenv("OVERSAMPLE_BASELINE_METHOD")
     requested_metrics = _env_list("OVERSAMPLE_BASELINE_METRICS")
 
-    path = os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", config.results_dir))
-    if not os.path.isdir(path):
-        raise FileNotFoundError(f"OVERSAMPLE_BASELINE_PATH does not exist: {path}")
+    path = os.path.abspath(os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", config.results_dir)))
+    output_dir, files = _resolve_input_files(path)
 
-    print(f"Scanning oversample baseline files in: {path}")
-    files = sorted([f for f in os.listdir(path) if f.endswith(".json") and "-bon-" not in f])
+    if os.path.isfile(path):
+        print(f"Processing oversample baseline file: {path}")
+    else:
+        print(f"Scanning oversample baseline files in: {path}")
 
     subsample_k = config.subsample_k
     assert subsample_k != 0
@@ -185,7 +201,7 @@ if __name__ == "__main__":
     print("Using per-group subsample_k: ", subsample_k)
 
     for file in files:
-        file_path = os.path.join(path, file)
+        file_path = os.path.join(output_dir, file)
         with open(file_path, "r") as f:
             data = json.load(f)
 
@@ -249,7 +265,7 @@ if __name__ == "__main__":
                     if metric == "int" and internal_scores is not None:
                         save_data["raw_internal_scores"] = internal_scores
                 out_name = f"{output_stem}-bon-{metric}.json"
-                with open(os.path.join(path, out_name), "w") as f_out:
+                with open(os.path.join(output_dir, out_name), "w") as f_out:
                     json.dump(save_data, f_out, indent=4)
 
                 print("-" * 80)

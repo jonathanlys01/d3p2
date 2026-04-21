@@ -12,7 +12,7 @@ import torch
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from d5p4._oversample_baseline import _select_and_evaluate_baseline
+from d5p4._oversample_baseline import _resolve_input_files, _select_and_evaluate_baseline
 from d5p4.eval_core import Evaluator, MathEvaluator, Perplexity, StringMetrics, _is_math_results_file
 
 
@@ -353,6 +353,17 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(selected, [["selected"]])
         self.assertIsNotNone(evaluator.evaluate_baseline_kwargs)
         self.assertEqual(evaluator.evaluate_baseline_kwargs["internal_scores"], internal_scores)
+
+    def test_oversample_baseline_path_accepts_single_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "samples.json")
+            with open(file_path, "w") as f:
+                json.dump({"text_samples": [["a"]]}, f)
+
+            output_dir, files = _resolve_input_files(file_path)
+
+        self.assertEqual(output_dir, tmpdir)
+        self.assertEqual(files, ["samples.json"])
 
     def test_math_results_shape_persists_string_metrics_without_model_downloads(self):
         payload = {
