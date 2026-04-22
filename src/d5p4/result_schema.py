@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
@@ -226,3 +228,93 @@ def build_generation_result_payload(  # noqa: PLR0913
 def get_eval_text_groups(payload: dict[str, Any]) -> list[list[str]] | None:
     result = GenerationResult.model_validate(normalize_result_payload(payload))
     return result.eval_text_samples if result.eval_text_samples is not None else result.text_samples
+
+
+def _value_summary(value: Any) -> str:
+    if isinstance(value, dict):
+        return f"dict[{len(value)}]"
+    if isinstance(value, list):
+        return f"list[{len(value)}]"
+    if isinstance(value, str):
+        return f"str[{len(value)}]"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def payload_tree_lines(
+    payload: Any,
+    *,
+    name: str = "payload",
+    max_items: int = 3,
+) -> list[str]:
+    lines: list[str] = []
+
+    def _visit_children(value: Any, prefix: str) -> None:
+        if isinstance(value, dict):
+            items = list(value.items())
+            visible_items = items[:max_items]
+            for idx, (key, child) in enumerate(visible_items):
+                branch = "└── " if idx == len(visible_items) - 1 and len(items) <= max_items else "├── "
+                child_prefix = prefix + ("    " if branch == "└── " else "│   ")
+                lines.append(f"{prefix}{branch}{key}: {_value_summary(child)}")
+                if isinstance(child, (dict, list)):
+                    _visit_children(child, child_prefix)
+            if len(items) > max_items:
+                lines.append(f"{prefix}└── ... {len(items) - max_items} more")
+            return
+
+        if isinstance(value, list):
+            visible_items = value[:max_items]
+            for idx, child in enumerate(visible_items):
+                branch = "└── " if idx == len(visible_items) - 1 and len(value) <= max_items else "├── "
+                child_prefix = prefix + ("    " if branch == "└── " else "│   ")
+                lines.append(f"{prefix}{branch}[{idx}]: {_value_summary(child)}")
+                if isinstance(child, (dict, list)):
+                    _visit_children(child, child_prefix)
+            if len(value) > max_items:
+                lines.append(f"{prefix}└── ... {len(value) - max_items} more")
+
+    lines.append(f"{name}: {_value_summary(payload)}")
+    _visit_children(payload, "")
+    return lines
+
+
+def print_payload_tree(payload: Any, *, name: str = "payload", max_items: int = 3) -> None:
+    for line in payload_tree_lines(payload, name=name, max_items=max_items):
+        print(line)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Validate and print a tree view of a generation result payload.")
+    parser.add_argument(
+        "input_path",
+        nargs="?",
+        help="Path to a generation result JSON file. If omitted, a dummy structure is printed.",
+    )
+    parser.add_argument("--max-items", type=int, default=3, help="Maximum children to print per object/list node.")
+    parser.add_argument("--no-validate", action="store_true", help="Print the raw JSON tree without schema validation.")
+    args = parser.parse_args()
+
+    if args.input_path:
+        with open(args.input_path) as f:
+            payload = json.load(f)
+    else:
+        payload = {
+            TEXT_SAMPLES: [["Sample text 1", "Sample text 2"], ["Sample text 3"]],
+            CONFIG: {"model": "test-model", "temp": 0.7},
+            METRICS: {"accuracy": 0.99, "latency": 150},
+            INTERNAL_SCORES: [[0.5, 0.6], [0.7]],
+        }
+
+    if not args.no_validate:
+        if not isinstance(payload, dict):
+            raise ValueError("Generation result payload must be a JSON object.")
+        result = GenerationResult.model_validate(normalize_result_payload(payload))
+        payload = result.model_dump(exclude_none=True)
+
+    print_payload_tree(payload, name=args.input_path or "dummy_payload", max_items=args.max_items)
+
+
+if __name__ == "__main__":
+    main()

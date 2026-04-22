@@ -10,6 +10,7 @@ from d5p4.result_schema import (
     LEGACY_INTERNAL_SCORES,
     build_generation_result_payload,
     get_eval_text_groups,
+    payload_tree_lines,
     validate_generation_result_payload,
 )
 
@@ -60,6 +61,20 @@ class TestResultSchema(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_generation_result_payload(payload)
+
+    def test_payload_tree_lines_prints_payload_structure(self):
+        payload = build_generation_result_payload(
+            text_samples=[["a0", "a1"]],
+            config={"model": "llada"},
+            internal_scores=[[0.1, 0.2]],
+        )
+
+        tree = "\n".join(payload_tree_lines(payload, name="sample.json", max_items=2))
+
+        self.assertIn("sample.json: dict", tree)
+        self.assertIn("text_samples: list[1]", tree)
+        self.assertIn("config: dict", tree)
+        self.assertIn("internal_scores: list[1]", tree)
 
 
 if __name__ == "__main__":
