@@ -16,12 +16,14 @@ from d5p4.eval_core import Evaluator
 from d5p4.utils import compile_model, print, seed_all
 
 
-def save(text, eval_text, config, uid, rank=0):
+def save(text, eval_text, config, uid, rank=0, references=None):  # noqa: PLR0913
     samples = {
         "text_samples": text,  # list of lists of strings
         "eval_text_samples": eval_text,
         "config": asdict(config),
     }
+    if references is not None:
+        samples["references"] = references
 
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
     os.makedirs(config.results_dir, exist_ok=True)
@@ -29,7 +31,7 @@ def save(text, eval_text, config, uid, rank=0):
         json.dump(samples, f, indent=4)
 
 
-def main():  # noqa: C901, PLR0915
+def main():  # noqa: C901, PLR0912, PLR0915
     config = Config()
 
     model = LLADASampler(config)
@@ -46,12 +48,14 @@ def main():  # noqa: C901, PLR0915
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}")
 
-    # Initialize evaluator for selection
-    evaluator = Evaluator(
-        batch_size=config.eval_batch_size,
-        ppl_model_id=config.ppl_model_id,
-        cos_model_id=config.cos_model_id,
-    )
+    # Initialize evaluator only if baseline selection needs it.
+    evaluator = None
+    if config.subsample_k > 0:
+        evaluator = Evaluator(
+            batch_size=config.eval_batch_size,
+            ppl_model_id=config.ppl_model_id,
+            cos_model_id=config.cos_model_id,
+        )
 
     dataset = get_qa_dataset(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
@@ -77,6 +81,7 @@ def main():  # noqa: C901, PLR0915
         current_refs = [references[i]]
 
         if k > 0 and k < len(decoded):
+            assert evaluator is not None
             selected_groups = evaluator.evaluate_baseline(
                 [decoded],
                 metric="ppl",
@@ -89,11 +94,12 @@ def main():  # noqa: C901, PLR0915
 
         texts.append(decoded)
         eval_texts.append(selected)
-        save(texts, eval_texts, config, unique_id, rank=offset)
+        save(texts, eval_texts, config, unique_id, rank=offset, references=references[: i + 1])
 
     samples = {
         "text_samples": texts,  # raw list of lists of strings
         "eval_text_samples": eval_texts,
+        "references": references,
         "config": asdict(config),
         "experiment_id": str(unique_id),
     }
@@ -113,10 +119,13 @@ def main():  # noqa: C901, PLR0915
 
     # Evaluate samples on master only
     if model.distributed_utils is None or model.distributed_utils.rank == 0:
-        print("Running evaluation...")
-        metrics = eval_samples(str(unique_id), config, references=references)
-        assert metrics is not None and metrics["metrics_summary"] is not None
-        print(f"Evaluation complete: {metrics['metrics_summary']}")
+        if config.skip_eval:
+            print("Skipping evaluation because skip_eval=True.")
+        else:
+            print("Running evaluation...")
+            metrics = eval_samples(str(unique_id), config, references=references)
+            assert metrics is not None and metrics["metrics_summary"] is not None
+            print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

@@ -40,11 +40,13 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
     seed_all(cfg.seed)
 
     # Initialize evaluator for all metrics
-    evaluator = Evaluator(
-        batch_size=cfg.eval_batch_size,
-        ppl_model_id=cfg.ppl_model_id,
-        cos_model_id=cfg.cos_model_id,
-    )
+    evaluator = None
+    if not cfg.skip_eval:
+        evaluator = Evaluator(
+            batch_size=cfg.eval_batch_size,
+            ppl_model_id=cfg.ppl_model_id,
+            cos_model_id=cfg.cos_model_id,
+        )
 
     # Load dataset once
     dataset = get_qa_dataset(cfg)
@@ -62,6 +64,7 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
         "interaction_values": interaction_values,
         "metrics_by_interaction": {},
         "samples_by_interaction": {},
+        "references": references,
     }
 
     # Create sampler once and reuse across all interaction values
@@ -101,6 +104,12 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
 
             all_generations.append(batch_gen)
 
+        all_results["samples_by_interaction"][str(interaction_value)] = all_generations
+        if iter_cfg.skip_eval:
+            u_print(f"Skipping evaluation for _w_interaction={interaction_value} because skip_eval=True.")
+            continue
+
+        assert evaluator is not None
         # Compute all metrics for this interaction value
         metrics = evaluator.evaluate(all_generations, references=references)
 
@@ -128,7 +137,6 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
             print(f"  Summary: {metrics['metrics_summary']}")
 
         all_results["metrics_by_interaction"][str(interaction_value)] = metrics
-        all_results["samples_by_interaction"][str(interaction_value)] = all_generations
 
     # Cleanup after all iterations
     if sampler.distributed_utils:
@@ -137,7 +145,7 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
     torch.cuda.empty_cache()
 
     # Summary table
-    if len(interaction_values) > 1:
+    if len(interaction_values) > 1 and not cfg.skip_eval:
         u_print(f"\n{'=' * 100}")
         u_print("SUMMARY: Interaction vs All Metrics")
         u_print(f"{'=' * 100}")
@@ -177,6 +185,7 @@ def main():
                 "results": results["metrics_by_interaction"],
                 "interaction_values": results["interaction_values"],
                 "text_samples": results["samples_by_interaction"],
+                "references": results["references"],
             },
             f,
             indent=4,

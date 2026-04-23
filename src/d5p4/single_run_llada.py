@@ -149,17 +149,20 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     metrics = None
     if master:
-        print("Running evaluation...")
-        evaluator = Evaluator(
-            batch_size=config.eval_batch_size,
-            force=True,
-            ppl_model_id=config.ppl_model_id,
-            cos_model_id=config.cos_model_id,
-        )
-        metric_texts = eval_texts if use_internal_representatives else texts
-        metrics = evaluator.evaluate(metric_texts, references=references_all)
-        assert metrics["metrics_summary"] is not None
-        print(f"Evaluation complete: {metrics['metrics_summary']}")
+        if config.skip_eval:
+            print("Skipping evaluation because skip_eval=True.")
+        else:
+            print("Running evaluation...")
+            evaluator = Evaluator(
+                batch_size=config.eval_batch_size,
+                force=True,
+                ppl_model_id=config.ppl_model_id,
+                cos_model_id=config.cos_model_id,
+            )
+            metric_texts = eval_texts if use_internal_representatives else texts
+            metrics = evaluator.evaluate(metric_texts, references=references_all)
+            assert metrics["metrics_summary"] is not None
+            print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     eval_selection = None
     if use_internal_representatives and master:

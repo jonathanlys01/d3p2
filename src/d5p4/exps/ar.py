@@ -36,11 +36,13 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
     utils.INTERACTIVE = cfg.interactive
 
     # Initialize evaluator
-    evaluator = Evaluator(
-        batch_size=cfg.eval_batch_size,
-        ppl_model_id=cfg.ppl_model_id,
-        cos_model_id=cfg.cos_model_id,
-    )
+    evaluator = None
+    if not cfg.skip_eval:
+        evaluator = Evaluator(
+            batch_size=cfg.eval_batch_size,
+            ppl_model_id=cfg.ppl_model_id,
+            cos_model_id=cfg.cos_model_id,
+        )
 
     u_print(f"Running Interaction experiment for {cfg.n_runs} runs per value")
     u_print(f"Interaction values to test: {interaction_values}")
@@ -85,6 +87,12 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
 
             all_generations.append(batch_gen)
 
+        all_results["samples_by_interaction"][str(interaction_value)] = all_generations
+        if iter_cfg.skip_eval:
+            u_print(f"Skipping evaluation for interaction={interaction_value} because skip_eval=True.")
+            continue
+
+        assert evaluator is not None
         # Compute all metrics for this interaction value
         metrics = evaluator.evaluate(all_generations)
 
@@ -108,7 +116,6 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
             print(f"  Summary: {metrics['metrics_summary']}")
 
         all_results["metrics_by_interaction"][str(interaction_value)] = metrics
-        all_results["samples_by_interaction"][str(interaction_value)] = all_generations
 
     # Cleanup
     if sampler.distributed_utils:
@@ -117,7 +124,7 @@ def run_interaction_experiment(cfg: Config, interaction_values: list[float] | No
     torch.cuda.empty_cache()
 
     # Summary table
-    if len(interaction_values) > 1:
+    if len(interaction_values) > 1 and not cfg.skip_eval:
         u_print(f"\n{'=' * 80}")
         u_print("SUMMARY: Interaction vs All Metrics")
         u_print(f"{'=' * 80}")

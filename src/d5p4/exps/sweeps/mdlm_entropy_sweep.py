@@ -51,11 +51,13 @@ def run_entropy_sweep(cfg: Config) -> dict:
 
     utils.INTERACTIVE = cfg.interactive
 
-    evaluator = Evaluator(
-        batch_size=cfg.eval_batch_size,
-        ppl_model_id=cfg.ppl_model_id,
-        cos_model_id=cfg.cos_model_id,
-    )
+    evaluator = None
+    if not cfg.skip_eval:
+        evaluator = Evaluator(
+            batch_size=cfg.eval_batch_size,
+            ppl_model_id=cfg.ppl_model_id,
+            cos_model_id=cfg.cos_model_id,
+        )
 
     sampler = MDLMSampler(cfg)
     sampler.model = compile_model(sampler.model, cfg, dynamic=True)
@@ -66,6 +68,7 @@ def run_entropy_sweep(cfg: Config) -> dict:
     seed_all(cfg.seed + offset)
 
     results: dict[str, dict[str, float | str]] = {}
+    samples_by_value: dict[str, list[list[str]]] = {}
 
     u_print(f"Running MDLM entropy sweep with {NUM_POINTS} log-spaced points")
     u_print(f"Method: {cfg.method}")
@@ -88,6 +91,12 @@ def run_entropy_sweep(cfg: Config) -> dict:
             batch_gen = sampler.tokenizer.batch_decode(sample_ids, skip_special_tokens=True)
             all_generations.append([gen.strip() for gen in batch_gen])
 
+        samples_by_value[str(value)] = all_generations
+        if iter_cfg.skip_eval:
+            u_print(f"Skipping evaluation for {sweep_param}={value} because skip_eval=True.")
+            continue
+
+        assert evaluator is not None
         metrics = evaluator.evaluate(all_generations)
         results[str(value)] = metrics
 
@@ -107,6 +116,7 @@ def run_entropy_sweep(cfg: Config) -> dict:
         "sweep_values": sweep_values,
         "reported_metric": "empirical_entropy",
         "results": results,
+        "text_samples": samples_by_value,
     }
 
 
@@ -131,6 +141,9 @@ def _save_results(cfg: Config, sweep_results: dict) -> str:
 def _print_summary_table(sweep_results: dict) -> None:
     sweep_param = sweep_results["sweep_parameter"]
     results = sweep_results["results"]
+    if not results:
+        u_print("\nSkipping summary table because skip_eval=True.")
+        return
 
     u_print(f"\n{'=' * 96}")
     u_print("SUMMARY: MDLM Sweep vs Empirical Entropy")

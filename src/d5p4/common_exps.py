@@ -129,6 +129,10 @@ def eval_samples(
     evaluator: Evaluator | None = None,
     references: list[list[str]] | None = None,
 ):
+    if config.skip_eval:
+        print("Skipping evaluation because skip_eval=True.")
+        return None
+
     if evaluator is None:
         evaluator = Evaluator(
             batch_size=config.eval_batch_size,
@@ -161,6 +165,9 @@ def run_experiment(
         unique_id, master = generate_samples_with_model(config, model, evaluator)
     torch.cuda.empty_cache()  # clear GPU memory before evaluation
     if not master:
+        return None
+    if config.skip_eval:
+        print("Skipping evaluation because skip_eval=True.")
         return None
     metrics = eval_samples(str(unique_id), config, evaluator, references=references)
     return metrics

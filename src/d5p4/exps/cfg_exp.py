@@ -41,11 +41,13 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     sampler.model = compile_model(sampler.model, cfg, dynamic=True)
 
     # Initialize evaluator for all metrics (now safe to load extra models on the correct device)
-    evaluator = Evaluator(
-        batch_size=cfg.eval_batch_size,
-        ppl_model_id=cfg.ppl_model_id,
-        cos_model_id=cfg.cos_model_id,
-    )
+    evaluator = None
+    if not cfg.skip_eval:
+        evaluator = Evaluator(
+            batch_size=cfg.eval_batch_size,
+            ppl_model_id=cfg.ppl_model_id,
+            cos_model_id=cfg.cos_model_id,
+        )
 
     # Load dataset once
     dataset = get_qa_dataset(cfg)
@@ -59,6 +61,8 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
         "cfg_values": cfg_values,
         "metrics_by_cfg": {},
         "samples_by_cfg": {},
+        "references_by_cfg": {},
+        "bad_references_by_cfg": {},
     }
 
     for idx, cfg_value in enumerate(cfg_values):
@@ -102,17 +106,27 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
             all_good_refs.append(correct_answers)
             all_bad_refs.append(incorrect_answers)
 
-            # Wasserstein Distance for this sample
-            wd_good, wd_bad = evaluator.compute_wasserstein_distance(
-                batch_gen,
-                correct_answers,
-                incorrect_answers,
-            )
-            wd_good_scores.append(wd_good)
-            wd_bad_scores.append(wd_bad)
+            if not iter_cfg.skip_eval:
+                assert evaluator is not None
+                # Wasserstein Distance for this sample
+                wd_good, wd_bad = evaluator.compute_wasserstein_distance(
+                    batch_gen,
+                    correct_answers,
+                    incorrect_answers,
+                )
+                wd_good_scores.append(wd_good)
+                wd_bad_scores.append(wd_bad)
 
         # Only Rank 0 computes and prints metrics
         if is_primary_process(iter_cfg):
+            all_results["samples_by_cfg"][str(cfg_value)] = all_generations
+            all_results["references_by_cfg"][str(cfg_value)] = all_good_refs
+            all_results["bad_references_by_cfg"][str(cfg_value)] = all_bad_refs
+            if iter_cfg.skip_eval:
+                u_print(f"Skipping evaluation for CFG={cfg_value} because skip_eval=True.")
+                continue
+
+            assert evaluator is not None
             # Compute all metrics for this CFG value
             metrics = evaluator.evaluate(all_generations, references=all_good_refs)
 
@@ -149,7 +163,6 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
                 u_print(f"  Summary: {metrics['metrics_summary']}")
 
             all_results["metrics_by_cfg"][str(cfg_value)] = metrics
-            all_results["samples_by_cfg"][str(cfg_value)] = all_generations
 
     # Synchronize all ranks before cleanup
     if sampler.distributed_utils:
@@ -162,7 +175,7 @@ def run_cfg_experiment(cfg: Config, cfg_values: list[float] | None = None) -> di
     torch.cuda.empty_cache()
 
     # Summary table (Rank 0 only)
-    if is_primary_process(cfg) and len(cfg_values) > 1:
+    if is_primary_process(cfg) and len(cfg_values) > 1 and not cfg.skip_eval:
         u_print(f"\n{'=' * 105}")
         u_print("SUMMARY: CFG vs All Metrics")
         u_print(f"{'=' * 105}")
@@ -202,6 +215,8 @@ def main():
                     "results": results["metrics_by_cfg"],
                     "cfg_values": results["cfg_values"],
                     "text_samples": results["samples_by_cfg"],
+                    "references": results["references_by_cfg"],
+                    "bad_references": results["bad_references_by_cfg"],
                 },
                 f,
                 indent=4,

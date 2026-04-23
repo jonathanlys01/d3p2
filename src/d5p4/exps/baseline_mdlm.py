@@ -24,7 +24,7 @@ def save(text, config, uid, rank=0):
         json.dump(samples, f, indent=4)
 
 
-def main():
+def main():  # noqa: C901, PLR0912
     config = Config()
     assert config.method == "baseline", "This script can only be used with the baseline setting"
 
@@ -41,12 +41,14 @@ def main():
     unique_id = uuid.uuid4()
     print(f"Experiment ID: {unique_id}")
 
-    # Initialize evaluator for selection
-    evaluator = Evaluator(
-        batch_size=config.eval_batch_size,
-        ppl_model_id=config.ppl_model_id,
-        cos_model_id=config.cos_model_id,
-    )
+    # Initialize evaluator only if baseline selection needs it.
+    evaluator = None
+    if config.subsample_k > 0:
+        evaluator = Evaluator(
+            batch_size=config.eval_batch_size,
+            ppl_model_id=config.ppl_model_id,
+            cos_model_id=config.cos_model_id,
+        )
 
     for i in range(config.n_runs):
         print(f"Sampling batch {i + 1}/{config.n_runs}...", progress=True)
@@ -59,6 +61,7 @@ def main():
             k *= model.distributed_utils.world_size
 
         if k > 0 and k < len(decoded):
+            assert evaluator is not None
             print(f"Selecting {k} best sequences from {len(decoded)} candidates (metric: ppl)...")
             selected_groups = evaluator.evaluate_baseline([decoded], metric="ppl", k=k)
             selected = selected_groups[0]
@@ -84,10 +87,13 @@ def main():
 
     # Evaluate samples on master only
     if model.distributed_utils is None or model.distributed_utils.rank == 0:
-        print("Running evaluation...")
-        metrics = eval_samples(str(unique_id), config)
-        assert metrics is not None and metrics["metrics_summary"] is not None
-        print(f"Evaluation complete: {metrics['metrics_summary']}")
+        if config.skip_eval:
+            print("Skipping evaluation because skip_eval=True.")
+        else:
+            print("Running evaluation...")
+            metrics = eval_samples(str(unique_id), config)
+            assert metrics is not None and metrics["metrics_summary"] is not None
+            print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

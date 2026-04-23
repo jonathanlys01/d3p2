@@ -16,7 +16,7 @@ from d5p4.utils import compile_model, seed_all
 from d5p4.utils import print as u_print
 
 
-def main():  # noqa: PLR0915
+def main():  # noqa: C901, PLR0912, PLR0915
     cfg = Config()
     utils.INTERACTIVE = cfg.interactive
     seed_all(cfg.seed)
@@ -24,18 +24,21 @@ def main():  # noqa: PLR0915
     # 1. Setup
     sampler = LLADASampler(cfg)
     sampler.model = compile_model(sampler.model, cfg, dynamic=True)
-    evaluator = Evaluator(
-        batch_size=cfg.eval_batch_size,
-        ppl_model_id=cfg.ppl_model_id,
-        cos_model_id=cfg.cos_model_id,
-    )
+    evaluator = None
+    if not cfg.skip_eval:
+        evaluator = Evaluator(
+            batch_size=cfg.eval_batch_size,
+            ppl_model_id=cfg.ppl_model_id,
+            cos_model_id=cfg.cos_model_id,
+        )
 
     # 2. Load Dataset
     dataset = get_qa_dataset(cfg)
     if cfg.qa_dataset_len > 0:
         dataset = dataset.head(cfg.qa_dataset_len)
 
-    u_print(f"Evaluating {len(dataset)} samples from {cfg.qa_dataset}...")
+    action = "Generating" if cfg.skip_eval else "Evaluating"
+    u_print(f"{action} {len(dataset)} samples from {cfg.qa_dataset}...")
 
     raw_generations, eval_generations, all_good_refs, all_bad_refs = [], [], [], []
 
@@ -69,7 +72,8 @@ def main():  # noqa: PLR0915
 
         raw_generations.append(batch_gen.copy())
 
-        if cfg.eval_transversal_group_representatives:
+        if cfg.eval_transversal_group_representatives and not cfg.skip_eval:
+            assert evaluator is not None
             internal_scores = None
             if cfg.eval_selection_metric == "int":
                 prompt_tokens = sampler._preprocess_prompt(prompt)
@@ -100,55 +104,63 @@ def main():  # noqa: PLR0915
         all_good_refs.append(correct_answers)
         all_bad_refs.append(incorrect_answers)
 
-        # Wasserstein Distance for this sample
-        wd_good, wd_bad = evaluator.compute_wasserstein_distance(
-            batch_gen,
-            correct_answers,
-            incorrect_answers,
-        )
-        wd_good_scores.append(wd_good)
-        wd_bad_scores.append(wd_bad)
+        if not cfg.skip_eval:
+            assert evaluator is not None
+            # Wasserstein Distance for this sample
+            wd_good, wd_bad = evaluator.compute_wasserstein_distance(
+                batch_gen,
+                correct_answers,
+                incorrect_answers,
+            )
+            wd_good_scores.append(wd_good)
+            wd_bad_scores.append(wd_bad)
 
     # 4. Global Metrics
-    # PPL and Average Cosine expect list[list[str]] (batches)
-    global_metrics = evaluator.evaluate(eval_generations)
+    global_metrics = None
+    if not cfg.skip_eval:
+        assert evaluator is not None
+        # PPL and Average Cosine expect list[list[str]] (batches)
+        global_metrics = evaluator.evaluate(eval_generations)
 
-    string_metrics = evaluator.compute_string_metrics(eval_generations, all_good_refs)
-    global_metrics.update(string_metrics)  # add bleu and f1
+        string_metrics = evaluator.compute_string_metrics(eval_generations, all_good_refs)
+        global_metrics.update(string_metrics)  # add bleu and f1
 
-    # Wasserstein Distance metrics
-    global_metrics.update(
-        {
-            "avg_wd_good": sum(wd_good_scores) / len(wd_good_scores),
-            "avg_wd_bad": sum(wd_bad_scores) / len(wd_bad_scores),
-        },
-    )
+        # Wasserstein Distance metrics
+        global_metrics.update(
+            {
+                "avg_wd_good": sum(wd_good_scores) / len(wd_good_scores),
+                "avg_wd_bad": sum(wd_bad_scores) / len(wd_bad_scores),
+            },
+        )
 
     # 5. Report Results
-    print("\n" + "=" * 40)
-    print("Evaluation Results:")
-    for k, v in global_metrics.items():
-        if k != "metrics_summary" and isinstance(v, (int, float)):
-            print(f"{k:25}: {v:.4f}")
-    print("-" * 40)
-    print(f"Summary: {global_metrics.get('metrics_summary', 'N/A')}")
-    print("=" * 40)
+    if global_metrics is None:
+        print("Skipping evaluation because skip_eval=True.")
+    else:
+        print("\n" + "=" * 40)
+        print("Evaluation Results:")
+        for k, v in global_metrics.items():
+            if k != "metrics_summary" and isinstance(v, (int, float)):
+                print(f"{k:25}: {v:.4f}")
+        print("-" * 40)
+        print(f"Summary: {global_metrics.get('metrics_summary', 'N/A')}")
+        print("=" * 40)
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = os.path.join(cfg.results_dir, f"llada_eval_{timestamp}.json")
     os.makedirs(cfg.results_dir, exist_ok=True)
     with open(save_path, "w") as f:
-        json.dump(
-            {
-                "config": asdict(cfg),
-                "results": global_metrics,
-                "text_samples": raw_generations,
-                "eval_text_samples": eval_generations,
-            },
-            f,
-            indent=4,
-        )
+        payload = {
+            "config": asdict(cfg),
+            "text_samples": raw_generations,
+            "eval_text_samples": eval_generations,
+            "references": all_good_refs,
+            "bad_references": all_bad_refs,
+        }
+        if global_metrics is not None:
+            payload["results"] = global_metrics
+        json.dump(payload, f, indent=4)
     print(f"Results saved to {save_path}")
 
     if sampler.distributed_utils:

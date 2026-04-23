@@ -65,10 +65,13 @@ def main():
 
     # Evaluate samples on master only
     if model.distributed_utils is None or model.distributed_utils.rank == 0:
-        print("Running evaluation...")
-        metrics = eval_samples(str(unique_id), config)
-        assert metrics is not None and metrics["metrics_summary"] is not None
-        print(f"Evaluation complete: {metrics['metrics_summary']}")
+        if config.skip_eval:
+            print("Skipping evaluation because skip_eval=True.")
+        else:
+            print("Running evaluation...")
+            metrics = eval_samples(str(unique_id), config)
+            assert metrics is not None and metrics["metrics_summary"] is not None
+            print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
