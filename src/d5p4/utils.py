@@ -573,15 +573,15 @@ class DistributedUtils:
     def _setup_pg(self):
         if not torch.distributed.is_initialized():
             print("Initializing process group")
+            device = f"cuda:{self.local_rank}"
+            torch.cuda.set_device(device)
+
             torch.distributed.init_process_group(
                 backend="nccl",
                 init_method="env://",
                 world_size=self.world_size,
                 rank=self.rank,
             )
-
-            device = f"cuda:{self.local_rank}"
-            torch.cuda.set_device(device)
 
     def cleanup(self):
         if not self.is_distributed() or not torch.distributed.is_initialized():

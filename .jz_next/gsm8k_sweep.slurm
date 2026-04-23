@@ -50,7 +50,7 @@ echo "Job started at $(date) for GSM8K, METHOD=${METHOD}, CFG=${CFG_VALUE}"
 
 # Load the modules
 module purge
-module load arch/a100
+module load arch/h100
 
 cd "${ROOT}"
 source .venv/bin/activate
@@ -79,6 +79,7 @@ COMMON_ARGS=(
   confidence_eos_eot_inf=False 
   minimal_log=true
   skip_eval=True
+  standalone_job=false
 )
 
 # Method-specific settings
