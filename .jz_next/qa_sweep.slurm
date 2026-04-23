@@ -9,60 +9,67 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 
-#SBATCH --job-name=llada-cfg
+#SBATCH --job-name=llada-qa-sweep
 #SBATCH --output=slurm-logs/%x-%A_%a.out
 #SBATCH --error=slurm-logs/%x-%A_%a.err
 #SBATCH --time=15:00:00
 #SBATCH --qos=qos_gpu_a100-t3
-#SBATCH --array=0-14%5
+#SBATCH --array=0-11%12
 
-# derisk:
-# sbatch --array=0-5 --qos=qos_gpu_a100-dev --time=00:20:00 ./cfg_collapse.slurm
+
 
 ROOT="${WORK}/projects/d3p2"
 SRC_ROOT="${ROOT}/src/d5p4"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .slurm)"
 
-CFG_VALUES=(1.0 1.5 2.0 2.5 3.0)
-METHODS=(baseline greedy_beam greedy_map)
-CFG_COLLAPSE_RESULTS_SUBDIR="cfg_collapse"
+# Variations
+CFG_VALUE=2.0
+DATASETS=(truthful_qa ai2_arc commonsense_qa)
+METHODS=(baseline greedy_map diverse_beam greedy_map_p)
 
+# Array indexing
+NUM_DATASETS=${#DATASETS[@]}
 NUM_METHODS=${#METHODS[@]}
-CFG_IDX=$((SLURM_ARRAY_TASK_ID / NUM_METHODS))
-METHOD_IDX=$((SLURM_ARRAY_TASK_ID % NUM_METHODS))
+
+DATASET_IDX=$((SLURM_ARRAY_TASK_ID % NUM_DATASETS))
+METHOD_IDX=$((SLURM_ARRAY_TASK_ID / NUM_DATASETS))
 
 # Boundary check
-if [ $CFG_IDX -ge ${#CFG_VALUES[@]} ]; then
-  echo "Error: SLURM_ARRAY_TASK_ID $SLURM_ARRAY_TASK_ID exceeds available CFG values."
+if [ $SLURM_ARRAY_TASK_ID -ge 12 ]; then
+  echo "Error: SLURM_ARRAY_TASK_ID $SLURM_ARRAY_TASK_ID exceeds available combinations."
   exit 1
 fi
 
-CFG_VALUE=${CFG_VALUES[$CFG_IDX]}
+DATASET=${DATASETS[$DATASET_IDX]}
 METHOD=${METHODS[$METHOD_IDX]}
 
+# Dataset-specific defaults
+if [ "$DATASET" == "commonsense_qa" ]; then
+    D5P4_W_INTERACTION=2.5
+else
+    D5P4_W_INTERACTION=20.0
+fi
+
 CFG_TAG=${CFG_VALUE//./p}
-RUN_OUTPUT_DIR="${ROOT}/results/${CFG_COLLAPSE_RESULTS_SUBDIR}/${SCRIPT_NAME}_${CFG_TAG}/${METHOD}"
+RUN_OUTPUT_DIR="${ROOT}/results/${SCRIPT_NAME}/${DATASET}/${METHOD}_cfg${CFG_TAG}"
 
 set -euo pipefail
 mkdir -p slurm-logs
 mkdir -p "${RUN_OUTPUT_DIR}"
-echo "Job started at $(date) for CFG=${CFG_VALUE}, METHOD=${METHOD}"
+echo "Job started at $(date) for DATASET=${DATASET}, METHOD=${METHOD}, CFG=${CFG_VALUE}"
 
 # Load the modules
 module purge
 module load arch/a100
 
-
 cd "${ROOT}"
 source .venv/bin/activate
-
 
 export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 
-# Configuration
-
+# Common Configuration
 COMMON_ARGS=(
   --config="${SRC_ROOT}/_jz.yaml"
   results_dir="${RUN_OUTPUT_DIR}"
@@ -76,7 +83,8 @@ COMMON_ARGS=(
   gen_length=128
   block_length=128
   confidence_eos_eot_inf=False 
-  qa_dataset=truthful_qa
+  qa_dataset="${DATASET}"
+  minimal_log=true
   skip_eval=True
   standalone_job=true
 )
@@ -85,21 +93,15 @@ COMMON_ARGS=(
 N_GROUPS=3
 GROUP_SIZE=3
 INDEP_N_GROUPS=9
-D5P4_W_INTERACTION=20.0
+ALPHA_DIV=20.0
+PARTIAL_GUIDANCE_END=64
 
 if [ "$METHOD" == "baseline" ]; then
     METHOD_ARGS=(
       method=baseline
       n_groups="${INDEP_N_GROUPS}"
       group_size=1
-      comment="TF Indep ${INDEP_N_GROUPS}x1 CFG=${CFG_VALUE}"
-    )
-elif [ "$METHOD" == "greedy_beam" ]; then
-    METHOD_ARGS=(
-      method=greedy_beam
-      n_groups="${N_GROUPS}"
-      group_size="${GROUP_SIZE}"
-      comment="TF GreedyBS ${N_GROUPS}x${GROUP_SIZE} CFG=${CFG_VALUE}"
+      comment="${DATASET} Indep ${INDEP_N_GROUPS}x1 CFG=${CFG_VALUE}"
     )
 elif [ "$METHOD" == "greedy_map" ]; then
     METHOD_ARGS=(
@@ -107,7 +109,24 @@ elif [ "$METHOD" == "greedy_map" ]; then
       n_groups="${N_GROUPS}"
       group_size="${GROUP_SIZE}"
       _w_interaction="${D5P4_W_INTERACTION}"
-      comment="TF D5P4 ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION} CFG=${CFG_VALUE}"
+      comment="${DATASET} D5P4 ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION} CFG=${CFG_VALUE}"
+    )
+elif [ "$METHOD" == "diverse_beam" ]; then
+    METHOD_ARGS=(
+      method=diverse_beam
+      n_groups="${N_GROUPS}"
+      group_size="${GROUP_SIZE}"
+      _diversity_alpha="${ALPHA_DIV}"
+      comment="${DATASET} DivBS ${N_GROUPS}x${GROUP_SIZE} alpha=${ALPHA_DIV} CFG=${CFG_VALUE}"
+    )
+elif [ "$METHOD" == "greedy_map_p" ]; then
+    METHOD_ARGS=(
+      method=greedy_map
+      n_groups="${N_GROUPS}"
+      group_size="${GROUP_SIZE}"
+      _w_interaction="${D5P4_W_INTERACTION}"
+      guidance_end="${PARTIAL_GUIDANCE_END}"
+      comment="${DATASET} D5P4-P ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION} CFG=${CFG_VALUE} partial=${PARTIAL_GUIDANCE_END}"
     )
 fi
 
