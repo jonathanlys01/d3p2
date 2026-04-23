@@ -83,9 +83,11 @@ COMMON_ARGS=(
 )
 
 # Method-specific settings
-N_GROUPS=4
+# We scale the local counts by the number of GPUs to keep the total count constant
+NUM_GPUS=${SLURM_NTASKS:-1}
+N_GROUPS=$((4 / NUM_GPUS))
 GROUP_SIZE=4
-INDEP_N_GROUPS=16
+INDEP_N_GROUPS=$((16 / NUM_GPUS))
 ALPHA_DIV=20.0
 D5P4_W_INTERACTION=25.0
 
