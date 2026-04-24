@@ -12,10 +12,12 @@
 #SBATCH --job-name=llada-qa-sweep
 #SBATCH --output=slurm-logs/%x-%A_%a.out
 #SBATCH --error=slurm-logs/%x-%A_%a.err
-#SBATCH --time=15:00:00
+#SBATCH --time=12:00:00
 #SBATCH --qos=qos_gpu_a100-t3
-#SBATCH --array=0-11%12
+#SBATCH --array=0-11%4
 
+# derisk
+# sbatch --array=0-3 --qos=qos_gpu_a100-dev --time=00:20:00 ./qa_sweep.slurm
 
 
 ROOT="${WORK}/projects/d3p2"
@@ -42,13 +44,6 @@ fi
 
 DATASET=${DATASETS[$DATASET_IDX]}
 METHOD=${METHODS[$METHOD_IDX]}
-
-# Dataset-specific defaults
-if [ "$DATASET" == "commonsense_qa" ]; then
-    D5P4_W_INTERACTION=2.5
-else
-    D5P4_W_INTERACTION=20.0
-fi
 
 CFG_TAG=${CFG_VALUE//./p}
 RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${DATASET}/${METHOD}_cfg${CFG_TAG}"
@@ -94,6 +89,7 @@ N_GROUPS=3
 GROUP_SIZE=3
 INDEP_N_GROUPS=9
 ALPHA_DIV=20.0
+D5P4_W_INTERACTION=20.0
 PARTIAL_GUIDANCE_END=64
 
 if [ "$METHOD" == "baseline" ]; then
@@ -101,7 +97,7 @@ if [ "$METHOD" == "baseline" ]; then
       method=baseline
       n_groups="${INDEP_N_GROUPS}"
       group_size=1
-      comment="${DATASET} Indep ${INDEP_N_GROUPS}x1 CFG=${CFG_VALUE}"
+      comment="${DATASET} Indep ${INDEP_N_GROUPS}x1"
     )
 elif [ "$METHOD" == "greedy_map" ]; then
     METHOD_ARGS=(
@@ -109,7 +105,7 @@ elif [ "$METHOD" == "greedy_map" ]; then
       n_groups="${N_GROUPS}"
       group_size="${GROUP_SIZE}"
       _w_interaction="${D5P4_W_INTERACTION}"
-      comment="${DATASET} D5P4 ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION} CFG=${CFG_VALUE}"
+      comment="${DATASET} D5P4 ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION}"
     )
 elif [ "$METHOD" == "diverse_beam" ]; then
     METHOD_ARGS=(
@@ -117,7 +113,7 @@ elif [ "$METHOD" == "diverse_beam" ]; then
       n_groups="${N_GROUPS}"
       group_size="${GROUP_SIZE}"
       _diversity_alpha="${ALPHA_DIV}"
-      comment="${DATASET} DivBS ${N_GROUPS}x${GROUP_SIZE} alpha=${ALPHA_DIV} CFG=${CFG_VALUE}"
+      comment="${DATASET} DivBS ${N_GROUPS}x${GROUP_SIZE} alpha=${ALPHA_DIV}"
     )
 elif [ "$METHOD" == "greedy_map_p" ]; then
     METHOD_ARGS=(
@@ -126,7 +122,7 @@ elif [ "$METHOD" == "greedy_map_p" ]; then
       group_size="${GROUP_SIZE}"
       _w_interaction="${D5P4_W_INTERACTION}"
       guidance_end="${PARTIAL_GUIDANCE_END}"
-      comment="${DATASET} D5P4-P ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION} CFG=${CFG_VALUE} partial=${PARTIAL_GUIDANCE_END}"
+      comment="${DATASET} D5P4-P ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION} partial=${PARTIAL_GUIDANCE_END}"
     )
 fi
 
@@ -136,3 +132,5 @@ python \
   "${COMMON_ARGS[@]}" \
   "${METHOD_ARGS[@]}" \
   "$@"
+
+echo "Job ended at $(date)"

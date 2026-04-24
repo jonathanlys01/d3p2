@@ -12,9 +12,9 @@
 #SBATCH --job-name=llada-cfg
 #SBATCH --output=slurm-logs/%x-%A_%a.out
 #SBATCH --error=slurm-logs/%x-%A_%a.err
-#SBATCH --time=15:00:00
+#SBATCH --time=12:00:00
 #SBATCH --qos=qos_gpu_a100-t3
-#SBATCH --array=0-14%5
+#SBATCH --array=0-14%4
 
 # derisk:
 # sbatch --array=0-5 --qos=qos_gpu_a100-dev --time=00:20:00 ./cfg_collapse.slurm
@@ -76,6 +76,7 @@ COMMON_ARGS=(
   block_length=128
   confidence_eos_eot_inf=False 
   qa_dataset=truthful_qa
+  minimal_log=true
   skip_eval=True
   standalone_job=true
 )
@@ -116,3 +117,5 @@ python \
   "${COMMON_ARGS[@]}" \
   "${METHOD_ARGS[@]}" \
   "$@"
+
+echo "Job ended at $(date)"
