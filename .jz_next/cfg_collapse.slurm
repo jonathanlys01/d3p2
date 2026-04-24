@@ -21,11 +21,10 @@
 
 ROOT="${WORK}/projects/d3p2"
 SRC_ROOT="${ROOT}/src/d5p4"
-SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .slurm)"
+RESULTS_SUBDIR="cfg_collapse"
 
 CFG_VALUES=(1.0 1.5 2.0 2.5 3.0)
 METHODS=(baseline greedy_beam greedy_map)
-CFG_COLLAPSE_RESULTS_SUBDIR="cfg_collapse"
 
 NUM_METHODS=${#METHODS[@]}
 CFG_IDX=$((SLURM_ARRAY_TASK_ID / NUM_METHODS))
@@ -41,7 +40,7 @@ CFG_VALUE=${CFG_VALUES[$CFG_IDX]}
 METHOD=${METHODS[$METHOD_IDX]}
 
 CFG_TAG=${CFG_VALUE//./p}
-RUN_OUTPUT_DIR="${ROOT}/results/${CFG_COLLAPSE_RESULTS_SUBDIR}/${SCRIPT_NAME}_${CFG_TAG}/${METHOD}"
+RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/cfg_collapse_${CFG_TAG}/${METHOD}"
 
 set -euo pipefail
 mkdir -p slurm-logs

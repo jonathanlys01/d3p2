@@ -21,7 +21,7 @@
 
 ROOT="${WORK}/projects/d3p2"
 SRC_ROOT="${ROOT}/src/d5p4"
-SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .slurm)"
+RESULTS_SUBDIR="gsm8k_sweep"
 
 # Variations
 CFG_VALUE=2.0
@@ -41,7 +41,7 @@ METHOD=${METHODS[$METHOD_IDX]}
 DATASET="gsm8k"
 
 CFG_TAG=${CFG_VALUE//./p}
-RUN_OUTPUT_DIR="${ROOT}/results/${SCRIPT_NAME}/${METHOD}_cfg${CFG_TAG}"
+RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${METHOD}_cfg${CFG_TAG}"
 
 set -euo pipefail
 mkdir -p slurm-logs

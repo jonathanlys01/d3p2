@@ -20,7 +20,7 @@
 
 ROOT="${WORK}/projects/d3p2"
 SRC_ROOT="${ROOT}/src/d5p4"
-SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .slurm)"
+RESULTS_SUBDIR="qa_sweep"
 
 # Variations
 CFG_VALUE=2.0
@@ -51,7 +51,7 @@ else
 fi
 
 CFG_TAG=${CFG_VALUE//./p}
-RUN_OUTPUT_DIR="${ROOT}/results/${SCRIPT_NAME}/${DATASET}/${METHOD}_cfg${CFG_TAG}"
+RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${DATASET}/${METHOD}_cfg${CFG_TAG}"
 
 set -euo pipefail
 mkdir -p slurm-logs
