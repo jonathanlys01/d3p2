@@ -13,6 +13,7 @@ import torch
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from d5p4._oversample_baseline import _resolve_input_files, _select_and_evaluate_baseline
+from d5p4._oversample_baseline_math import _extract_results, _select_and_evaluate_math_baseline
 from d5p4.eval_core import Evaluator, MathEvaluator, Perplexity, StringMetrics, _is_math_results_file
 
 
@@ -353,6 +354,120 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(selected, [["selected"]])
         self.assertIsNotNone(evaluator.evaluate_baseline_kwargs)
         self.assertEqual(evaluator.evaluate_baseline_kwargs["internal_scores"], internal_scores)
+
+    def test_oversample_math_baseline_rebuilds_selected_math_results(self):
+        class _RecordingSelectionEvaluator:
+            def __init__(self):
+                self.evaluate_baseline_kwargs = None
+
+            def evaluate_baseline(self, texts, metric, k, **kwargs):
+                self.evaluate_baseline_kwargs = {"texts": texts, "metric": metric, "k": k, **kwargs}
+                return [["wrong", "The answer is 4."], ["The answer is 9."]]
+
+        class _RecordingMathEvaluator(MathEvaluator):
+            def __init__(self):
+                super().__init__()
+                self.evaluate_inputs = None
+                self.evaluate_gold_answers = None
+                self.evaluate_references = None
+
+            def evaluate(self, generations, gold_answers, string_references=None, **kwargs):
+                del kwargs
+                self.evaluate_inputs = generations
+                self.evaluate_gold_answers = gold_answers
+                self.evaluate_references = string_references
+                return {"accuracy": 0.75, "pass@1": 0.75}
+
+        results = [
+            {
+                "question": "2+2?",
+                "gold_answer": "4",
+                "answer_str": "#### 4",
+                "generations": ["wrong", "old"],
+                "scores": [0, 0],
+                "accuracy": 0.0,
+            },
+            {
+                "question": "3*3?",
+                "gold_answer": "9",
+                "answer_str": "#### 9",
+                "generations": ["old"],
+                "scores": [0],
+                "accuracy": 0.0,
+            },
+        ]
+
+        selection_evaluator = _RecordingSelectionEvaluator()
+        math_evaluator = _RecordingMathEvaluator()
+
+        selected_results, metrics = _select_and_evaluate_math_baseline(
+            selection_evaluator,
+            math_evaluator,
+            results,
+            metric="f1",
+            subsample_k=2,
+        )
+
+        self.assertEqual(metrics, {"accuracy": 0.75, "pass@1": 0.75})
+        self.assertEqual(math_evaluator.evaluate_inputs, [["wrong", "The answer is 4."], ["The answer is 9."]])
+        self.assertEqual(math_evaluator.evaluate_gold_answers, ["4", "9"])
+        self.assertEqual(math_evaluator.evaluate_references, [["#### 4"], ["#### 9"]])
+        self.assertEqual(selected_results[0]["generations"], ["wrong", "The answer is 4."])
+        self.assertEqual(selected_results[0]["scores"], [0, 1])
+        self.assertEqual(selected_results[0]["accuracy"], 0.5)
+        self.assertEqual(selected_results[1]["scores"], [1])
+        self.assertEqual(selected_results[1]["accuracy"], 1.0)
+        self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["k"], 2)
+        self.assertFalse(selection_evaluator.evaluate_baseline_kwargs["transversal"])
+
+    def test_oversample_math_baseline_transversal_uses_one_per_lineage(self):
+        class _RecordingSelectionEvaluator:
+            def __init__(self):
+                self.evaluate_baseline_kwargs = None
+
+            def evaluate_baseline(self, texts, metric, k, **kwargs):
+                self.evaluate_baseline_kwargs = {"texts": texts, "metric": metric, "k": k, **kwargs}
+                return [["g0-best", "g1-best"]]
+
+        class _MathEvaluatorNoMetrics(MathEvaluator):
+            def evaluate(self, generations, gold_answers, string_references=None, **kwargs):
+                del generations, gold_answers, string_references, kwargs
+                return {}
+
+        selection_evaluator = _RecordingSelectionEvaluator()
+        results = [
+            {
+                "gold_answer": "1",
+                "answer_str": "#### 1",
+                "generations": ["g0-a", "g0-b", "g1-a", "g1-b"],
+            },
+        ]
+
+        _select_and_evaluate_math_baseline(
+            selection_evaluator,
+            _MathEvaluatorNoMetrics(),
+            results,
+            metric="random",
+            subsample_k=99,
+            transversal=True,
+            group_size=2,
+        )
+
+        self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["k"], 1)
+        self.assertTrue(selection_evaluator.evaluate_baseline_kwargs["transversal"])
+        self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["group_size"], 2)
+
+    def test_oversample_math_extracts_nested_temp_results(self):
+        data = {
+            "results": {
+                "results": [
+                    {"gold_answer": "1", "generations": ["a"]},
+                    "bad-row",
+                ],
+            },
+        }
+
+        self.assertEqual(_extract_results(data), [{"gold_answer": "1", "generations": ["a"]}])
 
     def test_oversample_baseline_path_accepts_single_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -12,9 +12,9 @@
 #SBATCH --job-name=llada-gsm8k-sweep
 #SBATCH --output=slurm-logs/%x-%A_%a.out
 #SBATCH --error=slurm-logs/%x-%A_%a.err
-#SBATCH --time=19:00:00
+#SBATCH --time=17:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --array=0-7%4
+#SBATCH --array=0-7
 
 # derisk:
 # sbatch --array=0-1 --qos=qos_gpu_h100-dev --time=00:20:00 ./gsm8k_sweep.slurm 
@@ -74,7 +74,7 @@ COMMON_ARGS=(
   model=llada
   qa_dataset="${DATASET}"
   qa_n_shots=0
-  qa_dataset_len=150
+  qa_dataset_len=-1
   cat_temperature=1.0
   remasking="${REMASKING}"
   selection_temperature=0.1

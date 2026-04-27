@@ -43,9 +43,10 @@ class GreedyBeamSearch(BaseSelector):
         """Transversal selection: one sample per group."""
         if (scores := self.compute_scores(cache)) is None:
             return None
+        total_groups = self.config.n_groups * self.distributed_mul
         return _sample_per_group(
             scores,
-            self.config.n_groups,
+            total_groups,
             self.config.group_size,
             self.config._temperature,
             scores.device,
@@ -55,7 +56,7 @@ class GreedyBeamSearch(BaseSelector):
         """Global top-k selection without group constraints."""
         if (scores := self.compute_scores(cache)) is None:
             return None
-        return _sample_from_logits(scores, self.config.n_groups, self.config._temperature)
+        return _sample_from_logits(scores, self.config.n_groups * self.distributed_mul, self.config._temperature)
 
 
 class DiverseBeamSearch(BaseSelector):
