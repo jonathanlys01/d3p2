@@ -71,6 +71,7 @@ baseline_dirs="${tmp_dir}/baseline_dirs.txt"
 math_baseline_dirs="${tmp_dir}/math_baseline_dirs.txt"
 subsample_files="${tmp_dir}/subsample_files.txt"
 math_subsample_dirs="${tmp_dir}/math_subsample_dirs.txt"
+preflight_report="${tmp_dir}/preflight_report.txt"
 
 rel_to_results_root() {
   local path="$1"
@@ -106,6 +107,7 @@ discover_args=(
   --math-baseline-dirs "${math_baseline_dirs}"
   --subsample-files "${subsample_files}"
   --math-subsample-dirs "${math_subsample_dirs}"
+  --report "${preflight_report}"
 )
 if [[ ",${BON_METRICS}," == *",int,"* ]]; then
   discover_args+=(--require-text-baseline-internal-scores)
@@ -120,16 +122,7 @@ echo "Baseline BoN metrics: ${BON_METRICS}"
 echo "Baseline k: ${BASELINE_K}"
 echo
 
-# display what has been found
-echo "Baseline dirs:"
-cat "${baseline_dirs}"
-echo "Math baseline dirs:"
-cat "${math_baseline_dirs}"
-echo "Subsample files:"
-cat "${subsample_files}"
-echo "Math subsample dirs:"
-cat "${math_subsample_dirs}"
-
+cat "${preflight_report}"
 
 if [[ "${CONFIRM:-true}" == "true" ]]; then
   read -r -p "Press [Enter] key to continue..."
