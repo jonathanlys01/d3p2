@@ -71,13 +71,16 @@ class TestQaDatasets(unittest.TestCase):
             disable_sys_args=True,
             qa_dataset="commonsense_qa",
             commonsense_qa_path="/missing/commonsense_qa",
+            cache_dir="/missing/cache",
         )
 
         df = get_qa_dataset(cfg)
 
         self.assertEqual(df.loc[0, "correct_answers"], ["library"])
         self.assertEqual(mock_load_dataset.call_args_list[0].args, ("/missing/commonsense_qa",))
+        self.assertEqual(mock_load_dataset.call_args_list[0].kwargs, {"cache_dir": "/missing/cache"})
         self.assertEqual(mock_load_dataset.call_args_list[1].args, ("tau/commonsense_qa",))
+        self.assertEqual(mock_load_dataset.call_args_list[1].kwargs, {"cache_dir": "./.cache"})
 
     @patch("d5p4.data.qa.load_dataset")
     def test_ai2_arc_formats_correct_and_incorrect_answers(self, mock_load_dataset):

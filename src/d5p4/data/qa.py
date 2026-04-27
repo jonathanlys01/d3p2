@@ -58,17 +58,18 @@ def _load_dataset_with_default_fallback(
             return load_dataset(dataset_path, cache_dir=cfg.cache_dir)
         return load_dataset(dataset_path, subset, cache_dir=cfg.cache_dir)
     except Exception:
-        default_path = _default_dataset_path(dataset_name)
+        default_cfg = Config(disable_sys_args=True)
+        default_path = str(getattr(default_cfg, _DATASET_PATH_FIELDS[dataset_name]))
         if dataset_path == default_path:
             raise
 
         print(
             f"Could not load {dataset_name} from {dataset_path!r}; "
-            f"retrying default dataset id {default_path!r}.",
+            f"retrying default dataset id {default_path!r} with cache_dir={default_cfg.cache_dir!r}.",
         )
         if subset is None:
-            return load_dataset(default_path, cache_dir=cfg.cache_dir)
-        return load_dataset(default_path, subset, cache_dir=cfg.cache_dir)
+            return load_dataset(default_path, cache_dir=default_cfg.cache_dir)
+        return load_dataset(default_path, subset, cache_dir=default_cfg.cache_dir)
 
 
 def _format_few_shot_prefix(examples: list[dict]) -> str:
