@@ -15,7 +15,7 @@ set -euo pipefail
 #   PPL_MODEL_ID=gpt2                       # perplexity model/path
 #   COS_MODEL_ID=jinaai/...                 # embedding model/path
 #   FORCE=false                             # skip existing subsample metrics
-#   CONFIRM=true                            # pause after printing manifests
+#   CONFIRM=false                           # skip pause after printing manifests
 #
 # Default input/output, when unset:
 #   results
@@ -131,7 +131,7 @@ echo "Math subsample dirs:"
 cat "${math_subsample_dirs}"
 
 
-if [[ "${CONFIRM:-false}" == "true" ]]; then
+if [[ "${CONFIRM:-true}" == "true" ]]; then
   read -r -p "Press [Enter] key to continue..."
 fi
 
