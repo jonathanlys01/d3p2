@@ -53,10 +53,17 @@ def _load_dataset_with_default_fallback(
     subset: str | None = None,
 ) -> DatasetDict:
     """Load a QA dataset, falling back from stale absolute paths to default HF IDs."""
-    try:
+
+    def _load(path: str, cache_dir: str, download_mode: str | None = None) -> DatasetDict:
+        kwargs = {"cache_dir": cache_dir}
+        if download_mode is not None:
+            kwargs["download_mode"] = download_mode
         if subset is None:
-            return load_dataset(dataset_path, cache_dir=cfg.cache_dir)
-        return load_dataset(dataset_path, subset, cache_dir=cfg.cache_dir)
+            return load_dataset(path, **kwargs)
+        return load_dataset(path, subset, **kwargs)
+
+    try:
+        return _load(dataset_path, cfg.cache_dir)
     except Exception:
         default_cfg = Config(disable_sys_args=True)
         default_path = str(getattr(default_cfg, _DATASET_PATH_FIELDS[dataset_name]))
@@ -67,9 +74,14 @@ def _load_dataset_with_default_fallback(
             f"Could not load {dataset_name} from {dataset_path!r}; "
             f"retrying default dataset id {default_path!r} with cache_dir={default_cfg.cache_dir!r}.",
         )
-        if subset is None:
-            return load_dataset(default_path, cache_dir=default_cfg.cache_dir)
-        return load_dataset(default_path, subset, cache_dir=default_cfg.cache_dir)
+        try:
+            return _load(default_path, default_cfg.cache_dir, download_mode="reuse_dataset_if_exists")
+        except Exception as exc:
+            print(
+                f"Could not load cached/default {dataset_name} ({exc}); "
+                "retrying with download_mode='force_redownload'.",
+            )
+            return _load(default_path, default_cfg.cache_dir, download_mode="force_redownload")
 
 
 def _format_few_shot_prefix(examples: list[dict]) -> str:

@@ -80,7 +80,45 @@ class TestQaDatasets(unittest.TestCase):
         self.assertEqual(mock_load_dataset.call_args_list[0].args, ("/missing/commonsense_qa",))
         self.assertEqual(mock_load_dataset.call_args_list[0].kwargs, {"cache_dir": "/missing/cache"})
         self.assertEqual(mock_load_dataset.call_args_list[1].args, ("tau/commonsense_qa",))
-        self.assertEqual(mock_load_dataset.call_args_list[1].kwargs, {"cache_dir": "./.cache"})
+        self.assertEqual(
+            mock_load_dataset.call_args_list[1].kwargs,
+            {"cache_dir": "./.cache", "download_mode": "reuse_dataset_if_exists"},
+        )
+
+    @patch("d5p4.data.qa.load_dataset")
+    def test_commonsense_qa_force_redownloads_when_default_cache_load_fails(self, mock_load_dataset):
+        mock_load_dataset.side_effect = [
+            FileNotFoundError("stale cluster path"),
+            OSError("bad local cache"),
+            {
+                "validation": _FakeSplit(
+                    [
+                        {
+                            "question": "Where do people usually keep books?",
+                            "choices": {"text": ["library", "garage", "beach"], "label": ["A", "B", "C"]},
+                            "answerKey": "A",
+                        },
+                    ],
+                ),
+                "train": _FakeSplit([]),
+            },
+        ]
+
+        cfg = Config(
+            disable_sys_args=True,
+            qa_dataset="commonsense_qa",
+            commonsense_qa_path="/missing/commonsense_qa",
+            cache_dir="/missing/cache",
+        )
+
+        df = get_qa_dataset(cfg)
+
+        self.assertEqual(df.loc[0, "correct_answers"], ["library"])
+        self.assertEqual(mock_load_dataset.call_args_list[2].args, ("tau/commonsense_qa",))
+        self.assertEqual(
+            mock_load_dataset.call_args_list[2].kwargs,
+            {"cache_dir": "./.cache", "download_mode": "force_redownload"},
+        )
 
     @patch("d5p4.data.qa.load_dataset")
     def test_ai2_arc_formats_correct_and_incorrect_answers(self, mock_load_dataset):
