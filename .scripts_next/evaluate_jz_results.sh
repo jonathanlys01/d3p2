@@ -122,7 +122,8 @@ cat "${subsample_files}"
 echo "Math subsample dirs:"
 cat "${math_subsample_dirs}"
 
-exit 0
+
+read -p "Press [Enter] key to continue..."
 
 while IFS= read -r dir; do
   [[ -n "${dir}" ]] || continue
