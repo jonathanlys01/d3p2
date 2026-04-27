@@ -50,6 +50,36 @@ class TestQaDatasets(unittest.TestCase):
         mock_load_dataset.assert_called_once_with("tau/commonsense_qa", cache_dir="./.cache")
 
     @patch("d5p4.data.qa.load_dataset")
+    def test_commonsense_qa_falls_back_to_default_dataset_id(self, mock_load_dataset):
+        mock_load_dataset.side_effect = [
+            FileNotFoundError("stale cluster path"),
+            {
+                "validation": _FakeSplit(
+                    [
+                        {
+                            "question": "Where do people usually keep books?",
+                            "choices": {"text": ["library", "garage", "beach"], "label": ["A", "B", "C"]},
+                            "answerKey": "A",
+                        },
+                    ],
+                ),
+                "train": _FakeSplit([]),
+            },
+        ]
+
+        cfg = Config(
+            disable_sys_args=True,
+            qa_dataset="commonsense_qa",
+            commonsense_qa_path="/missing/commonsense_qa",
+        )
+
+        df = get_qa_dataset(cfg)
+
+        self.assertEqual(df.loc[0, "correct_answers"], ["library"])
+        self.assertEqual(mock_load_dataset.call_args_list[0].args, ("/missing/commonsense_qa",))
+        self.assertEqual(mock_load_dataset.call_args_list[1].args, ("tau/commonsense_qa",))
+
+    @patch("d5p4.data.qa.load_dataset")
     def test_ai2_arc_formats_correct_and_incorrect_answers(self, mock_load_dataset):
         mock_load_dataset.return_value = {
             "test": _FakeSplit(

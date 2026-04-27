@@ -1,5 +1,6 @@
 import pandas as pd
 from datasets import load_dataset
+from datasets.dataset_dict import DatasetDict
 
 from d5p4.config import Config
 from d5p4.data.math_ds import gsm8k
@@ -9,6 +10,12 @@ QA_DATASET_SPLITS = {
     "truthful_qa": "validation",
     "commonsense_qa": "validation",
     "ai2_arc": "test",
+}
+
+_DATASET_PATH_FIELDS = {
+    "truthful_qa": "truthful_qa_path",
+    "commonsense_qa": "commonsense_qa_path",
+    "ai2_arc": "ai2_arc_path",
 }
 
 
@@ -32,6 +39,36 @@ def _extract_choice_answer_sets(item: dict) -> tuple[list[str], list[str]]:
     correct = choice_lookup[answer_key]
     incorrect = [choice for label, choice in choice_lookup.items() if label != answer_key]
     return [correct], incorrect
+
+
+def _default_dataset_path(dataset_name: str) -> str:
+    default_cfg = Config(disable_sys_args=True)
+    return str(getattr(default_cfg, _DATASET_PATH_FIELDS[dataset_name]))
+
+
+def _load_dataset_with_default_fallback(
+    cfg: Config,
+    dataset_name: str,
+    dataset_path: str,
+    subset: str | None = None,
+) -> DatasetDict:
+    """Load a QA dataset, falling back from stale absolute paths to default HF IDs."""
+    try:
+        if subset is None:
+            return load_dataset(dataset_path, cache_dir=cfg.cache_dir)
+        return load_dataset(dataset_path, subset, cache_dir=cfg.cache_dir)
+    except Exception:
+        default_path = _default_dataset_path(dataset_name)
+        if dataset_path == default_path:
+            raise
+
+        print(
+            f"Could not load {dataset_name} from {dataset_path!r}; "
+            f"retrying default dataset id {default_path!r}.",
+        )
+        if subset is None:
+            return load_dataset(default_path, cache_dir=cfg.cache_dir)
+        return load_dataset(default_path, subset, cache_dir=cfg.cache_dir)
 
 
 def _format_few_shot_prefix(examples: list[dict]) -> str:
@@ -61,7 +98,7 @@ def _format_few_shot_prefix(examples: list[dict]) -> str:
 
 def truthful_qa(cfg: Config) -> pd.DataFrame:
     assert cfg.qa_n_shots == 0, "TruthfulQA does not support n_shots"
-    dataset = load_dataset(cfg.truthful_qa_path, "generation", cache_dir=cfg.cache_dir)[
+    dataset = _load_dataset_with_default_fallback(cfg, "truthful_qa", cfg.truthful_qa_path, "generation")[
         QA_DATASET_SPLITS["truthful_qa"]
     ]
     dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
@@ -74,11 +111,7 @@ def truthful_qa(cfg: Config) -> pd.DataFrame:
 
 
 def _multiple_choice_qa(cfg: Config, dataset_path: str, dataset_name: str, subset: str | None = None) -> pd.DataFrame:
-    if subset is None:
-        dataset_splits = load_dataset(dataset_path, cache_dir=cfg.cache_dir)
-    else:
-        dataset_splits = load_dataset(dataset_path, subset, cache_dir=cfg.cache_dir)
-
+    dataset_splits = _load_dataset_with_default_fallback(cfg, dataset_name, dataset_path, subset)
     dataset = dataset_splits[QA_DATASET_SPLITS[dataset_name]].shuffle(seed=cfg.seed)  # type: ignore
 
     questions = []
