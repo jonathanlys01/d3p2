@@ -72,7 +72,12 @@ def _load_json(path: Path) -> Any:
         return None
 
 
-def _validate_text_result(data: Any, *, require_eval_selection: bool) -> None:
+def _validate_text_result(
+    data: Any,
+    *,
+    require_eval_selection: bool,
+    require_internal_scores: bool,
+) -> None:
     result = GenerationResult.model_validate(data)
     if result.text_samples is None:
         raise ValueError("text result is missing text_samples")
@@ -80,9 +85,50 @@ def _validate_text_result(data: Any, *, require_eval_selection: bool) -> None:
         raise ValueError("subsample text result is missing eval_text_samples")
     if require_eval_selection and result.eval_selected_indices is None:
         raise ValueError("subsample text result is missing eval_selected_indices")
+    if require_internal_scores and result.internal_scores is None:
+        raise ValueError("text result is missing internal_scores required for int selection")
+    if require_internal_scores and result.internal_score_metadata is not None:
+        metadata = result.internal_score_metadata
+        assert hasattr(metadata, "higher_is_better")
+        higher_is_better = metadata.higher_is_better
+        if higher_is_better is False:
+            raise ValueError("int selection expects internal_scores where higher_is_better is true")
+    if require_eval_selection and require_internal_scores:
+        _validate_internal_score_group_representatives(data, result)
 
 
-def _validate_for_manifest(data: Any) -> str:
+def _validate_internal_score_group_representatives(data: Any, result: GenerationResult) -> None:
+    if result.text_samples is None or result.internal_scores is None or result.eval_selected_indices is None:
+        raise ValueError("internal representative validation requires text_samples, internal_scores, and indices")
+
+    config = result.config or {}
+    eval_selection = data.get("eval_selection") if isinstance(data, dict) else None
+    group_size = None
+    if isinstance(eval_selection, dict) and isinstance(eval_selection.get("group_size"), int):
+        group_size = eval_selection["group_size"]
+    elif isinstance(config.get("group_size"), int):
+        group_size = config["group_size"]
+    if group_size is None or group_size <= 1:
+        raise ValueError("internal representative validation requires group_size > 1")
+
+    for group_idx, (texts, scores, indices) in enumerate(
+        zip(result.text_samples, result.internal_scores, result.eval_selected_indices),
+    ):
+        if len(texts) % group_size != 0:
+            raise ValueError(f"text_samples[{group_idx}] length is not divisible by group_size={group_size}")
+        expected: list[int] = []
+        for start in range(0, len(texts), group_size):
+            block_scores = scores[start : start + group_size]
+            local_idx = max(range(len(block_scores)), key=lambda idx: block_scores[idx])
+            expected.append(start + local_idx)
+        if indices != expected:
+            raise ValueError(
+                f"eval_selected_indices[{group_idx}] do not match internal-score representatives: "
+                f"expected {expected}, got {indices}",
+            )
+
+
+def _validate_for_manifest(data: Any, *, require_text_baseline_internal_scores: bool) -> str:
     envelope = ResultEnvelope.model_validate(data)
     method = envelope.config.method
     is_math = envelope.config.qa_dataset == "gsm8k"
@@ -91,14 +137,18 @@ def _validate_for_manifest(data: Any) -> str:
         if is_math:
             MathResult.model_validate(data)
             return "math_baseline"
-        _validate_text_result(data, require_eval_selection=False)
+        _validate_text_result(
+            data,
+            require_eval_selection=False,
+            require_internal_scores=require_text_baseline_internal_scores,
+        )
         return "baseline"
 
     if is_math:
         MathResult.model_validate(data)
         return "math_subsample"
 
-    _validate_text_result(data, require_eval_selection=True)
+    _validate_text_result(data, require_eval_selection=True, require_internal_scores=True)
     return "subsample"
 
 
@@ -109,8 +159,7 @@ def _iter_json_files(path: Path) -> list[Path]:
     return sorted(
         candidate
         for candidate in path.rglob("*.json")
-        if not candidate.name.startswith("temp")
-        and not any(marker in candidate.name for marker in GENERATED_MARKERS)
+        if not candidate.name.startswith("temp") and not any(marker in candidate.name for marker in GENERATED_MARKERS)
     )
 
 
@@ -160,6 +209,11 @@ def main() -> None:
         required=True,
         help="Output manifest for GSM8K/math subsample/search directories.",
     )
+    parser.add_argument(
+        "--require-text-baseline-internal-scores",
+        action="store_true",
+        help="Fail discovery if a text baseline file cannot support int best-of-N selection.",
+    )
     args = parser.parse_args()
 
     baseline_dirs: set[str] = set()
@@ -173,7 +227,10 @@ def main() -> None:
             raise SystemExit(f"Invalid JSON or unreadable file: {file}")
 
         try:
-            kind = _validate_for_manifest(data)
+            kind = _validate_for_manifest(
+                data,
+                require_text_baseline_internal_scores=args.require_text_baseline_internal_scores,
+            )
         except ValidationError as exc:
             raise SystemExit(f"Invalid result format: {file}\n{exc}") from exc
         except ValueError as exc:

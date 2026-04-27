@@ -11,10 +11,11 @@ set -euo pipefail
 #   EVAL_OUTPUT_ROOT=evaluations/jz_results/<timestamp>
 #                                           # compact metrics/config output dir
 #   BASELINE_K=3                            # top-k for independent baselines
-#   BON_METRICS=f1,ppl,random               # selectors for independent baselines
+#   BON_METRICS=f1,ppl,int,random           # selectors for independent baselines
 #   PPL_MODEL_ID=gpt2                       # perplexity model/path
 #   COS_MODEL_ID=jinaai/...                 # embedding model/path
 #   FORCE=false                             # skip existing subsample metrics
+#   CONFIRM=true                            # pause after printing manifests
 #
 # Default input/output, when unset:
 #   results
@@ -38,7 +39,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 BASELINE_K="${BASELINE_K:-3}"
-BON_METRICS="${BON_METRICS:-f1,ppl,random}"
+BON_METRICS="${BON_METRICS:-f1,ppl,int,random}"
 
 PPL_MODEL_ID="${PPL_MODEL_ID:-/Brain/public/models/meta-llama/Meta-Llama-3-8B/}"
 COS_MODEL_ID="${COS_MODEL_ID:-/Brain/public/models/jinaai/jina-embeddings-v2-base-en/}"
@@ -99,12 +100,19 @@ export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export PYTHONUNBUFFERED=1
 
-uv run python .scripts_next/discover_jz_eval_inputs.py \
-  --root "${RESULTS_ROOT}" \
-  --baseline-dirs "${baseline_dirs}" \
-  --math-baseline-dirs "${math_baseline_dirs}" \
-  --subsample-files "${subsample_files}" \
+discover_args=(
+  --root "${RESULTS_ROOT}"
+  --baseline-dirs "${baseline_dirs}"
+  --math-baseline-dirs "${math_baseline_dirs}"
+  --subsample-files "${subsample_files}"
   --math-subsample-dirs "${math_subsample_dirs}"
+)
+if [[ ",${BON_METRICS}," == *",int,"* ]]; then
+  discover_args+=(--require-text-baseline-internal-scores)
+fi
+
+uv run python .scripts_next/discover_jz_eval_inputs.py \
+  "${discover_args[@]}"
 
 echo "Results root: ${RESULTS_ROOT}"
 echo "Evaluation output: ${EVAL_OUTPUT_ROOT}"
@@ -123,7 +131,9 @@ echo "Math subsample dirs:"
 cat "${math_subsample_dirs}"
 
 
-read -p "Press [Enter] key to continue..."
+if [[ "${CONFIRM:-false}" == "true" ]]; then
+  read -r -p "Press [Enter] key to continue..."
+fi
 
 while IFS= read -r dir; do
   [[ -n "${dir}" ]] || continue
