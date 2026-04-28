@@ -141,6 +141,7 @@ while IFS= read -r dir; do
   OVERSAMPLE_MATH_BASELINE_METHOD="baseline" \
   OVERSAMPLE_MATH_BASELINE_METRICS="${MATH_METRICS}" \
   OVERSAMPLE_MATH_BASELINE_TRANSVERSAL="false" \
+  OVERSAMPLE_MATH_BASELINE_EXPECTED_SELECTED_K="${MATH_BASELINE_K}" \
   uv run python -m d5p4._oversample_baseline_math \
     config="${SRC_ROOT}/_default.yaml" \
     cache_dir="${ROOT}/.cache" \
@@ -167,11 +168,11 @@ while IFS= read -r dir; do
   OVERSAMPLE_MATH_BASELINE_METRICS="${MATH_METRICS}" \
   OVERSAMPLE_MATH_BASELINE_TRANSVERSAL="true" \
   OVERSAMPLE_MATH_BASELINE_GROUP_SIZE="${MATH_GROUP_SIZE}" \
+  OVERSAMPLE_MATH_BASELINE_EXPECTED_SELECTED_K="${MATH_BASELINE_K}" \
   uv run python -m d5p4._oversample_baseline_math \
     config="${SRC_ROOT}/_default.yaml" \
     cache_dir="${ROOT}/.cache" \
     results_dir="${tmp_src_dir}" \
-    subsample_k=1 \
     ppl_model_id="${PPL_MODEL_ID}" \
     cos_model_id="${COS_MODEL_ID}" \
     eval_batch_size="${EVAL_BATCH_SIZE}"

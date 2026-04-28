@@ -33,6 +33,8 @@ Environment flags
   subgroup and is useful when candidates are sibling leaves from search.
 - OVERSAMPLE_MATH_BASELINE_GROUP_SIZE: override source config.group_size for
   transversal selection.
+- OVERSAMPLE_MATH_BASELINE_EXPECTED_SELECTED_K: optional guard requiring every
+  selected question to have exactly this many generations before evaluation.
 """
 
 from __future__ import annotations
@@ -191,6 +193,47 @@ def _build_selected_results(
     return selected_results
 
 
+def _expected_selected_counts(
+    texts: list[list[str]],
+    subsample_k: int,
+    transversal: bool,
+    group_size: int,
+) -> list[int]:
+    if transversal:
+        if group_size <= 0:
+            raise ValueError(f"group_size must be positive, got {group_size}.")
+        counts: list[int] = []
+        for idx, group_texts in enumerate(texts):
+            if len(group_texts) % group_size != 0:
+                raise ValueError(
+                    f"Question {idx} has {len(group_texts)} candidates, not divisible by group_size={group_size}.",
+                )
+            counts.append(len(group_texts) // group_size)
+        return counts
+    return [subsample_k for _ in texts]
+
+
+def _validate_selected_cardinality(
+    selected: list[list[str]],
+    expected_counts: list[int],
+    expected_selected_k: int | None = None,
+) -> None:
+    if len(selected) != len(expected_counts):
+        raise ValueError(f"Selected {len(selected)} question groups, expected {len(expected_counts)}.")
+
+    for idx, (selected_generations, expected_count) in enumerate(zip(selected, expected_counts)):
+        selected_count = len(selected_generations)
+        if selected_count != expected_count:
+            raise ValueError(
+                f"Question {idx} selected {selected_count} generations, expected {expected_count}.",
+            )
+        if expected_selected_k is not None and selected_count != expected_selected_k:
+            raise ValueError(
+                f"Question {idx} selected {selected_count} generations, "
+                f"but expected selected cardinality is {expected_selected_k}.",
+            )
+
+
 def _select_and_evaluate_math_baseline(  # noqa: PLR0913
     selection_evaluator: Evaluator,
     math_evaluator: MathEvaluator,
@@ -201,6 +244,7 @@ def _select_and_evaluate_math_baseline(  # noqa: PLR0913
     random_seed: int | None = None,
     transversal: bool = False,
     group_size: int = 1,
+    expected_selected_k: int | None = None,
     num_workers: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, float | str]]:
     texts, gold_answers, references = _math_groups(results)
@@ -219,6 +263,11 @@ def _select_and_evaluate_math_baseline(  # noqa: PLR0913
         group_size=group_size,
         internal_scores=selection_internal_scores,
         random_seed=random_seed,
+    )
+    _validate_selected_cardinality(
+        selected,
+        _expected_selected_counts(texts, subsample_k, transversal, group_size),
+        expected_selected_k=expected_selected_k,
     )
     selected_results = _build_selected_results(results, selected, math_evaluator)
     metrics = math_evaluator.evaluate(
@@ -259,6 +308,8 @@ if __name__ == "__main__":
     requested_metrics = _env_list("OVERSAMPLE_MATH_BASELINE_METRICS")
     transversal = _env_flag("OVERSAMPLE_MATH_BASELINE_TRANSVERSAL", default=False)
     group_size_override = os.getenv("OVERSAMPLE_MATH_BASELINE_GROUP_SIZE")
+    expected_selected_k_env = os.getenv("OVERSAMPLE_MATH_BASELINE_EXPECTED_SELECTED_K")
+    expected_selected_k = int(expected_selected_k_env) if expected_selected_k_env is not None else None
 
     path = os.path.abspath(os.path.expanduser(os.getenv("OVERSAMPLE_MATH_BASELINE_PATH", config.results_dir)))
     output_dir, files = _resolve_input_files(path)
@@ -270,8 +321,9 @@ if __name__ == "__main__":
 
     subsample_k = config.subsample_k
     assert subsample_k != 0 or transversal
+    selection_k = 1 if transversal else subsample_k
 
-    print("Using per-question subsample_k: ", subsample_k)
+    print("Using per-question selection k: ", selection_k)
     if transversal:
         print("Using transversal lineage collapse: one selected candidate per lineage subgroup")
 
@@ -323,11 +375,12 @@ if __name__ == "__main__":
                     math_evaluator,
                     results,
                     metric,
-                    subsample_k,
+                    selection_k,
                     internal_scores=internal_scores,
                     random_seed=_stable_variant_seed(current_config.seed, output_stem) if metric == "random" else None,
                     transversal=transversal,
                     group_size=group_size,
+                    expected_selected_k=expected_selected_k,
                     num_workers=num_workers,
                 )
 
@@ -340,6 +393,7 @@ if __name__ == "__main__":
                     "source_file": file,
                     "selection_metric": metric,
                     "subsample_k": 1 if transversal else subsample_k,
+                    "expected_selected_k": expected_selected_k,
                     "transversal": transversal,
                     "group_size": group_size if transversal else 1,
                 }

@@ -366,7 +366,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
 
             def evaluate_baseline(self, texts, metric, k, **kwargs):
                 self.evaluate_baseline_kwargs = {"texts": texts, "metric": metric, "k": k, **kwargs}
-                return [["wrong", "The answer is 4."], ["The answer is 9."]]
+                return [["wrong", "The answer is 4."], ["The answer is 9.", "wrong"]]
 
         class _RecordingMathEvaluator(MathEvaluator):
             def __init__(self):
@@ -395,7 +395,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
                 "question": "3*3?",
                 "gold_answer": "9",
                 "answer_str": "#### 9",
-                "generations": ["old"],
+                "generations": ["old", "old2"],
                 "scores": [0],
                 "accuracy": 0.0,
             },
@@ -413,14 +413,14 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         )
 
         self.assertEqual(metrics, {"accuracy": 0.75, "pass@1": 0.75})
-        self.assertEqual(math_evaluator.evaluate_inputs, [["wrong", "The answer is 4."], ["The answer is 9."]])
+        self.assertEqual(math_evaluator.evaluate_inputs, [["wrong", "The answer is 4."], ["The answer is 9.", "wrong"]])
         self.assertEqual(math_evaluator.evaluate_gold_answers, ["4", "9"])
         self.assertEqual(math_evaluator.evaluate_references, [["#### 4"], ["#### 9"]])
         self.assertEqual(selected_results[0]["generations"], ["wrong", "The answer is 4."])
         self.assertEqual(selected_results[0]["scores"], [0, 1])
         self.assertEqual(selected_results[0]["accuracy"], 0.5)
-        self.assertEqual(selected_results[1]["scores"], [1])
-        self.assertEqual(selected_results[1]["accuracy"], 1.0)
+        self.assertEqual(selected_results[1]["scores"], [1, 0])
+        self.assertEqual(selected_results[1]["accuracy"], 0.5)
         self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["k"], 2)
         self.assertFalse(selection_evaluator.evaluate_baseline_kwargs["transversal"])
 
@@ -460,6 +460,37 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["k"], 1)
         self.assertTrue(selection_evaluator.evaluate_baseline_kwargs["transversal"])
         self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["group_size"], 2)
+
+    def test_oversample_math_validates_selected_cardinality_before_eval(self):
+        class _ShortSelectionEvaluator:
+            def evaluate_baseline(self, texts, metric, k, **kwargs):
+                del texts, metric, k, kwargs
+                return [["only-one", "only-two"]]
+
+        class _MathEvaluatorNoEval(MathEvaluator):
+            def evaluate(self, generations, gold_answers, string_references=None, **kwargs):
+                del generations, gold_answers, string_references, kwargs
+                raise AssertionError("math evaluation should not run after cardinality mismatch")
+
+        results = [
+            {
+                "gold_answer": "1",
+                "answer_str": "#### 1",
+                "generations": [str(i) for i in range(16)],
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "selected 2 generations, expected 4"):
+            _select_and_evaluate_math_baseline(
+                _ShortSelectionEvaluator(),
+                _MathEvaluatorNoEval(),
+                results,
+                metric="random",
+                subsample_k=99,
+                transversal=True,
+                group_size=4,
+                expected_selected_k=4,
+            )
 
     def test_oversample_math_accuracy_scores_use_exact_math_correctness(self):
         class _FakeMathEvaluator:
@@ -515,6 +546,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
             results,
             metric="acc",
             subsample_k=4,
+            expected_selected_k=4,
         )
 
         self.assertEqual(metrics, {"accuracy": 1.0})
@@ -564,6 +596,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
             subsample_k=99,
             transversal=True,
             group_size=4,
+            expected_selected_k=4,
         )
 
         self.assertEqual(
