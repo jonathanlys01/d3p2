@@ -150,6 +150,11 @@ def _summary_for_file(root: Path, path: Path, kind: str, data: Any) -> FileSumma
     math_result = MathResult.model_validate(data)
     rows = math_result.results["results"] if isinstance(math_result.results, dict) else math_result.results
     generations = [row.generations for row in rows]
+    candidate_sizes = _unique_lengths(generations)
+    group_size = config.get("group_size")
+    eval_sizes = ()
+    if kind == "math_subsample" and isinstance(group_size, int) and group_size > 0:
+        eval_sizes = tuple(sorted({size // group_size for size in candidate_sizes if size % group_size == 0}))
     return FileSummary(
         kind=kind,
         path=str(path),
@@ -158,7 +163,8 @@ def _summary_for_file(root: Path, path: Path, kind: str, data: Any) -> FileSumma
         qa_dataset=envelope.config.qa_dataset,
         cfg_scale=config.get("cfg_scale"),
         n_items=len(rows),
-        candidate_sizes=_unique_lengths(generations),
+        candidate_sizes=candidate_sizes,
+        eval_sizes=eval_sizes,
         internal_score_sizes=_unique_lengths(math_result.internal_scores or math_result.eval_internal_scores),
         config=config,
     )
@@ -358,7 +364,7 @@ def _write_report(path: Path, summaries: list[FileSummary]) -> None:
     lines.append("-----")
     lines.append("candidates/eval/internal are unique per-question group sizes.")
     lines.append("MIXED values are expected for methods or for baseline-vs-subsample candidate sizes.")
-    lines.append("Discovery has already validated result_schema alignment and internal-score representative indices.")
+    lines.append("Discovery has already validated schemas and text internal-score representative indices when present.")
 
     path.write_text("\n".join(lines) + "\n")
 

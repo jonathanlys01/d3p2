@@ -13,7 +13,11 @@ import torch
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from d5p4._oversample_baseline import _resolve_input_files, _select_and_evaluate_baseline
-from d5p4._oversample_baseline_math import _extract_results, _select_and_evaluate_math_baseline
+from d5p4._oversample_baseline_math import (
+    _extract_results,
+    _math_accuracy_scores,
+    _select_and_evaluate_math_baseline,
+)
 from d5p4.eval_core import Evaluator, MathEvaluator, Perplexity, StringMetrics, _is_math_results_file
 
 
@@ -456,6 +460,117 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["k"], 1)
         self.assertTrue(selection_evaluator.evaluate_baseline_kwargs["transversal"])
         self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["group_size"], 2)
+
+    def test_oversample_math_accuracy_scores_use_exact_math_correctness(self):
+        class _FakeMathEvaluator:
+            def score_group(self, generations, gold_answer):
+                return [1 if str(gold_answer) in generation else 0 for generation in generations]
+
+        scores = _math_accuracy_scores(
+            _FakeMathEvaluator(),
+            [["wrong", "The answer is 4."], ["The answer is 9.", "nope"]],
+            ["4", "9"],
+        )
+
+        self.assertEqual(scores, [[0.0, 1.0], [1.0, 0.0]])
+
+    def test_oversample_math_acc_top_k_selects_correct_candidates(self):
+        class _FakeMathEvaluator:
+            def score_group(self, generations, gold_answer):
+                return [1 if str(gold_answer) in generation else 0 for generation in generations]
+
+            def evaluate(self, generations, gold_answers, string_references=None, **kwargs):
+                del generations, gold_answers, string_references, kwargs
+                return {"accuracy": 1.0}
+
+        selection_evaluator = Evaluator.__new__(Evaluator)
+        results = [
+            {
+                "gold_answer": "4",
+                "answer_str": "#### 4",
+                "generations": [
+                    "wrong 0",
+                    "The answer is 4.",
+                    "wrong 2",
+                    "4",
+                    "wrong 4",
+                    "wrong 5",
+                    "Final: 4",
+                    "wrong 7",
+                    "wrong 8",
+                    "wrong 9",
+                    "wrong 10",
+                    "Answer 4",
+                    "wrong 12",
+                    "wrong 13",
+                    "wrong 14",
+                    "wrong 15",
+                ],
+            },
+        ]
+
+        selected_results, metrics = _select_and_evaluate_math_baseline(
+            selection_evaluator,
+            _FakeMathEvaluator(),
+            results,
+            metric="acc",
+            subsample_k=4,
+        )
+
+        self.assertEqual(metrics, {"accuracy": 1.0})
+        self.assertEqual(len(selected_results[0]["generations"]), 4)
+        self.assertEqual(selected_results[0]["scores"], [1, 1, 1, 1])
+
+    def test_oversample_math_acc_transversal_selects_one_correct_per_subgroup(self):
+        class _FakeMathEvaluator:
+            def score_group(self, generations, gold_answer):
+                return [1 if str(gold_answer) in generation else 0 for generation in generations]
+
+            def evaluate(self, generations, gold_answers, string_references=None, **kwargs):
+                del generations, gold_answers, string_references, kwargs
+                return {"accuracy": 1.0}
+
+        selection_evaluator = Evaluator.__new__(Evaluator)
+        results = [
+            {
+                "gold_answer": "4",
+                "answer_str": "#### 4",
+                "generations": [
+                    "wrong zero",
+                    "wrong one",
+                    "The answer is 4.",
+                    "wrong three",
+                    "4",
+                    "wrong five",
+                    "wrong six",
+                    "wrong seven",
+                    "wrong eight",
+                    "wrong nine",
+                    "wrong ten",
+                    "Final 4",
+                    "wrong twelve",
+                    "wrong thirteen",
+                    "wrong fourteen",
+                    "Answer 4",
+                ],
+            },
+        ]
+
+        selected_results, _metrics = _select_and_evaluate_math_baseline(
+            selection_evaluator,
+            _FakeMathEvaluator(),
+            results,
+            metric="acc",
+            subsample_k=99,
+            transversal=True,
+            group_size=4,
+        )
+
+        self.assertEqual(
+            selected_results[0]["generations"],
+            ["The answer is 4.", "4", "Final 4", "Answer 4"],
+        )
+        self.assertEqual(selected_results[0]["scores"], [1, 1, 1, 1])
 
     def test_oversample_math_extracts_nested_temp_results(self):
         data = {

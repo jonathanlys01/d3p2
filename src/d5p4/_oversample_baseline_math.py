@@ -11,6 +11,7 @@ Input files
 Selection behavior
 - Selects candidates per question, never globally across questions.
 - Uses Evaluator.evaluate_baseline for selector scores:
+  - acc: oracle exact math correctness via MathEvaluator.
   - f1: uses answer_str/gold_answer as string references.
   - ppl: lower perplexity is better.
   - int: uses internal_scores or eval_internal_scores when present.
@@ -26,7 +27,7 @@ Environment flags
 - OVERSAMPLE_MATH_BASELINE_METHOD: optional source config.method filter. Default:
   unset (process every compatible source method).
 - OVERSAMPLE_MATH_BASELINE_METRICS: optional comma-separated metric filter, e.g.
-  "f1,ppl,int,random". Default: all available selectors for each source file.
+  "acc,f1,ppl,int,random". Default: all available selectors for each source file.
 - OVERSAMPLE_MATH_BASELINE_TRANSVERSAL: when true, pick one representative from
   each contiguous lineage subgroup of size group_size. This uses k=1 within each
   subgroup and is useful when candidates are sibling leaves from search.
@@ -156,6 +157,17 @@ def _math_groups(results: list[dict[str, Any]]) -> tuple[list[list[str]], list[s
     return texts, gold_answers, references
 
 
+def _math_accuracy_scores(
+    math_evaluator: MathEvaluator,
+    texts: list[list[str]],
+    gold_answers: list[str],
+) -> list[list[float]]:
+    return [
+        [float(score) for score in math_evaluator.score_group(generations, gold_answer)]
+        for generations, gold_answer in zip(texts, gold_answers)
+    ]
+
+
 def _build_selected_results(
     source_results: list[dict[str, Any]],
     selected: list[list[str]],
@@ -192,15 +204,20 @@ def _select_and_evaluate_math_baseline(  # noqa: PLR0913
     num_workers: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, float | str]]:
     texts, gold_answers, references = _math_groups(results)
+    selection_metric = metric
+    selection_internal_scores = internal_scores if metric == "int" else None
+    if metric == "acc":
+        selection_metric = "int"
+        selection_internal_scores = _math_accuracy_scores(math_evaluator, texts, gold_answers)
 
     selected = selection_evaluator.evaluate_baseline(
         texts,
-        metric,
+        selection_metric,
         1 if transversal else subsample_k,
         references=references,
         transversal=transversal,
         group_size=group_size,
-        internal_scores=internal_scores if metric == "int" else None,
+        internal_scores=selection_internal_scores,
         random_seed=random_seed,
     )
     selected_results = _build_selected_results(results, selected, math_evaluator)
@@ -283,7 +300,7 @@ if __name__ == "__main__":
                 else int(file_config_dict.get("group_size", current_config.group_size))
             )
             internal_scores = _get_internal_scores(data, results)
-            available_metrics = ["f1", "ppl"]
+            available_metrics = ["acc", "f1", "ppl"]
             if internal_scores is not None:
                 available_metrics.append("int")
             available_metrics.append("random")
