@@ -86,7 +86,7 @@ class GenerationResult(BaseModel):
     """Canonical result-file schema.
 
     ``internal_scores`` is the canonical key. ``eval_internal_scores`` remains
-    accepted and emitted as a compatibility alias for older result files.
+    accepted as a compatibility alias for older result files.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -111,8 +111,6 @@ class GenerationResult(BaseModel):
         normalized = dict(data)
         if INTERNAL_SCORES not in normalized and LEGACY_INTERNAL_SCORES in normalized:
             normalized[INTERNAL_SCORES] = normalized[LEGACY_INTERNAL_SCORES]
-        if LEGACY_INTERNAL_SCORES not in normalized and INTERNAL_SCORES in normalized:
-            normalized[LEGACY_INTERNAL_SCORES] = normalized[INTERNAL_SCORES]
         return normalized
 
     @field_validator("internal_scores", "eval_internal_scores", mode="before")
@@ -153,8 +151,6 @@ class GenerationResult(BaseModel):
     def _validate_alignment(self) -> GenerationResult:
         if self.internal_scores is None and self.eval_internal_scores is not None:
             self.internal_scores = self.eval_internal_scores
-        if self.eval_internal_scores is None and self.internal_scores is not None:
-            self.eval_internal_scores = self.internal_scores
 
         if self.text_samples is None:
             return self
@@ -174,8 +170,6 @@ def normalize_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize legacy aliases in-place and return *payload*."""
     if INTERNAL_SCORES not in payload and LEGACY_INTERNAL_SCORES in payload:
         payload[INTERNAL_SCORES] = payload[LEGACY_INTERNAL_SCORES]
-    if LEGACY_INTERNAL_SCORES not in payload and INTERNAL_SCORES in payload:
-        payload[LEGACY_INTERNAL_SCORES] = payload[INTERNAL_SCORES]
     return payload
 
 
@@ -211,7 +205,6 @@ def build_generation_result_payload(  # noqa: PLR0913
         EVAL_TEXT_SAMPLES: eval_text_samples,
         REFERENCES: references,
         INTERNAL_SCORES: internal_scores,
-        LEGACY_INTERNAL_SCORES: internal_scores,
         EVAL_SELECTED_INDICES: eval_selected_indices,
         EVAL_SELECTION: eval_selection,
         INTERNAL_SCORE_METADATA: internal_score_metadata,
