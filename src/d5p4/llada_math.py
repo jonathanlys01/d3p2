@@ -9,22 +9,50 @@ with the overall accuracy across the dataset.
 import json
 import os
 import uuid
-from dataclasses import asdict
 from datetime import datetime
 
 from d5p4.config import Config
 from d5p4.data.math_ds import gsm8k
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import MathEvaluator
+from d5p4.result_schema import build_generation_result_payload
 from d5p4.utils import compile_model, print, seed_all
 
 
-def save(results: dict, config: Config, uid: uuid.UUID, rank: int = 0) -> None:
+LLADA_INTERNAL_SCORE_METADATA = {
+    "name": "confidence",
+    "method": "final_step_mean_token_logprob",
+    "scope": "generated_tokens",
+    "higher_is_better": True,
+}
+
+
+def _text_samples_from_results(results: list[dict]) -> list[list[str]]:
+    return [row["generations"] for row in results]
+
+
+def _references_from_results(results: list[dict]) -> list[list[str]]:
+    return [[row["answer_str"] if row["answer_str"] else row["gold_answer"]] for row in results]
+
+
+def save(
+    results: list[dict],
+    config: Config,
+    uid: uuid.UUID,
+    rank: int = 0,
+    internal_scores: list[list[float]] | None = None,
+) -> None:
     """Write an intermediate checkpoint to a temp JSON file."""
-    payload = {
-        "results": results,
-        "config": asdict(config),
-    }
+    payload = build_generation_result_payload(
+        text_samples=_text_samples_from_results(results),
+        config=config,
+        references=_references_from_results(results),
+        internal_scores=internal_scores,
+        internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA if internal_scores is not None else None,
+        experiment_id=str(uid),
+        extra={"results": results},
+    )
+
     name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{uid}"
     os.makedirs(config.results_dir, exist_ok=True)
     with open(os.path.join(config.results_dir, f"{name}.json"), "w") as f:
@@ -60,11 +88,12 @@ def main() -> None:  # noqa: PLR0912, PLR0915
 
     # ── generation + evaluation loop ─────────────────────────────────────────
     results: list[dict] = []  # one entry per question
+    internal_scores_all: list[list[float]] = []
 
     for i, (prompt, gold, answer_str) in enumerate(zip(prompts, answer_numbers, answer_strings)):
         print(f"Sampling {i + 1}/{len(prompts)}  (gold={gold!r})...", progress=True)
 
-        raw_samples = model.sample(prompt=prompt)
+        raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
 
         generations: list[str] = []
         for sample in raw_samples:
@@ -73,6 +102,9 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             completion_tokens = sample[prompt_len:]
             gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
             generations.append(gen_text)
+
+        internal_score_group = [float(score) for score in internal_scores.detach().cpu().tolist()]
+        internal_scores_all.append(internal_score_group)
 
         scores = evaluator.score_group(generations, gold)
         acc = evaluator.accuracy(generations, gold)
@@ -89,7 +121,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         )
 
         print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
-        save({"results": results}, config, unique_id, rank=offset)
+        save(results, config, unique_id, rank=offset, internal_scores=internal_scores_all)
 
     # ── final aggregation ────────────────────────────────────────────────────
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
@@ -113,13 +145,20 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     if math_metrics_summary:
         print(f"math metrics: {math_metrics_summary}")
 
-    payload = {
-        "results": results,
-        "overall_accuracy": overall_acc,
-        "math_metrics": math_metrics,
-        "config": asdict(config),
-        "experiment_id": str(unique_id),
-    }
+    payload = build_generation_result_payload(
+        text_samples=all_generations,
+        config=config,
+        references=string_references,
+        internal_scores=internal_scores_all,
+        internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA,
+        metrics=math_metrics,
+        experiment_id=str(unique_id),
+        extra={
+            "results": results,
+            "overall_accuracy": overall_acc,
+            "math_metrics": math_metrics,
+        },
+    )
 
     if model.distributed_utils is None or model.distributed_utils.rank == 0:
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"

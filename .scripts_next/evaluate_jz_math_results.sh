@@ -11,7 +11,7 @@ set -euo pipefail
 #   EVAL_OUTPUT_ROOT=evaluations/jz_math_results/<timestamp>
 #                                           # compact metrics/config output dir
 #   MATH_BASELINE_K=4                       # top-k for independent math baselines
-#   MATH_METRICS=acc,ppl,random             # selectors for math comparisons
+#   MATH_METRICS=acc,ppl,int,random         # selectors for math comparisons
 #   MATH_GROUP_SIZE=4                       # candidates per final proposal subgroup
 #   PPL_MODEL_ID=gpt2                       # perplexity model/path
 #   COS_MODEL_ID=jinaai/...                 # embedding model/path
@@ -44,7 +44,7 @@ fi
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-${ROOT}/evaluations/jz_math_results/${RUN_TAG}}"
 MATH_BASELINE_K="${MATH_BASELINE_K:-4}"
-MATH_METRICS="${MATH_METRICS:-acc,ppl,random}"
+MATH_METRICS="${MATH_METRICS:-acc,ppl,int,random}"
 MATH_GROUP_SIZE="${MATH_GROUP_SIZE:-4}"
 
 PPL_MODEL_ID="${PPL_MODEL_ID:-/Brain/public/models/meta-llama/Meta-Llama-3-8B/}"
