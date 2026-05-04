@@ -14,7 +14,7 @@
 #SBATCH --error=slurm-logs/%x-%A_%a.err
 #SBATCH --time=17:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --array=0-7
+#SBATCH --array=0-11
 
 # derisk:
 # sbatch --array=0-1 --qos=qos_gpu_h100-dev --time=00:20:00 ./gsm8k_sweep.slurm 
@@ -26,8 +26,9 @@ RESULTS_SUBDIR="gsm8k_sweep"
 # Variations
 CFG_VALUE=2.5
 METHODS=(baseline greedy_map diverse_beam greedy_beam)
-SELECTION_MODES=(selection_temperature low_confidence)
-SELECTION_TAGS=(seltemp confidence)
+SELECTION_MODES=(selection_temperature low_confidence selection_temperature)
+SELECTION_TAGS=(seltemp confidence seltemp_zero)
+CAT_TEMPERATURES=(1.0 1.0 0.0)
 
 # Array indexing
 NUM_METHODS=${#METHODS[@]}
@@ -45,6 +46,7 @@ fi
 METHOD=${METHODS[$METHOD_IDX]}
 REMASKING=${SELECTION_MODES[$SELECTION_IDX]}
 SELECTION_TAG=${SELECTION_TAGS[$SELECTION_IDX]}
+CAT_TEMPERATURE=${CAT_TEMPERATURES[$SELECTION_IDX]}
 DATASET="gsm8k"
 
 CFG_TAG=${CFG_VALUE//./p}
@@ -75,7 +77,7 @@ COMMON_ARGS=(
   qa_dataset="${DATASET}"
   qa_n_shots=0
   qa_dataset_len=-1
-  cat_temperature=1.0
+  cat_temperature="${CAT_TEMPERATURE}"
   remasking="${REMASKING}"
   selection_temperature=0.1
   logits_eos_inf=False
