@@ -48,6 +48,7 @@ REMASKING=${SELECTION_MODES[$SELECTION_IDX]}
 SELECTION_TAG=${SELECTION_TAGS[$SELECTION_IDX]}
 CAT_TEMPERATURE=${CAT_TEMPERATURES[$SELECTION_IDX]}
 DATASET="gsm8k"
+SEED="${SLURM_JOB_ID}"
 
 CFG_TAG=${CFG_VALUE//./p}
 RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${SELECTION_TAG}/${METHOD}_cfg${CFG_TAG}"
@@ -55,7 +56,7 @@ RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${SELECTION_TAG}/${METHOD}_cfg
 set -euo pipefail
 mkdir -p slurm-logs
 mkdir -p "${RUN_OUTPUT_DIR}"
-echo "Job started at $(date) for GSM8K, METHOD=${METHOD}, REMASKING=${REMASKING}, CFG=${CFG_VALUE}"
+echo "Job started at $(date) for GSM8K, METHOD=${METHOD}, REMASKING=${REMASKING}, CFG=${CFG_VALUE}, SEED=${SEED}"
 
 # Load the modules
 module purge
@@ -73,6 +74,7 @@ COMMON_ARGS=(
   --config="${SRC_ROOT}/_jz.yaml"
   results_dir="${RUN_OUTPUT_DIR}"
   cache_dir="${ROOT}/.cache"
+  seed="${SEED}"
   model=llada
   qa_dataset="${DATASET}"
   qa_n_shots=0

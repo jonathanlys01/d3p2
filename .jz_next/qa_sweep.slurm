@@ -44,6 +44,7 @@ fi
 
 DATASET=${DATASETS[$DATASET_IDX]}
 METHOD=${METHODS[$METHOD_IDX]}
+SEED="${SLURM_JOB_ID}"
 
 CFG_TAG=${CFG_VALUE//./p}
 RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${DATASET}/${METHOD}_cfg${CFG_TAG}"
@@ -51,7 +52,7 @@ RUN_OUTPUT_DIR="${ROOT}/results/${RESULTS_SUBDIR}/${DATASET}/${METHOD}_cfg${CFG_
 set -euo pipefail
 mkdir -p slurm-logs
 mkdir -p "${RUN_OUTPUT_DIR}"
-echo "Job started at $(date) for DATASET=${DATASET}, METHOD=${METHOD}, CFG=${CFG_VALUE}"
+echo "Job started at $(date) for DATASET=${DATASET}, METHOD=${METHOD}, CFG=${CFG_VALUE}, SEED=${SEED}"
 
 # Load the modules
 module purge
@@ -69,6 +70,7 @@ COMMON_ARGS=(
   --config="${SRC_ROOT}/_jz.yaml"
   results_dir="${RUN_OUTPUT_DIR}"
   cache_dir="${ROOT}/.cache"
+  seed="${SEED}"
   model=llada
   cat_temperature=1.0
   remasking=low_confidence
