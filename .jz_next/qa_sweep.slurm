@@ -14,7 +14,7 @@
 #SBATCH --error=slurm-logs/%x-%A_%a.err
 #SBATCH --time=12:00:00
 #SBATCH --qos=qos_gpu_a100-t3
-#SBATCH --array=0-11%4
+#SBATCH --array=0-11%6
 
 # derisk
 # sbatch --array=0-3 --qos=qos_gpu_a100-dev --time=00:20:00 ./qa_sweep.slurm
