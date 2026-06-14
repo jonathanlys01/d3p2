@@ -39,6 +39,15 @@ compile_model: true
 mdlm_steps: 1024
 cat_temperature: 1.0
 
+# Code evaluation
+code_dataset: humaneval
+code_dataset_len: -1
+code_n_shots: 0
+humaneval_path: openai/openai_humaneval
+mbpp_path: google-research-datasets/mbpp
+mbpp_subset: sanitized
+code_timeout_s: 5.0
+
 # Llada parameters
 # Local CFG semantics differ from the upstream sampler:
 # `cfg_scale=1.0` is "no guidance" here, while the reference uses `cfg_scale=0.0`.

@@ -209,7 +209,7 @@ def build_generation_result_payload(  # noqa: PLR0913
         EVAL_SELECTION: eval_selection,
         INTERNAL_SCORE_METADATA: internal_score_metadata,
         METRICS: metrics,
-        EXPERIMENT_ID: str(experiment_id) if experiment_id is not None else None,
+        EXPERIMENT_ID: experiment_id if experiment_id is not None else None,
     }
     if extra:
         payload.update(extra)

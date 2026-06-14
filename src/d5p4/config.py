@@ -117,6 +117,15 @@ class Config:
     ai2_arc_subset: str = "ARC-Challenge"
     gsm8k_path: str = "openai/gsm8k"
 
+    # Code generation evaluation
+    code_dataset: str = "humaneval"  # "humaneval" or "mbpp"
+    code_dataset_len: int = -1  # number of samples to use from code_dataset (-1 for all)
+    code_n_shots: int = 0
+    humaneval_path: str = "openai/openai_humaneval"
+    mbpp_path: str = "google-research-datasets/mbpp"
+    mbpp_subset: str = "sanitized"
+    code_timeout_s: float = 5.0
+
     # cache
     cache_dir: str = CACHE_DIR
     results_dir: str = RESULTS_DIR
@@ -173,6 +182,11 @@ class Config:
         assert self.eval_selection_metric in {"ppl", "f1", "int"}, (
             f"eval_selection_metric must be 'ppl', 'f1', or 'int', got {self.eval_selection_metric!r}"
         )
+        assert self.code_dataset in {"humaneval", "mbpp"}, (
+            f"code_dataset must be 'humaneval' or 'mbpp', got {self.code_dataset!r}"
+        )
+        assert self.code_n_shots >= 0, "code_n_shots must be non-negative"
+        assert self.code_timeout_s > 0.0, "code_timeout_s must be positive"
 
         # Re-set embedding_dim and batch_size in case model/n_groups/group_size changed via CLI
         if self.model == "mdlm":

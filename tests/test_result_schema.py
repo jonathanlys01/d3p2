@@ -87,6 +87,41 @@ class TestResultSchema(unittest.TestCase):
         self.assertIn("config: dict", tree)
         self.assertIn("internal_scores: list[1]", tree)
 
+    def test_code_eval_payload_uses_existing_schema_fields(self):
+        payload = build_generation_result_payload(
+            text_samples=[["def add(a, b):\n    return a + b"]],
+            config={"model": "llada", "code_dataset": "mbpp"},
+            references=[["def add(a, b):\n    return a + b"]],
+            internal_scores=[[0.9]],
+            internal_score_metadata={"name": "confidence"},
+            metrics={"accuracy": 1.0, "code_metrics_summary": "Acc: 1.0000"},
+            experiment_id="code-run",
+            extra={
+                "results": [
+                    {
+                        "task_id": "1",
+                        "prompt": "Write a function to add two numbers.",
+                        "reference_code": "def add(a, b):\n    return a + b",
+                        "tests": ["assert add(1, 2) == 3"],
+                        "entry_point": "",
+                        "dataset": "mbpp",
+                        "generations": ["def add(a, b):\n    return a + b"],
+                        "validation": [{"parse_ok": True, "passed": True, "status": "passed"}],
+                        "scores": [1],
+                        "accuracy": 1.0,
+                    },
+                ],
+                "overall_accuracy": 1.0,
+                "code_metrics": {"accuracy": 1.0, "code_metrics_summary": "Acc: 1.0000"},
+            },
+        )
+
+        validate_generation_result_payload(payload)
+
+        self.assertEqual(payload["metrics"]["accuracy"], 1.0)
+        self.assertEqual(payload["code_metrics"]["accuracy"], 1.0)
+        self.assertEqual(payload["results"][0]["validation"][0]["status"], "passed")
+
 
 if __name__ == "__main__":
     unittest.main()
