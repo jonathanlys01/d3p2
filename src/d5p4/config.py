@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 import idr_torch
 from omegaconf import OmegaConf
@@ -17,6 +17,8 @@ SEQUENCE_LENGTH = 1_024
 HIDDEN_SIZE_MDLM = 768
 HIDDEN_SIZE_LLADA = 4_096
 HIDDEN_SIZE_AR = 4_096
+HIDDEN_SIZE_UDLM = 768
+HIDDEN_SIZE_GIDD = 4_096
 RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
 
@@ -37,7 +39,7 @@ class Config:
 
     sequence_length: int = SEQUENCE_LENGTH
     embedding_dim: int = 0  # to be set in __post_init__
-    model: str = "mdlm"  # "mdlm", "llada", or "ar"
+    model: Literal["mdlm", "llada", "udlm", "gidd", "ar"] = "mdlm"
 
     seed: int = 0
     n_runs: int = 16
@@ -65,6 +67,18 @@ class Config:
     ar_model_path: str = "meta-llama/Meta-Llama-3-8B"
     ar_tokenizer: str = "meta-llama/Meta-Llama-3-8B"
     ar_embedding_method: str = "last"  # "last" or "mean" for AR embedding selection
+
+    # UDLM / GIDD
+    udlm_model_path: str = "kuleshov-group/udlm-lm1b"
+    gidd_model_path: str = "dvruette/gidd-unif-3b"
+    diffusion_steps: int = 128
+    sampling_eps: float = 1e-5
+    time_grid: Literal["linear", "loglinear"] = "linear"
+    posterior_sampler: Literal["udlm_posterior", "gidd_posterior", "gidd_hf_generate"] = "udlm_posterior"
+    self_correction: bool = False
+    self_correction_temp: float = 0.1
+    gidd_schedule: Literal["uniform", "hybrid"] = "uniform"
+    gidd_hybrid_p_unif: float = 1.0
 
     # sampling
     mdlm_steps: int = SEQUENCE_LENGTH  # number of MDLM sampling steps
@@ -146,10 +160,16 @@ class Config:
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
         elif self.model == "llada":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
+        elif self.model == "udlm":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_UDLM)
+        elif self.model == "gidd":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_GIDD)
         elif self.model == "ar":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_AR)
         else:
-            raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'ar'")
+            raise ValueError(
+                f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'udlm', 'gidd', 'ar'",
+            )
 
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 
@@ -193,10 +213,16 @@ class Config:
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
         elif self.model == "llada":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
+        elif self.model == "udlm":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_UDLM)
+        elif self.model == "gidd":
+            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_GIDD)
         elif self.model == "ar":
             object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_AR)
         else:
-            raise ValueError(f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'ar'")
+            raise ValueError(
+                f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'udlm', 'gidd', 'ar'",
+            )
 
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 
@@ -204,6 +230,22 @@ class Config:
             object.__setattr__(self, "interactive", True)
 
         assert self.method in AVAIL, f"Method {self.method} not recognized. Available methods: {list(AVAIL)}"
+        assert self.diffusion_steps > 0, "diffusion_steps must be positive"
+        assert 0.0 < self.sampling_eps < 1.0, "sampling_eps must be in (0, 1)"
+        assert self.time_grid in {"linear", "loglinear"}, f"Unknown time_grid: {self.time_grid}"
+        assert self.posterior_sampler in {"udlm_posterior", "gidd_posterior", "gidd_hf_generate"}, (
+            f"Unknown posterior_sampler: {self.posterior_sampler}"
+        )
+        assert self._score_method in {
+            "entropy",
+            "self-certainty",
+            "max_prob",
+            "mean_token_confidence",
+            "sequence_logprob",
+            "delta_confidence",
+        }, f"Unknown _score_method: {self._score_method}"
+        assert self.gidd_schedule in {"uniform", "hybrid"}, f"Unknown gidd_schedule: {self.gidd_schedule}"
+        assert 0.0 <= self.gidd_hybrid_p_unif <= 1.0, "gidd_hybrid_p_unif must be in [0, 1]"
 
         if self.model == "llada":
             assert self.remasking in ["low_confidence", "selection_temperature", "random"], (

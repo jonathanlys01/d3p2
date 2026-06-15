@@ -116,3 +116,8 @@ project-excludes = [
 
 [tool.pyrefly.errors]
 untyped-import = false
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: real-model smoke tests that may download large checkpoints",
+]

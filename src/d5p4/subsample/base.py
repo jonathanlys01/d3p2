@@ -236,8 +236,7 @@ def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | No
 
     Args:
         cache: Cache containing log_p_x0 predictions [B, L, V]
-        score_method: "entropy" (1 - normalized entropy) or
-                      "self-certainty" (negative CE between prediction and uniform)
+        score_method: quality score to compute from cache.log_p_x0
         model: Model name to mask already decoded llada tokens
 
     Returns:
@@ -268,9 +267,25 @@ def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | No
         # Higher log-prob under uniform sampling = more certain predictions
         uniform_ce = -logZ.mean(dim=-1)  # [B, L] CE with uniform reference
         scores = uniform_ce.mean(dim=-1)  # [B] higher = more certain = better
-    else:  # entropy (default)
+    elif score_method == "max_prob":
+        scores = p.max(dim=-1).values.max(dim=-1).values
+    elif score_method == "mean_token_confidence":
+        scores = p.max(dim=-1).values.mean(dim=-1)
+    elif score_method == "sequence_logprob":
+        if cache.x is None:
+            scores = p.max(dim=-1).values.clamp_min(1e-30).log().mean(dim=-1)
+        else:
+            token_ids = cache.x.clamp(min=0, max=logZ.size(-1) - 1).unsqueeze(-1)
+            token_log_p = torch.gather(logZ, dim=-1, index=token_ids).squeeze(-1)
+            scores = torch.nan_to_num(token_log_p, nan=-1e9, neginf=-1e9, posinf=0.0).mean(dim=-1)
+    elif score_method == "delta_confidence":
+        # Without a previous-step confidence in Cache, use current full-sequence confidence.
+        scores = p.max(dim=-1).values.mean(dim=-1)
+    elif score_method == "entropy":
         H = -torch.sum(p * logZ, dim=-1)  # [B, L] entropy per position
         scores = -H.mean(dim=-1)  # [B] negative entropy (higher = more certain = better)
+    else:
+        raise ValueError(f"Unknown score_method: {score_method}")
 
     # Normalize to [0, 1]
     scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
