@@ -24,6 +24,10 @@ cos_model_id: ${env_path_or:WORK,models/jinaai/jina-embeddings-v2-base-en/,/Brai
 ar_model_path: /Brain/public/models/meta-llama/Meta-Llama-3-8B/
 ar_tokenizer: /Brain/public/models/meta-llama/Meta-Llama-3-8B/
 
+# UDLM / GIDD
+udlm_model_path: /Brain/public/models/kuleshov-group/udlm-lm1b/
+gidd_model_path: /Brain/public/models/dvruette/gidd-unif-3b/
+
 # ar_model_path: gpt2-large
 # ar_tokenizer: gpt2-large
 

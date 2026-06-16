@@ -10,6 +10,9 @@ llada_tokenizer: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
 ar_model_path: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 ar_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 
+udlm_model_path: ${oc.env:WORK}/models/kuleshov-group/udlm-lm1b/
+gidd_model_path: ${oc.env:WORK}/models/dvruette/gidd-unif-3b/
+
 # Eval model paths
 ppl_model_id: ${oc.env:DSDIR}/HuggingFace_Models/gpt2-large/
 cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
