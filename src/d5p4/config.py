@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Optional
 
 import idr_torch
 from omegaconf import OmegaConf
@@ -21,6 +21,28 @@ HIDDEN_SIZE_UDLM = 768
 HIDDEN_SIZE_GIDD = 4_096
 RESULTS_DIR = "results"
 CACHE_DIR = "./.cache"
+MODEL_EMBEDDING_DIMS = {
+    "mdlm": HIDDEN_SIZE_MDLM,
+    "llada": HIDDEN_SIZE_LLADA,
+    "udlm": HIDDEN_SIZE_UDLM,
+    "gidd": HIDDEN_SIZE_GIDD,
+    "ar": HIDDEN_SIZE_AR,
+}
+MODEL_CHOICES = set(MODEL_EMBEDDING_DIMS)
+TIME_GRID_CHOICES = {"linear", "loglinear"}
+POSTERIOR_SAMPLER_CHOICES = {"udlm_posterior", "gidd_posterior", "gidd_hf_generate"}
+SCORE_METHOD_CHOICES = {
+    "entropy",
+    "self-certainty",
+    "max_prob",
+    "mean_token_confidence",
+    "sequence_logprob",
+    "delta_confidence",
+}
+GIDD_SCHEDULE_CHOICES = {"uniform", "hybrid"}
+REMASKING_CHOICES = {"low_confidence", "selection_temperature", "random"}
+EVAL_SELECTION_METRIC_CHOICES = {"ppl", "f1", "int"}
+CODE_DATASET_CHOICES = {"humaneval", "mbpp"}
 
 CONFIG_FLAGS = ("--config", "-c", "config", "cfg")
 
@@ -39,7 +61,7 @@ class Config:
 
     sequence_length: int = SEQUENCE_LENGTH
     embedding_dim: int = 0  # to be set in __post_init__
-    model: Literal["mdlm", "llada", "udlm", "gidd", "ar"] = "mdlm"
+    model: str = "mdlm"  # "mdlm", "llada", "udlm", "gidd", "ar"
 
     seed: int = 0
     n_runs: int = 16
@@ -73,11 +95,11 @@ class Config:
     gidd_model_path: str = "dvruette/gidd-unif-3b"
     diffusion_steps: int = 128
     sampling_eps: float = 1e-5
-    time_grid: Literal["linear", "loglinear"] = "linear"
-    posterior_sampler: Literal["udlm_posterior", "gidd_posterior", "gidd_hf_generate"] = "udlm_posterior"
+    time_grid: str = "linear"  # "linear", "loglinear"
+    posterior_sampler: str = "udlm_posterior"  # "udlm_posterior", "gidd_posterior", "gidd_hf_generate"
     self_correction: bool = False
     self_correction_temp: float = 0.1
-    gidd_schedule: Literal["uniform", "hybrid"] = "uniform"
+    gidd_schedule: str = "uniform"  # "uniform", "hybrid"
     gidd_hybrid_p_unif: float = 1.0
 
     # sampling
@@ -154,127 +176,99 @@ class Config:
     quiet: bool = False
     standalone_job: bool = False  # ignore launcher-provided distributed metadata for this process
 
-    def __post_init__(self):  # noqa: C901, PLR0912, PLR0915
-        # Always set model-specific embedding_dim and batch_size first
-        if self.model == "mdlm":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
-        elif self.model == "llada":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
-        elif self.model == "udlm":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_UDLM)
-        elif self.model == "gidd":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_GIDD)
-        elif self.model == "ar":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_AR)
-        else:
-            raise ValueError(
-                f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'udlm', 'gidd', 'ar'",
-            )
+    def __post_init__(self):  # noqa: C901
+        self._set_derived_fields()
 
-        object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
+        if not self.disable_sys_args:
+            self_args = OmegaConf.structured(self)
+            sys_args = OmegaConf.from_cli()
 
-        if self.disable_sys_args:
-            return
+            # Priority:
+            # 1. Command-line args
+            # 2. Command-line provided config file (if any)
+            # 3. Default args
 
-        self_args = OmegaConf.structured(self)
-        sys_args = OmegaConf.from_cli()
+            if any(flag in sys_args for flag in CONFIG_FLAGS):
+                flag = next(flag for flag in CONFIG_FLAGS if flag in sys_args)
+                cfg_file = sys_args.pop(flag)  # remove the flag from sys_args (not in struct)
+                cfg_args = OmegaConf.load(cfg_file)
+                add_args = OmegaConf.merge(cfg_args, sys_args)
+            else:
+                add_args = sys_args
 
-        # Priority:
-        # 1. Command-line args
-        # 2. Command-line provided config file (if any)
-        # 3. Default args
-
-        if any(flag in sys_args for flag in CONFIG_FLAGS):
-            flag = next(flag for flag in CONFIG_FLAGS if flag in sys_args)
-            cfg_file = sys_args.pop(flag)  # remove the flag from sys_args (not in struct)
-            cfg_args = OmegaConf.load(cfg_file)
-            add_args = OmegaConf.merge(cfg_args, sys_args)
-        else:
-            add_args = sys_args
-
-        args = OmegaConf.merge(self_args, add_args)
-        self.__dict__.update(args)
-
-        assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
-
-        if self.subsample_k > 0:
-            assert self.method == "baseline", "subsample_k only makes sense for baseline method"
-        assert self.eval_selection_metric in {"ppl", "f1", "int"}, (
-            f"eval_selection_metric must be 'ppl', 'f1', or 'int', got {self.eval_selection_metric!r}"
-        )
-        assert self.code_dataset in {"humaneval", "mbpp"}, (
-            f"code_dataset must be 'humaneval' or 'mbpp', got {self.code_dataset!r}"
-        )
-        assert self.code_n_shots >= 0, "code_n_shots must be non-negative"
-        assert self.code_timeout_s > 0.0, "code_timeout_s must be positive"
-
-        # Re-set embedding_dim and batch_size in case model/n_groups/group_size changed via CLI
-        if self.model == "mdlm":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_MDLM)
-        elif self.model == "llada":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_LLADA)
-        elif self.model == "udlm":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_UDLM)
-        elif self.model == "gidd":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_GIDD)
-        elif self.model == "ar":
-            object.__setattr__(self, "embedding_dim", HIDDEN_SIZE_AR)
-        else:
-            raise ValueError(
-                f"Model {self.model} not recognized. Available models: 'mdlm', 'llada', 'udlm', 'gidd', 'ar'",
-            )
-
-        object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
+            args = OmegaConf.merge(self_args, add_args)
+            self.__dict__.update(args)
+            self._set_derived_fields()
 
         if self.n_runs == 1:
             object.__setattr__(self, "interactive", True)
 
+        self._validate()
+
+    def _set_derived_fields(self):
+        if self.model not in MODEL_EMBEDDING_DIMS:
+            raise ValueError(
+                f"Model {self.model} not recognized. Available models: {sorted(MODEL_CHOICES)}",
+            )
+        object.__setattr__(self, "embedding_dim", MODEL_EMBEDDING_DIMS[self.model])
+        object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
+
+    def _validate(self):
         assert self.method in AVAIL, f"Method {self.method} not recognized. Available methods: {list(AVAIL)}"
+        assert self.model in MODEL_CHOICES, (
+            f"Model {self.model} not recognized. Available models: {sorted(MODEL_CHOICES)}"
+        )
+        assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
+        assert self.eval_selection_metric in EVAL_SELECTION_METRIC_CHOICES, (
+            f"eval_selection_metric must be one of {sorted(EVAL_SELECTION_METRIC_CHOICES)}, "
+            f"got {self.eval_selection_metric!r}"
+        )
+        assert self.code_dataset in CODE_DATASET_CHOICES, (
+            f"code_dataset must be one of {sorted(CODE_DATASET_CHOICES)}, got {self.code_dataset!r}"
+        )
+        assert self.code_n_shots >= 0, "code_n_shots must be non-negative"
+        assert self.code_timeout_s > 0.0, "code_timeout_s must be positive"
+
+        if self.subsample_k > 0:
+            assert self.method == "baseline", "subsample_k only makes sense for baseline method"
+
         assert self.diffusion_steps > 0, "diffusion_steps must be positive"
         assert 0.0 < self.sampling_eps < 1.0, "sampling_eps must be in (0, 1)"
-        assert self.time_grid in {"linear", "loglinear"}, f"Unknown time_grid: {self.time_grid}"
-        assert self.posterior_sampler in {"udlm_posterior", "gidd_posterior", "gidd_hf_generate"}, (
+        assert self.time_grid in TIME_GRID_CHOICES, f"Unknown time_grid: {self.time_grid}"
+        assert self.posterior_sampler in POSTERIOR_SAMPLER_CHOICES, (
             f"Unknown posterior_sampler: {self.posterior_sampler}"
         )
-        assert self._score_method in {
-            "entropy",
-            "self-certainty",
-            "max_prob",
-            "mean_token_confidence",
-            "sequence_logprob",
-            "delta_confidence",
-        }, f"Unknown _score_method: {self._score_method}"
-        assert self.gidd_schedule in {"uniform", "hybrid"}, f"Unknown gidd_schedule: {self.gidd_schedule}"
+        assert self._score_method in SCORE_METHOD_CHOICES, f"Unknown _score_method: {self._score_method}"
+        assert self.gidd_schedule in GIDD_SCHEDULE_CHOICES, f"Unknown gidd_schedule: {self.gidd_schedule}"
         assert 0.0 <= self.gidd_hybrid_p_unif <= 1.0, "gidd_hybrid_p_unif must be in [0, 1]"
 
         if self.model == "llada":
-            assert self.remasking in ["low_confidence", "selection_temperature", "random"], (
-                f"Remasking method {self.remasking} not recognized."
-            )
-            if self.eval_transversal_group_representatives:
-                assert self.transversal, "eval_transversal_group_representatives requires transversal=True"
-                assert self.group_size > 1, "eval_transversal_group_representatives requires group_size > 1"
-            assert self.selection_temperature >= 0.0, "selection_temperature must be non-negative"
-            assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
-            num_blocks = self.gen_length // self.block_length
-            assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
-            if self.remasking == "selection_temperature" and self.cat_temperature != 0.0 and idr_torch.rank == 0:
-                print(
-                    "Warning: remasking=selection_temperature with cat_temperature != 0.0. "
-                    "This mixes stochastic token sampling with stochastic remasking.",
-                )
+            self._validate_llada()
 
-            # Set guidance_end to steps if not explicitly set
-            if self.guidance_end == -1:
-                object.__setattr__(self, "guidance_end", self.llada_steps)
+    def _validate_llada(self):
+        assert self.remasking in REMASKING_CHOICES, f"Remasking method {self.remasking} not recognized."
+        if self.eval_transversal_group_representatives:
+            assert self.transversal, "eval_transversal_group_representatives requires transversal=True"
+            assert self.group_size > 1, "eval_transversal_group_representatives requires group_size > 1"
+        assert self.selection_temperature >= 0.0, "selection_temperature must be non-negative"
+        assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
+        num_blocks = self.gen_length // self.block_length
+        assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
+        if self.remasking == "selection_temperature" and self.cat_temperature != 0.0 and idr_torch.rank == 0:
+            print(
+                "Warning: remasking=selection_temperature with cat_temperature != 0.0. "
+                "This mixes stochastic token sampling with stochastic remasking.",
+            )
 
-            # Validate guidance range
-            assert 0 <= self.guidance_start < self.guidance_end, (
-                f"guidance_start ({self.guidance_start}) must be >= 0 and < guidance_end ({self.guidance_end})"
-            )
-            assert self.guidance_end <= self.llada_steps, (
-                f"guidance_end ({self.guidance_end}) must be <= llada_steps ({self.llada_steps})"
-            )
+        if self.guidance_end == -1:
+            object.__setattr__(self, "guidance_end", self.llada_steps)
+
+        assert 0 <= self.guidance_start < self.guidance_end, (
+            f"guidance_start ({self.guidance_start}) must be >= 0 and < guidance_end ({self.guidance_end})"
+        )
+        assert self.guidance_end <= self.llada_steps, (
+            f"guidance_end ({self.guidance_end}) must be <= llada_steps ({self.llada_steps})"
+        )
 
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))
