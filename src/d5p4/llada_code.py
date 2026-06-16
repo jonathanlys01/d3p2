@@ -145,6 +145,9 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:
         validation_groups.append(validation_results)
         results.append(result)
 
+        for gen_idx, gen in enumerate(result["generations"]):
+            print(f"--- Generation {gen_idx} ---\n{gen}\n", verbose=True)
+
         scores = result["scores"]
         print(
             f"  -> accuracy for this task: {result['accuracy']:.2%}  ({sum(scores)}/{len(scores)} passed)",
