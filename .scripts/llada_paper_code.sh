@@ -52,7 +52,7 @@ COMMON_ARGS=(
   code_dataset_len="$N_TASKS"
   code_n_shots="$CODE_N_SHOTS"
   code_timeout_s="$CODE_TIMEOUT_S"
-  cat_temperature=0.0
+  cat_temperature=1.0
   remasking=low_confidence
   logits_eos_inf=False
   cfg_scale=1.0
@@ -72,4 +72,5 @@ run_llada_code \
   n_groups="$N_GROUPS" \
   group_size="$GROUP_SIZE" \
   seed="$SEED" \
-  comment="LLaDA paper code instruct ${CODE_DATASET}, shots=${CODE_N_SHOTS}, length=${GEN_LENGTH}"
+  comment="LLaDA paper code instruct ${CODE_DATASET}, shots=${CODE_N_SHOTS}, length=${GEN_LENGTH}" \
+  "$@"
