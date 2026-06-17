@@ -134,6 +134,8 @@ class GIDDSampler(nn.Module):
     def _forward_model(self, tokens: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         t_flat = t.reshape(tokens.size(0)).to(tokens.device)
         call_attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
+            ((tokens,), {"output_hidden_states": True}),
+            ((), {"input_ids": tokens, "output_hidden_states": True}),
             ((tokens,), {"timesteps": t_flat, "return_dict": True, "output_hidden_states": True}),
             ((tokens,), {"time": t_flat, "return_dict": True, "output_hidden_states": True}),
             ((), {"input_ids": tokens, "timesteps": t_flat, "return_dict": True, "output_hidden_states": True}),
