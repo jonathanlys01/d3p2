@@ -189,7 +189,7 @@ class GIDDSampler(nn.Module):
     def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
         encoded = self.tokenizer(
             [prompt],
-            add_special_tokens=True,
+            add_special_tokens=False,
             return_tensors="pt",
         )
         return encoded["input_ids"].to(self.device)
@@ -220,8 +220,7 @@ class GIDDSampler(nn.Module):
 
     def _sample_hf_generate(self, prompt: str | None = None) -> torch.Tensor:
         if prompt:
-            encoded = self.tokenizer([prompt], add_special_tokens=True, return_tensors="pt")
-            input_ids = encoded["input_ids"].to(self.device).repeat(self.config.n_groups, 1)
+            input_ids = self._preprocess_prompt(prompt).repeat(self.config.n_groups, 1)
         else:
             bos = self.tokenizer.bos_token_id
             if bos is None:

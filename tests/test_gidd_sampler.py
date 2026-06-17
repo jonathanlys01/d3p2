@@ -38,11 +38,21 @@ class _RecordingGenerateModel(nn.Module):
 
 
 class _FakeTokenizer:
+    bos_token_id = 0
+    eos_token_id = 9
+    pad_token_id = 2
+    mask_token_id = 3
+
+    def __init__(self):
+        self.calls = []
+
     def __call__(self, prompts, add_special_tokens=True, return_tensors="pt"):
-        del add_special_tokens, return_tensors
+        self.calls.append({"add_special_tokens": add_special_tokens, "return_tensors": return_tensors})
         assert len(prompts) == 1
         token_map = {"A": 1, "B": 2, "C": 3}
         ids = [token_map[char] for char in prompts[0]]
+        if add_special_tokens:
+            ids = [self.bos_token_id, *ids, self.eos_token_id]
         return {"input_ids": torch.tensor([ids], dtype=torch.long)}
 
     def batch_decode(self, samples, **_kwargs):
@@ -309,3 +319,28 @@ def test_gidd_hf_generate_uses_source_signature():
     assert sampler.model.kwargs["steps"] == cfg.diffusion_steps
     assert sampler.model.kwargs["sampling_method"] == "ancestral"
     assert sampler.model.kwargs["noise_schedule"] == "cosine"
+
+
+def test_gidd_prompt_encoding_does_not_append_eos_for_hf_generate():
+    cfg = Config(
+        disable_sys_args=True,
+        model="gidd",
+        gen_length=8,
+        block_length=4,
+        diffusion_steps=3,
+        n_groups=2,
+        posterior_sampler="gidd_hf_generate",
+    )
+    sampler = GIDDSampler.__new__(GIDDSampler)
+    nn.Module.__init__(sampler)
+    sampler.config = cfg
+    sampler.device = "cpu"
+    sampler.model = _RecordingGenerateModel()
+    sampler.tokenizer = _FakeTokenizer()
+
+    sampler._sample_hf_generate("ABC")
+
+    inputs = sampler.model.kwargs["inputs"]
+    assert sampler.tokenizer.calls == [{"add_special_tokens": False, "return_tensors": "pt"}]
+    assert inputs.shape == (cfg.n_groups, 3)
+    assert not torch.any(inputs == sampler.tokenizer.eos_token_id)
