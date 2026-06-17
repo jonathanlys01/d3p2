@@ -1,5 +1,6 @@
 import os
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import torch
@@ -8,6 +9,7 @@ from torch import nn
 from d5p4.config import Config
 from d5p4.diffusion_gidd import GIDDSampler, HybridSchedule, UniformSchedule, compute_gidd_posterior
 from d5p4.subsample import get_subsample_selector
+from d5p4.subsample.base import BaseSelector
 
 
 class _ToyTimeModel(nn.Module):
@@ -29,11 +31,11 @@ class _ToyTimeModel(nn.Module):
 class _RecordingGenerateModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.kwargs = None
+        self.kwargs: dict[str, Any] | None = None
 
     def generate(self, **kwargs):
         self.kwargs = kwargs
-        inputs = kwargs["inputs"]
+        inputs = cast(torch.Tensor, kwargs["inputs"])
         return torch.cat([inputs, torch.full((inputs.size(0), 2), 4, dtype=torch.long, device=inputs.device)], dim=1)
 
 
@@ -59,14 +61,14 @@ class _FakeTokenizer:
         return _decode_samples(samples)
 
 
-class _RecordingSelector(nn.Module):
+class _RecordingSelector(BaseSelector):
     def __init__(self, cfg: Config):
-        super().__init__()
-        self.config = cfg
+        super().__init__(cfg)
         self.distributed_utils = None
-        self.cache_shapes = []
+        self.cache_shapes: list[dict[str, tuple[int, ...]]] = []
 
     def subsample(self, cache):
+        assert cache.embeddings is not None
         self.cache_shapes.append(
             {
                 "x": tuple(cache.x.shape),
@@ -301,7 +303,8 @@ def test_gidd_hf_generate_uses_source_signature():
     nn.Module.__init__(sampler)
     sampler.config = cfg
     sampler.device = "cpu"
-    sampler.model = _RecordingGenerateModel()
+    model = _RecordingGenerateModel()
+    sampler.model = model
     sampler.tokenizer = SimpleNamespace(
         bos_token_id=0,
         eos_token_id=1,
@@ -312,13 +315,14 @@ def test_gidd_hf_generate_uses_source_signature():
     out = sampler._sample_hf_generate()
 
     assert out.shape == (cfg.n_groups, 3)
-    assert sampler.model.kwargs["inputs"].shape == (cfg.n_groups, 1)
-    assert sampler.model.kwargs["max_length"] == cfg.gen_length
-    assert sampler.model.kwargs["temperature"] == cfg.cat_temperature
-    assert sampler.model.kwargs["block_length"] == cfg.block_length
-    assert sampler.model.kwargs["steps"] == cfg.diffusion_steps
-    assert sampler.model.kwargs["sampling_method"] == "ancestral"
-    assert sampler.model.kwargs["noise_schedule"] == "cosine"
+    assert model.kwargs is not None
+    assert cast(torch.Tensor, model.kwargs["inputs"]).shape == (cfg.n_groups, 1)
+    assert model.kwargs["max_length"] == cfg.gen_length
+    assert model.kwargs["temperature"] == cfg.cat_temperature
+    assert model.kwargs["block_length"] == cfg.block_length
+    assert model.kwargs["steps"] == cfg.diffusion_steps
+    assert model.kwargs["sampling_method"] == "ancestral"
+    assert model.kwargs["noise_schedule"] == "cosine"
 
 
 def test_gidd_prompt_encoding_does_not_append_eos_for_hf_generate():
@@ -335,12 +339,14 @@ def test_gidd_prompt_encoding_does_not_append_eos_for_hf_generate():
     nn.Module.__init__(sampler)
     sampler.config = cfg
     sampler.device = "cpu"
-    sampler.model = _RecordingGenerateModel()
+    model = _RecordingGenerateModel()
+    sampler.model = model
     sampler.tokenizer = _FakeTokenizer()
 
     sampler._sample_hf_generate("ABC")
 
-    inputs = sampler.model.kwargs["inputs"]
+    assert model.kwargs is not None
+    inputs = cast(torch.Tensor, model.kwargs["inputs"])
     assert sampler.tokenizer.calls == [{"add_special_tokens": False, "return_tensors": "pt"}]
     assert inputs.shape == (cfg.n_groups, 3)
     assert not torch.any(inputs == sampler.tokenizer.eos_token_id)
