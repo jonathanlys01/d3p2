@@ -30,13 +30,13 @@ def _load_ar_reference_model(model_path: str, cache_dir: str | None) -> ARRefere
         return LlamaForCausalLM.from_pretrained(
             model_path,
             cache_dir=cache_dir,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
     if "gpt2" in model_path_lower:
         return GPT2LMHeadModel.from_pretrained(
             model_path,
             cache_dir=cache_dir,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
     raise ValueError(f"Unsupported AR reference model: {model_path}")
 
@@ -243,7 +243,7 @@ def main():  # noqa: PLR0915
         LLaDAModelLM.from_pretrained(
             config.llada_model_path,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             cache_dir=config.cache_dir,
         )
         .to(device)

@@ -89,7 +89,7 @@ class GIDDSampler(nn.Module):
         model_args = process_model_args(config.gidd_model_path, cache_dir=config.cache_dir)
         self.model = GiddForDiffusionLM.from_pretrained(
             **model_args,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)

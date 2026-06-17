@@ -93,7 +93,7 @@ class UDLMSampler(nn.Module):
         model_args = process_model_args(config.udlm_model_path, cache_dir=config.cache_dir)
         self.model = UDLM.from_pretrained(
             **model_args,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"

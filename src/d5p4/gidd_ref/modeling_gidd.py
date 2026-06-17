@@ -35,6 +35,15 @@ def promote_dtype(args: tuple, *, dtype: torch.dtype | None = None) -> tuple:
     )
 
 
+def config_dtype(config, default: torch.dtype = torch.float32) -> torch.dtype:
+    dtype = getattr(config, "dtype", None)
+    if dtype is None:
+        dtype = config.__dict__.get("torch_dtype")
+    if isinstance(dtype, str):
+        return getattr(torch, dtype)
+    return dtype or default
+
+
 class ScaledLinear(nn.Module):
     def __init__(
         self,
@@ -639,7 +648,7 @@ class GiddModel(GiddPreTrainedModel):
         super().__init__(config=config)
 
         self.resid_scale = config.resid_scale / config.num_hidden_layers
-        dtype = config.torch_dtype
+        dtype = config_dtype(config)
 
         self.embed_tokens = nn.Embedding(
             num_embeddings=self.config.vocab_size,
@@ -775,7 +784,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
             config.hidden_size,
             config.vocab_size,
             scale=config.head_scaling,
-            dtype=config.torch_dtype,
+            dtype=config_dtype(config),
             use_bias=False,
         )
 

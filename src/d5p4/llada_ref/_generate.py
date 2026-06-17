@@ -148,7 +148,7 @@ def main():
         LLaDAModelLM.from_pretrained(
             "GSAI-ML/LLaDA-8B-Instruct",
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
         .to(device)
         .eval()
