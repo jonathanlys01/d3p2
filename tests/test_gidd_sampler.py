@@ -99,6 +99,12 @@ def test_gidd_uniform_schedule_sums_to_one():
     torch.testing.assert_close(probs.sum(dim=-1), torch.ones(2, 3))
 
 
+def test_gidd_config_defaults_to_source_sampler():
+    cfg = Config(disable_sys_args=True, model="gidd")
+
+    assert cfg.posterior_sampler == "gidd_hf_generate"
+
+
 def test_gidd_hybrid_schedule_sums_to_one():
     schedule = HybridSchedule(vocab_size=5, p_unif=0.4)
     x0_probs = torch.softmax(torch.randn(2, 3, 5), dim=-1)
