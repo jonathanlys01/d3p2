@@ -203,7 +203,8 @@ def get_tokenizer(config: Config, model: str):
         )
 
     if model == "udlm":
-        tokenizer_args = process_model_args(config.udlm_model_path, cache_dir=config.cache_dir)
+        path = get_hpc_hf_model_path("bert-base-uncased") if is_hpc_cluster() else "bert-base-uncased"
+        tokenizer_args = process_model_args(path, cache_dir=config.cache_dir)
         return transformers.AutoTokenizer.from_pretrained(
             **tokenizer_args,
             trust_remote_code=True,

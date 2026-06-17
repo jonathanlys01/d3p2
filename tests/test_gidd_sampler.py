@@ -26,6 +26,17 @@ class _ToyTimeModel(nn.Module):
         return SimpleNamespace(logits=logits, hidden_states=[hidden])
 
 
+class _RecordingGenerateModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.kwargs = None
+
+    def generate(self, **kwargs):
+        self.kwargs = kwargs
+        inputs = kwargs["inputs"]
+        return torch.cat([inputs, torch.full((inputs.size(0), 2), 4, dtype=torch.long, device=inputs.device)], dim=1)
+
+
 class _FakeTokenizer:
     def __call__(self, prompts, add_special_tokens=True, return_tensors="pt"):
         del add_special_tokens, return_tensors
@@ -257,3 +268,38 @@ def test_gidd_hf_smoke():
     )
     sampler = GIDDSampler(cfg)
     assert sampler.sample().shape[0] >= 1
+
+
+def test_gidd_hf_generate_uses_source_signature():
+    cfg = Config(
+        disable_sys_args=True,
+        model="gidd",
+        gen_length=8,
+        block_length=4,
+        diffusion_steps=3,
+        n_groups=2,
+        posterior_sampler="gidd_hf_generate",
+        cat_temperature=0.7,
+    )
+    sampler = GIDDSampler.__new__(GIDDSampler)
+    nn.Module.__init__(sampler)
+    sampler.config = cfg
+    sampler.device = "cpu"
+    sampler.model = _RecordingGenerateModel()
+    sampler.tokenizer = SimpleNamespace(
+        bos_token_id=0,
+        eos_token_id=1,
+        pad_token_id=2,
+        mask_token_id=3,
+    )
+
+    out = sampler._sample_hf_generate()
+
+    assert out.shape == (cfg.n_groups, 3)
+    assert sampler.model.kwargs["inputs"].shape == (cfg.n_groups, 1)
+    assert sampler.model.kwargs["max_length"] == cfg.gen_length
+    assert sampler.model.kwargs["temperature"] == cfg.cat_temperature
+    assert sampler.model.kwargs["block_length"] == cfg.block_length
+    assert sampler.model.kwargs["steps"] == cfg.diffusion_steps
+    assert sampler.model.kwargs["sampling_method"] == "ancestral"
+    assert sampler.model.kwargs["noise_schedule"] == "cosine"

@@ -231,11 +231,18 @@ class GIDDSampler(nn.Module):
             input_ids = torch.full((self.config.n_groups, 1), bos, dtype=torch.long, device=self.device)
 
         return self.model.generate(
-            input_ids=input_ids,
-            max_length=input_ids.size(1) + self.config.gen_length,
+            inputs=input_ids,
+            max_length=self.config.gen_length,
+            min_length=0,
+            temperature=self.config.cat_temperature,
             block_length=self.config.block_length,
             steps=self.config.diffusion_steps,
-            sampling_method="adaptive",
+            bos_token_id=self.tokenizer.bos_token_id or 0,
+            eos_token_id=self.tokenizer.eos_token_id or 1,
+            pad_token_id=self.tokenizer.pad_token_id or 2,
+            mask_token_id=getattr(self.tokenizer, "mask_token_id", None) or 3,
+            sampling_method="ancestral",
+            noise_schedule="cosine",
         )
 
     def _sample_local_posterior(self, prompt: str | None = None) -> dict[str, torch.Tensor]:

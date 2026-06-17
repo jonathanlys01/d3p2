@@ -210,6 +210,8 @@ class Config:
             raise ValueError(
                 f"Model {self.model} not recognized. Available models: {sorted(MODEL_CHOICES)}",
             )
+        if self.model == "gidd" and self.posterior_sampler == "udlm_posterior":
+            object.__setattr__(self, "posterior_sampler", "gidd_hf_generate")
         object.__setattr__(self, "embedding_dim", MODEL_EMBEDDING_DIMS[self.model])
         object.__setattr__(self, "batch_size", self.n_groups * self.group_size)
 
