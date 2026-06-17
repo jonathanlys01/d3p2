@@ -6,7 +6,13 @@ import torch
 from torch import nn
 
 from d5p4.config import Config
-from d5p4.diffusion_udlm import UDLMSampler, apply_sampling_temperature, compute_udlm_posterior
+from d5p4.diffusion_udlm import (
+    UDLMSampler,
+    apply_sampling_temperature,
+    compute_udlm_posterior,
+    loglinear_alpha,
+    loglinear_sigma,
+)
 from d5p4.subsample import get_subsample_selector
 
 
@@ -24,6 +30,16 @@ class _ToyTimeModel(nn.Module):
         logits.scatter_(-1, target.unsqueeze(-1), 4.0)
         hidden = torch.nn.functional.one_hot(input_ids % self.hidden_size, num_classes=self.hidden_size).float()
         return SimpleNamespace(logits=logits, hidden_states=[hidden])
+
+
+class _RecordingTimeModel(_ToyTimeModel):
+    def __init__(self, vocab_size: int):
+        super().__init__(vocab_size)
+        self.timesteps = None
+
+    def forward(self, input_ids, timesteps=None, return_dict=True, output_hidden_states=True):
+        self.timesteps = timesteps.detach().clone()
+        return super().forward(input_ids, timesteps, return_dict, output_hidden_states)
 
 
 def _build_sampler(cfg: Config, vocab_size: int = 5) -> UDLMSampler:
@@ -78,6 +94,37 @@ def test_udlm_no_copy_over():
     sampled = torch.multinomial(apply_sampling_temperature(posterior, 0.0).view(-1, 5), 1).view(1, 2)
 
     assert torch.equal(sampled, torch.tensor([[2, 2]]))
+
+
+def test_udlm_source_loglinear_schedule():
+    t = torch.tensor([1.0, 0.5, 1e-5])
+
+    sigma = loglinear_sigma(t)
+    alpha = loglinear_alpha(t)
+
+    torch.testing.assert_close(alpha, 1.0 - 0.999 * t)
+    assert torch.isfinite(sigma).all()
+
+
+def test_udlm_model_receives_loglinear_sigma():
+    cfg = Config(
+        disable_sys_args=True,
+        model="udlm",
+        sequence_length=2,
+        diffusion_steps=1,
+        n_groups=1,
+        group_size=1,
+        method="baseline",
+    )
+    sampler = _build_sampler(cfg)
+    sampler.model = _RecordingTimeModel(vocab_size=5)
+    tokens = torch.tensor([[1, 2]])
+    t = torch.full((1, 1), 1.0)
+    s = torch.full((1, 1), 1e-5)
+
+    sampler.denoise_step(tokens, t, s)
+
+    torch.testing.assert_close(sampler.model.timesteps, loglinear_sigma(torch.ones(1)))
 
 
 def test_udlm_sampler_runs_one_step():

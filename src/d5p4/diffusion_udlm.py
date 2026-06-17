@@ -15,6 +15,9 @@ from d5p4.udlm_ref.modeling_udlm import UDLM
 from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
+LOG_LINEAR_NOISE_EPS = 1e-3
+
+
 @dataclass
 class DiffusionStepOutput:
     tokens: torch.Tensor
@@ -31,6 +34,14 @@ def make_time_grid(steps: int, eps: float, device: torch.device | str, grid: str
     if grid == "loglinear":
         return torch.exp(torch.linspace(0.0, torch.log(torch.tensor(eps, device=device)), steps + 1, device=device))
     raise ValueError(f"Unknown time grid: {grid}")
+
+
+def loglinear_sigma(t: torch.Tensor, eps: float = LOG_LINEAR_NOISE_EPS) -> torch.Tensor:
+    return -torch.log1p(-(1.0 - eps) * t)
+
+
+def loglinear_alpha(t: torch.Tensor, eps: float = LOG_LINEAR_NOISE_EPS) -> torch.Tensor:
+    return torch.exp(-loglinear_sigma(t, eps=eps))
 
 
 def apply_sampling_temperature(probs: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -100,7 +111,8 @@ class UDLMSampler(nn.Module):
         self.model.to(self.device)
         self.model.eval()
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
-        self.model_length = config.sequence_length
+        model_length = getattr(self.model.config, "model_length", config.sequence_length)
+        self.model_length = min(config.sequence_length, int(model_length))
         self.vocab_size = self._infer_vocab_size()
 
     def _infer_vocab_size(self) -> int:
@@ -159,11 +171,12 @@ class UDLMSampler(nn.Module):
         s: torch.Tensor,
         cond=None,  # noqa: ARG002
     ) -> DiffusionStepOutput:
-        logits, embeddings = self._forward_model(tokens, t)
+        sigma_t = loglinear_sigma(t.reshape(-1)).unsqueeze(-1)
+        logits, embeddings = self._forward_model(tokens, sigma_t)
         log_p_x0 = F.log_softmax(logits.float(), dim=-1)
         x_theta = log_p_x0.exp()
-        alpha_t = 1.0 - t.reshape(-1)
-        alpha_s = 1.0 - s.reshape(-1)
+        alpha_t = loglinear_alpha(t.reshape(-1))
+        alpha_s = loglinear_alpha(s.reshape(-1))
         posterior = compute_udlm_posterior(tokens, x_theta, alpha_t, alpha_s)
         sample_probs = apply_sampling_temperature(posterior, self.config.cat_temperature)
         sampled = sample_categorical(sample_probs)
