@@ -1,5 +1,7 @@
 import os
+import sys
 import tempfile
+import types
 import uuid
 
 import torch
@@ -97,3 +99,49 @@ def test_gidd_code_save_writes_canonical_payload():
         files = os.listdir(tmpdir)
         assert len(files) == 1
         assert files[0].startswith("temp_gidd_code_")
+
+
+def test_single_run_gidd_passes_config_prompt(monkeypatch):
+    seen: dict[str, object] = {}
+
+    class _SingleRunTokenizer:
+        def batch_decode(self, samples, skip_special_tokens=True):
+            del skip_special_tokens
+            return [str(row.tolist()) for row in samples]
+
+    class _SingleRunSampler:
+        distributed_utils = None
+        tokenizer = _SingleRunTokenizer()
+
+        def __init__(self, config):
+            seen["config"] = config
+            self.model = object()
+
+        def sample(self, prompt=None):
+            seen["prompt"] = prompt
+            return torch.tensor([[1, 2, 3]], dtype=torch.long)
+
+    cfg = Config(
+        disable_sys_args=True,
+        model="gidd",
+        prompt="Check conditioned generation.",
+        n_runs=1,
+        skip_eval=True,
+        results_dir=tempfile.mkdtemp(),
+    )
+
+    fake_common_exps = types.ModuleType("d5p4.common_exps")
+    fake_common_exps.eval_samples = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "d5p4.common_exps", fake_common_exps)
+    from d5p4 import single_run_gidd
+
+    monkeypatch.setattr(single_run_gidd, "Config", lambda: cfg)
+    monkeypatch.setattr(single_run_gidd, "GIDDSampler", _SingleRunSampler)
+    monkeypatch.setattr(single_run_gidd, "compile_model", lambda model, _config: model)
+    monkeypatch.setattr(single_run_gidd, "seed_all", lambda _seed: None)
+    monkeypatch.setattr(single_run_gidd, "build_generation_result_payload", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(single_run_gidd, "print", lambda *_args, **_kwargs: None)
+
+    single_run_gidd.main()
+
+    assert seen["prompt"] == cfg.prompt
