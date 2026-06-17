@@ -26,6 +26,36 @@ class _ToyTimeModel(nn.Module):
         return SimpleNamespace(logits=logits, hidden_states=[hidden])
 
 
+class _FakeTokenizer:
+    def __call__(self, prompts, add_special_tokens=True, return_tensors="pt"):
+        del add_special_tokens, return_tensors
+        assert len(prompts) == 1
+        token_map = {"A": 1, "B": 2, "C": 3}
+        ids = [token_map[char] for char in prompts[0]]
+        return {"input_ids": torch.tensor([ids], dtype=torch.long)}
+
+    def batch_decode(self, samples, **_kwargs):
+        return _decode_samples(samples)
+
+
+class _RecordingSelector(nn.Module):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.config = cfg
+        self.distributed_utils = None
+        self.cache_shapes = []
+
+    def subsample(self, cache):
+        self.cache_shapes.append(
+            {
+                "x": tuple(cache.x.shape),
+                "log_p_x0": tuple(cache.log_p_x0.shape),
+                "embeddings": tuple(cache.embeddings.shape),
+            },
+        )
+        return torch.arange(self.config.n_groups) * self.config.group_size
+
+
 def _build_sampler(cfg: Config, vocab_size: int = 5) -> GIDDSampler:
     object.__setattr__(cfg, "standalone_job", True)
     sampler = GIDDSampler.__new__(GIDDSampler)
@@ -157,6 +187,57 @@ def test_transversal_selection_after_sampler_step():
     assert selected is not None
     assert selected.shape == (cfg.n_groups,)
     assert torch.unique(selected // cfg.group_size).numel() == cfg.n_groups
+
+
+def test_prompt_conditioned_local_sampling_preserves_prompt_and_shape():
+    cfg = Config(
+        disable_sys_args=True,
+        model="gidd",
+        sequence_length=4,
+        gen_length=2,
+        diffusion_steps=1,
+        n_groups=2,
+        group_size=2,
+        method="random",
+        posterior_sampler="gidd_posterior",
+        cat_temperature=0.0,
+    )
+    sampler = _build_sampler(cfg, vocab_size=8)
+    sampler.tokenizer = _FakeTokenizer()
+    sampler.selector = _RecordingSelector(cfg)
+
+    samples = sampler.sample(prompt="ABC")
+
+    assert samples.shape == (cfg.n_groups, 3 + cfg.gen_length)
+    torch.testing.assert_close(samples[:, :3], torch.tensor([[1, 2, 3], [1, 2, 3]]))
+
+
+def test_prompt_conditioned_selector_receives_completion_only_cache():
+    cfg = Config(
+        disable_sys_args=True,
+        model="gidd",
+        sequence_length=4,
+        gen_length=2,
+        diffusion_steps=1,
+        n_groups=2,
+        group_size=2,
+        method="random",
+        posterior_sampler="gidd_posterior",
+    )
+    sampler = _build_sampler(cfg, vocab_size=8)
+    sampler.tokenizer = _FakeTokenizer()
+    selector = _RecordingSelector(cfg)
+    sampler.selector = selector
+
+    sampler.sample(prompt="ABC")
+
+    assert selector.cache_shapes == [
+        {
+            "x": (cfg.n_groups * cfg.group_size, cfg.gen_length),
+            "log_p_x0": (cfg.n_groups * cfg.group_size, cfg.gen_length, sampler.vocab_size),
+            "embeddings": (cfg.n_groups * cfg.group_size, cfg.gen_length, sampler.model.hidden_size),
+        },
+    ]
 
 
 @pytest.mark.slow

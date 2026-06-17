@@ -113,8 +113,19 @@ class UDLMSampler(nn.Module):
 
     def update_config(self, config: Config):
         configure_runtime(config)
+        rebuild_selector = (
+            config.method != self.config.method
+            or config.n_groups != self.config.n_groups
+            or config.group_size != self.config.group_size
+            or config.transversal != self.config.transversal
+            or config.standalone_job != self.config.standalone_job
+        )
         self.config = config
-        self.selector.config = config
+        if rebuild_selector:
+            self.selector = get_subsample_selector(config)
+        else:
+            self.selector.config = config
+        self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
     def initialize(self, batch_size: int, seq_len: int) -> torch.Tensor:
         return torch.randint(0, self.vocab_size, (batch_size, seq_len), device=self.device, dtype=torch.long)

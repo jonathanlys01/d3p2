@@ -19,7 +19,6 @@ MBPP_N_SHOTS=${MBPP_N_SHOTS:-4}
 N_GROUPS=${N_GROUPS:-4}
 GROUP_SIZE=${GROUP_SIZE:-1}
 METHOD=${METHOD:-baseline}
-SEED=${SEED:-1337}
 CODE_TIMEOUT_S=${CODE_TIMEOUT_S:-5.0}
 
 case "$CODE_DATASET" in
@@ -37,6 +36,7 @@ case "$CODE_DATASET" in
     ;;
 esac
 
+# GEN_LENGTH=NB_STEPS -> pure diffusion
 LLADA_STEPS=${LLADA_STEPS:-$GEN_LENGTH}
 BLOCK_LENGTH=${BLOCK_LENGTH:-$GEN_LENGTH}
 CONFIDENCE_EOS_EOT_INF=True
@@ -71,6 +71,5 @@ run_llada_code \
   method="$METHOD" \
   n_groups="$N_GROUPS" \
   group_size="$GROUP_SIZE" \
-  seed="$SEED" \
   comment="LLaDA paper code instruct ${CODE_DATASET}, shots=${CODE_N_SHOTS}, length=${GEN_LENGTH}" \
   "$@"

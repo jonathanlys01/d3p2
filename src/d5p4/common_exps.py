@@ -18,7 +18,9 @@ from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
 from d5p4.config import Config
+from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.diffusion_mdlm import MDLMSampler
+from d5p4.diffusion_udlm import UDLMSampler
 from d5p4.eval_core import Evaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.utils import compile_model, print, seed_all
@@ -26,6 +28,7 @@ from d5p4.utils import compile_model, print, seed_all
 
 # Graceful shutdown handling for SLURM pre-termination signal (--signal=B:SIGTERM@120)
 _shutdown_requested = False
+Sampler = MDLMSampler | UDLMSampler | GIDDSampler
 
 
 def _handle_shutdown_signal(signum, _frame):
@@ -45,6 +48,16 @@ def _bcast(obj):
     return obj_list[0]
 
 
+def _build_sampler(config: Config) -> Sampler:
+    if config.model == "mdlm":
+        return MDLMSampler(config)
+    if config.model == "udlm":
+        return UDLMSampler(config)
+    if config.model == "gidd":
+        return GIDDSampler(config)
+    raise ValueError(f"Unsupported sampler model for generation experiments: {config.model!r}")
+
+
 def _save(text, eval_text, config, uid, rank=0):
     samples = build_generation_result_payload(text_samples=text, eval_text_samples=eval_text, config=config)
 
@@ -54,7 +67,7 @@ def _save(text, eval_text, config, uid, rank=0):
         json.dump(samples, f, indent=4)
 
 
-def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: Evaluator | None = None):
+def generate_samples_with_model(config: Config, model: Sampler, evaluator: Evaluator | None = None):
     """Generate samples using a pre-initialized model."""
     model.update_config(config)
     offset = 0
@@ -118,7 +131,7 @@ def generate_samples_with_model(config: Config, model: MDLMSampler, evaluator: E
 
 def generate_samples(config: Config):
     """Generate samples by creating a new model instance."""
-    model = MDLMSampler(config)
+    model = _build_sampler(config)
     model.model = compile_model(model.model, config)
     return generate_samples_with_model(config, model)
 
@@ -153,7 +166,7 @@ def eval_samples(
 
 def run_experiment(
     config: Config,
-    model: MDLMSampler | None = None,
+    model: Sampler | None = None,
     evaluator: Evaluator | None = None,
     references: list[list[str]] | None = None,
 ):
@@ -213,7 +226,7 @@ def run_sweep(sweep_name, og_config, objective_fn, init_trials=None, study_to_re
     is_master = idr_torch.is_master
 
     # Initialize model once before the sweep
-    model = MDLMSampler(og_config)
+    model = _build_sampler(og_config)
     model.model = compile_model(model.model, og_config)
 
     if is_master:

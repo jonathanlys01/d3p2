@@ -114,8 +114,19 @@ class GIDDSampler(nn.Module):
 
     def update_config(self, config: Config):
         configure_runtime(config)
+        rebuild_selector = (
+            config.method != self.config.method
+            or config.n_groups != self.config.n_groups
+            or config.group_size != self.config.group_size
+            or config.transversal != self.config.transversal
+            or config.standalone_job != self.config.standalone_job
+        )
         self.config = config
-        self.selector.config = config
+        if rebuild_selector:
+            self.selector = get_subsample_selector(config)
+        else:
+            self.selector.config = config
+        self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
         self.schedule = self._build_schedule()
 
     def initialize(self, batch_size: int, seq_len: int) -> torch.Tensor:
@@ -174,6 +185,38 @@ class GIDDSampler(nn.Module):
         cache = Cache(log_p_x0=out.x0_logprobs, embeddings=out.embeddings, x=out.tokens)
         return self.selector.subsample(cache)
 
+    def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
+        encoded = self.tokenizer(
+            [prompt],
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        return encoded["input_ids"].to(self.device)
+
+    def _build_local_initial_tokens(self, prompt: str | None) -> tuple[torch.Tensor, int]:
+        if prompt is None:
+            return self.initialize(self.config.n_groups, self.model_length), 0
+
+        prompt_tokens = self._preprocess_prompt(prompt)
+        prompt_len = prompt_tokens.shape[1]
+        completion = self.initialize(self.config.n_groups, self.config.gen_length)
+        prompt_batch = prompt_tokens.repeat(self.config.n_groups, 1)
+        return torch.cat([prompt_batch, completion], dim=1), prompt_len
+
+    def _completion_output(self, out: DiffusionStepOutput, prompt_len: int) -> DiffusionStepOutput:
+        if prompt_len <= 0:
+            return out
+        embeddings = out.embeddings[:, prompt_len:] if out.embeddings is not None else None
+        token_scores, sequence_scores = _sequence_scores(out.x0_logprobs[:, prompt_len:])
+        return DiffusionStepOutput(
+            tokens=out.tokens[:, prompt_len:],
+            posterior_probs=None,
+            x0_logprobs=out.x0_logprobs[:, prompt_len:],
+            token_scores=token_scores,
+            sequence_scores=sequence_scores,
+            embeddings=embeddings,
+        )
+
     def _sample_hf_generate(self, prompt: str | None = None) -> torch.Tensor:
         if prompt:
             encoded = self.tokenizer([prompt], add_special_tokens=True, return_tensors="pt")
@@ -194,8 +237,9 @@ class GIDDSampler(nn.Module):
             sampling_method="adaptive",
         )
 
-    def _sample_local_posterior(self) -> dict[str, torch.Tensor]:
-        tokens = self.initialize(self.config.n_groups, self.model_length)
+    def _sample_local_posterior(self, prompt: str | None = None) -> dict[str, torch.Tensor]:
+        tokens, prompt_len = self._build_local_initial_tokens(prompt)
+        prompt_tokens = tokens[:, :prompt_len].clone() if prompt_len > 0 else None
         timesteps = make_time_grid(
             self.config.diffusion_steps,
             self.config.sampling_eps,
@@ -209,36 +253,53 @@ class GIDDSampler(nn.Module):
             t = timesteps[i].expand(expanded.size(0), 1)
             s = timesteps[i + 1].expand(expanded.size(0), 1)
             out = self.denoise_step(expanded, t, s)
-            selected_idx = self._select_candidates(out)
+            if prompt_len > 0:
+                out.tokens[:, :prompt_len] = expanded[:, :prompt_len]
+            completion_out = self._completion_output(out, prompt_len)
+            selected_idx = self._select_candidates(completion_out)
             if selected_idx is None:
                 tokens = out.tokens[: self.config.n_groups]
-                final_scores = out.sequence_scores[: self.config.n_groups]
+                final_scores = completion_out.sequence_scores[: self.config.n_groups]
             else:
                 tokens = out.tokens[selected_idx]
-                final_scores = out.sequence_scores[selected_idx]
+                final_scores = completion_out.sequence_scores[selected_idx]
+            if prompt_tokens is not None:
+                tokens[:, :prompt_len] = prompt_tokens
             if self.distributed_utils:
                 tokens = self.distributed_utils.dispatch_sequences(tokens)
+                if prompt_tokens is not None:
+                    prompt_tokens = tokens[:, :prompt_len].clone()
 
         if self.config.self_correction:
-            tokens = self.self_correct(tokens, steps=self.config.diffusion_steps, temp=self.config.self_correction_temp)
+            tokens = self.self_correct(
+                tokens,
+                steps=self.config.diffusion_steps,
+                temp=self.config.self_correction_temp,
+                prompt_len=prompt_len,
+            )
         if self.distributed_utils:
             tokens = self.distributed_utils.all_gather_sequences(tokens)
         return {"tokens": tokens, "sequence_scores": final_scores}
 
-    def self_correct(self, samples: torch.Tensor, steps: int, temp: float) -> torch.Tensor:
+    def self_correct(self, samples: torch.Tensor, steps: int, temp: float, prompt_len: int = 0) -> torch.Tensor:
         old_temp = self.config.cat_temperature
         object.__setattr__(self.config, "cat_temperature", temp)
         try:
             tokens = samples
+            prompt_tokens = tokens[:, :prompt_len].clone() if prompt_len > 0 else None
             midpoint = max(1, steps // 2)
             timesteps = make_time_grid(midpoint, self.config.sampling_eps, self.device, self.config.time_grid)
             noise = self.initialize(tokens.size(0), tokens.size(1))
             keep_prob = torch.full_like(tokens, 0.5, dtype=torch.float32)
+            if prompt_len > 0:
+                keep_prob[:, :prompt_len] = 1.0
             tokens = torch.where(torch.rand_like(keep_prob) < keep_prob, tokens, noise)
             for i in range(midpoint):
                 t = timesteps[i].expand(tokens.size(0), 1)
                 s = timesteps[i + 1].expand(tokens.size(0), 1)
                 tokens = self.denoise_step(tokens, t, s).tokens
+                if prompt_tokens is not None:
+                    tokens[:, :prompt_len] = prompt_tokens
             return tokens
         finally:
             object.__setattr__(self.config, "cat_temperature", old_temp)
@@ -247,7 +308,8 @@ class GIDDSampler(nn.Module):
         if self.config.posterior_sampler == "gidd_hf_generate":
             prompt = prompts[0] if isinstance(prompts, list) and prompts else prompts
             return {"tokens": self._sample_hf_generate(prompt), "sequence_scores": torch.empty(0, device=self.device)}
-        return self._sample_local_posterior()
+        prompt = prompts[0] if isinstance(prompts, list) and prompts else prompts
+        return self._sample_local_posterior(prompt)
 
     def sample(self, prompt: str | None = None):
         return self.sample_population(prompt)["tokens"]
