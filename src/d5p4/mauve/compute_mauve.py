@@ -58,8 +58,7 @@ def compute_mauve(
         Try reducing this to 1 in order to reduce running time.
     :param ``kmeans_max_iter``: maximum number of k-means iterations. Default 500.
         Try reducing this to 100 in order to reduce running time.
-    :param ``featurize_model_name``: name of the model from which features are obtained. Default 'gpt2-large'.
-        We support all models which can be loaded from ``transformers.AutoModel.from_pretrained(featurize_model_name)``.
+    :param ``featurize_model_name``: name of the GPT-2 model from which features are obtained. Default 'gpt2-large'.
     :param ``device_id``: Device for featurization. Supply gpu_id (e.g. 0 or 3) to use GPU or -1 to use CPU.
     :param ``max_text_length``: maximum number of tokens to consider. Default 1024.
     :param ``divergence_curve_discretization_size``: Number of points to consider on the divergence curve. Default 25.

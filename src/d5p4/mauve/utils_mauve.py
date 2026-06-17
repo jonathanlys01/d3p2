@@ -6,7 +6,7 @@ import time
 
 import torch
 from tqdm.auto import tqdm as tqdm_original
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer, BertModel, GPT2Model
 
 
 CPU_DEVICE = torch.device("cpu")
@@ -22,14 +22,13 @@ def get_device_from_arg(device_id):
 
 def get_model(model_name, tokenizer, device_id, cache_dir=None):
     device = get_device_from_arg(device_id)
-    if "gpt2" in model_name or "bert" in model_name:
-        model = AutoModel.from_pretrained(model_name, pad_token_id=tokenizer.eos_token_id, cache_dir=cache_dir).to(
-            device,
-        )
-        model = model.eval()
+    if "gpt2" in model_name:
+        model = GPT2Model.from_pretrained(model_name, pad_token_id=tokenizer.eos_token_id, cache_dir=cache_dir)
+    elif "bert" in model_name:
+        model = BertModel.from_pretrained(model_name, pad_token_id=tokenizer.eos_token_id, cache_dir=cache_dir)
     else:
         raise ValueError(f"Unknown model: {model_name}")
-    return model
+    return model.to(device).eval()
 
 
 def get_tokenizer(model_name="gpt2", cache_dir=None):

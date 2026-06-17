@@ -5,7 +5,7 @@ Compares last token embedding vs mean of all previous embeddings.
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoModelForCausalLM
+from transformers import GPT2LMHeadModel
 
 from d5p4.config import Config
 from d5p4.exps.correlation.common import (
@@ -14,6 +14,7 @@ from d5p4.exps.correlation.common import (
     plot_cka_acs,
     save_results_csv,
 )
+from d5p4.jina_ref.modeling_bert import JinaBertModel
 from d5p4.utils import get_tokenizer, process_model_args, tqdm
 
 
@@ -22,7 +23,7 @@ AR_MODEL_ID = "gpt2-large"
 
 
 def get_ar_embeddings(
-    model: AutoModelForCausalLM,
+    model: GPT2LMHeadModel,
     input_ids: torch.Tensor,
     position: int,
     strategy: str,
@@ -75,13 +76,13 @@ def main():  # noqa: PLR0915
     print(f"Running experiment with {N_BATCHES} batches of {BATCH_SIZE} samples each (Total: {N_TOTAL_SAMPLES})")
 
     # Load reference model (Jina embeddings)
-    ref_model = AutoModel.from_pretrained(ref_model_id, cache_dir=config.cache_dir, trust_remote_code=True)
+    ref_model = JinaBertModel.from_pretrained(ref_model_id, cache_dir=config.cache_dir, trust_remote_code=True)
     ref_model.eval()
     ref_model.to(device)
 
     # Load AR model (GPT-2 Large)
     model_args = process_model_args(AR_MODEL_ID, cache_dir=config.cache_dir)
-    ar_model = AutoModelForCausalLM.from_pretrained(**model_args)
+    ar_model = GPT2LMHeadModel.from_pretrained(**model_args)
     ar_model.to(device)
     ar_model.eval()
 

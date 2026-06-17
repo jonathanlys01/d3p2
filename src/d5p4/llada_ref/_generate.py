@@ -1,7 +1,9 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer
+
+from d5p4.llada_ref.modeling_llada import LLaDAModelLM
 
 
 def add_gumbel_noise(logits, temperature):
@@ -143,7 +145,11 @@ def main():
     device = "cuda"
 
     model = (
-        AutoModel.from_pretrained("GSAI-ML/LLaDA-8B-Instruct", trust_remote_code=True, torch_dtype=torch.bfloat16)
+        LLaDAModelLM.from_pretrained(
+            "GSAI-ML/LLaDA-8B-Instruct",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
         .to(device)
         .eval()
     )

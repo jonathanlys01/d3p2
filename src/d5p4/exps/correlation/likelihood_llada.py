@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from scipy.stats import spearmanr
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer, GPT2LMHeadModel, LlamaForCausalLM
 
 from d5p4.config import Cache, Config
 from d5p4.data.qa import get_qa_dataset
@@ -19,6 +19,26 @@ from d5p4.utils import seed_all, tqdm
 
 # Set non-interactive backend for matplotlib to avoid issues on clusters
 matplotlib.use("Agg")
+
+
+ARReferenceModel = GPT2LMHeadModel | LlamaForCausalLM
+
+
+def _load_ar_reference_model(model_path: str, cache_dir: str | None) -> ARReferenceModel:
+    model_path_lower = model_path.lower()
+    if "llama" in model_path_lower:
+        return LlamaForCausalLM.from_pretrained(
+            model_path,
+            cache_dir=cache_dir,
+            torch_dtype=torch.bfloat16,
+        )
+    if "gpt2" in model_path_lower:
+        return GPT2LMHeadModel.from_pretrained(
+            model_path,
+            cache_dir=cache_dir,
+            torch_dtype=torch.bfloat16,
+        )
+    raise ValueError(f"Unsupported AR reference model: {model_path}")
 
 
 def forward_process(batch, prompt_index, mask_id):
@@ -238,15 +258,7 @@ def main():  # noqa: PLR0915
 
     # 2. Load AR Reference (Llama-3)
     print(f"Loading AR Reference from {config.ar_model_path}...")
-    ar_model = (
-        AutoModelForCausalLM.from_pretrained(
-            config.ar_model_path,
-            cache_dir=config.cache_dir,
-            torch_dtype=torch.bfloat16,
-        )
-        .to(device)
-        .eval()
-    )
+    ar_model = _load_ar_reference_model(config.ar_model_path, config.cache_dir).to(device).eval()
     ar_tokenizer = AutoTokenizer.from_pretrained(config.ar_model_path, cache_dir=config.cache_dir)
 
     # 3. Load QA Dataset

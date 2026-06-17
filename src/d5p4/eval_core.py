@@ -19,7 +19,7 @@ import numpy as np
 import ot
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from d5p4 import mauve
@@ -66,7 +66,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Perplexity(torch.nn.Module):
-    def __init__(self, model: AutoModel, tokenizer: PreTrainedTokenizerBase):
+    def __init__(self, model: GPT2Model | LlamaForCausalLM, tokenizer: PreTrainedTokenizerBase):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
@@ -255,7 +255,7 @@ class AverageCosineSimilarity(torch.nn.Module):
 
 
 class MAUVE(torch.nn.Module):
-    def __init__(self, model: AutoModel, tokenizer: PreTrainedTokenizerBase):
+    def __init__(self, model: torch.nn.Module, tokenizer: PreTrainedTokenizerBase):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
@@ -474,7 +474,13 @@ class StringMetrics(torch.nn.Module):
 def _build_perplexity_model(model_id: str) -> Perplexity:
     """Load a causal-LM backbone and wrap it in a :class:`Perplexity` scorer."""
     args = process_model_args(model_id, cache_dir=CACHE_DIR)
-    model = LlamaForCausalLM.from_pretrained(**args) if "llama" in model_id else AutoModel.from_pretrained(**args)
+    model_id_lower = model_id.lower()
+    if "llama" in model_id_lower:
+        model = LlamaForCausalLM.from_pretrained(**args)
+    elif "gpt2" in model_id_lower:
+        model = GPT2Model.from_pretrained(**args)
+    else:
+        raise ValueError(f"Unsupported perplexity model: {model_id}")
     tokenizer = AutoTokenizer.from_pretrained(**args)
     return Perplexity(model, tokenizer)
 

@@ -1,0 +1,24 @@
+{
+  "_name_or_path": "kuleshov-group/udlm-lm1b",
+  "architectures": [
+    "UDLM"
+  ],
+  "auto_map": {
+    "AutoConfig": "configuration_udlm.UDLMConfig",
+    "AutoModelForMaskedLM": "modeling_udlm.UDLM"
+  },
+  "cfg": false,
+  "cfg_num_classes": -1,
+  "cond_dim": 128,
+  "dropout": 0.1,
+  "hidden_dim": 768,
+  "model_length": 128,
+  "model_type": "udlm",
+  "n_blocks": 12,
+  "n_heads": 12,
+  "return_dict": false,
+  "time_conditioning": true,
+  "torch_dtype": "float32",
+  "transformers_version": "4.38.2",
+  "vocab_size": 30522
+}

@@ -9,7 +9,7 @@ import json
 import numpy as np
 import torch
 from d5p4.config import CACHE_DIR, SEQUENCE_LENGTH
-from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, GPT2Model, PreTrainedTokenizerBase
 from d5p4.utils import process_model_args
 
 from d5p4.mauve.compute_mauve import compute_mauve
@@ -167,7 +167,9 @@ def main():
 
     # Initialize model and tokenizer for MAUVE computation (following eval_core.py pattern)
     model_args = process_model_args(args.model, cache_dir=CACHE_DIR)
-    model = AutoModel.from_pretrained(**model_args)
+    if "gpt2" not in args.model.lower():
+        raise ValueError(f"Unsupported MAUVE model: {args.model}")
+    model = GPT2Model.from_pretrained(**model_args)
     tokenizer = AutoTokenizer.from_pretrained(**model_args)
 
     # Compute MAUVE

@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from transformers import AutoModel
 
 from d5p4.config import Config
 from d5p4.exps.correlation.common import (
@@ -10,6 +9,7 @@ from d5p4.exps.correlation.common import (
     plot_cka_acs,
     save_results_csv,
 )
+from d5p4.jina_ref.modeling_bert import JinaBertModel
 from d5p4.llada_ref.modeling_llada import LLaDAModelLM
 from d5p4.utils import get_tokenizer, tqdm
 
@@ -28,7 +28,7 @@ def main():  # noqa: C901, PLR0915
     N_BATCHES = N_TOTAL_SAMPLES // BATCH_SIZE
     print(f"Running experiment with {N_BATCHES} batches of {BATCH_SIZE} samples each (Total: {N_TOTAL_SAMPLES})")
 
-    ref_model = AutoModel.from_pretrained(ref_model_id, cache_dir=config.cache_dir, trust_remote_code=True)
+    ref_model = JinaBertModel.from_pretrained(ref_model_id, cache_dir=config.cache_dir, trust_remote_code=True)
     ref_model.eval()
     ref_model.to(device)
 

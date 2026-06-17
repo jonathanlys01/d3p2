@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from scipy.stats import spearmanr
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer, GPT2Model
 
 from d5p4.config import Cache, Config
 from d5p4.eval_core import Perplexity
@@ -143,7 +143,7 @@ def main():  # noqa: PLR0915
 
     # 2. Load GPT-2 for Reference Quality (Perplexity)
     print("Loading GPT-2 reference model...")
-    gpt2_model = AutoModel.from_pretrained("gpt2", cache_dir=config.cache_dir).to(device).eval()
+    gpt2_model = GPT2Model.from_pretrained("gpt2", cache_dir=config.cache_dir).to(device).eval()
     gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2", cache_dir=config.cache_dir)
     ppl_evaluator = Perplexity(gpt2_model, gpt2_tokenizer)
 

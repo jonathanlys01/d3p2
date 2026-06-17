@@ -8,10 +8,10 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers import AutoModelForCausalLM
 
 from d5p4.config import Cache, Config
 from d5p4.diffusion_udlm import DiffusionStepOutput, apply_sampling_temperature, make_time_grid
+from d5p4.gidd_ref.modeling_gidd import GiddForDiffusionLM
 from d5p4.subsample import get_subsample_selector
 from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
 
@@ -87,9 +87,8 @@ class GIDDSampler(nn.Module):
         self.selector = get_subsample_selector(config)
         self.tokenizer = get_tokenizer(config, "gidd")
         model_args = process_model_args(config.gidd_model_path, cache_dir=config.cache_dir)
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = GiddForDiffusionLM.from_pretrained(
             **model_args,
-            trust_remote_code=True,
             torch_dtype=torch.bfloat16,
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"

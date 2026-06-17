@@ -6,7 +6,7 @@ Mimics the behavior of diffusion samplers but uses standard left-to-right genera
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer, GPT2LMHeadModel, LlamaForCausalLM
 from transformers.cache_utils import DynamicCache
 
 from d5p4.config import Cache, Config
@@ -18,6 +18,18 @@ NEG_INFINITY = -1_000_000.0
 torch.set_float32_matmul_precision("high")
 
 
+ARModel = GPT2LMHeadModel | LlamaForCausalLM
+
+
+def _load_ar_model(model_path: str, model_args: dict) -> ARModel:
+    model_path_lower = model_path.lower()
+    if "llama" in model_path_lower:
+        return LlamaForCausalLM.from_pretrained(**model_args)
+    if "gpt2" in model_path_lower:
+        return GPT2LMHeadModel.from_pretrained(**model_args)
+    raise ValueError(f"Unsupported autoregressive model: {model_path}")
+
+
 class AutoregressiveSampler(nn.Module):
     """Autoregressive sampler with beam-style exploration."""
 
@@ -26,7 +38,7 @@ class AutoregressiveSampler(nn.Module):
         configure_runtime(config)
 
         model_args = process_model_args(config.ar_model_path, cache_dir=config.cache_dir)
-        self.model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(**model_args)
+        self.model: ARModel = _load_ar_model(config.ar_model_path, model_args)
         self.selector = get_subsample_selector(config)
         self.config = config
 

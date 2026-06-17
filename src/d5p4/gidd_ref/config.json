@@ -1,0 +1,41 @@
+{
+  "architectures": [
+    "GiddForDiffusionLM"
+  ],
+  "attention_bias": true,
+  "attn_performer": "eager",
+  "attn_soft_cap": 30.0,
+  "auto_map": {
+    "AutoConfig": "configuration_gidd.GiddConfig",
+    "AutoModel": "modeling_gidd.GiddModel",
+    "AutoModelForCausalLM": "modeling_gidd.GiddForDiffusionLM"
+  },
+  "bos_token_id": 0,
+  "emb_init_scale": 0.1,
+  "eos_token_id": 1,
+  "head_dim": 128,
+  "head_init_scale": 0.0,
+  "head_scaling": 0.16666666666666666,
+  "hidden_size": 3072,
+  "init_scale": 0.007216878364870323,
+  "intermediate_size": 12288,
+  "is_causal": false,
+  "max_log_snr": 9.0,
+  "max_position_embeddings": 2048,
+  "min_log_snr": -9.0,
+  "mlp_bias": true,
+  "model_type": "gidd",
+  "noise_type": 1000.0,
+  "num_attention_heads": 24,
+  "num_hidden_layers": 19,
+  "resid_scale": 4.0,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 10000.0,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.54.0",
+  "use_qk_norm": true,
+  "vocab_size": 131072,
+  "weight_scaling": 1.0
+}

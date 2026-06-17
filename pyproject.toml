@@ -84,6 +84,8 @@ fixable = ["ALL"]
 # external modelling code
 "src/d5p4/llada_ref/*" = ["ALL"]
 "src/d5p4/mdlm_ref/*" = ["ALL"]
+"src/d5p4/gidd_ref/*" = ["ALL"]
+"src/d5p4/udlm_ref/*" = ["ALL"]
 "src/d5p4/mauve/*" = ["ALL"]
 "src/d5p4/jina_ref/*" = ["ALL"]
 "src/d5p4/esmc_ref/*" = ["ALL"]
@@ -110,6 +112,8 @@ project-excludes = [
     "src/d5p4/jina_ref",
     "src/d5p4/llada_ref",
     "src/d5p4/mdlm_ref",
+    "src/d5p4/gidd_ref",
+    "src/d5p4/udlm_ref",
     "src/d5p4/esmc_ref",
     "src/d5p4/mauve",
     "tests",
