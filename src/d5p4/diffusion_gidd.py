@@ -266,7 +266,7 @@ class GIDDSampler(nn.Module):
             if prompt_tokens is not None:
                 tokens[:, :prompt_len] = prompt_tokens
             if self.distributed_utils:
-                tokens = self.distributed_utils.dispatch_sequences(tokens)
+                tokens = self.distributed_utils.dispatch_sequences(tokens, rows_per_rank=self.config.n_groups)
                 if prompt_tokens is not None:
                     prompt_tokens = tokens[:, :prompt_len].clone()
 

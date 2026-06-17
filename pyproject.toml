@@ -29,6 +29,7 @@ dependencies = [
 dev = [
     "flash-attn>=2.8.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "nvidia-ml-py",
+    "pytest>=9.1.0",
 ]
 
 [tool.uv.extra-build-dependencies]

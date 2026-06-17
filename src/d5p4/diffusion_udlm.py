@@ -207,7 +207,7 @@ class UDLMSampler(nn.Module):
                 final_scores = out.sequence_scores[selected_idx]
 
             if self.distributed_utils:
-                tokens = self.distributed_utils.dispatch_sequences(tokens)
+                tokens = self.distributed_utils.dispatch_sequences(tokens, rows_per_rank=self.config.n_groups)
 
         if self.distributed_utils:
             tokens = self.distributed_utils.all_gather_sequences(tokens)

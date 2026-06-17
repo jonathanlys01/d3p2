@@ -329,17 +329,24 @@ class DistributedUtils:
         local_embeddings: torch.Tensor,
         local_qualities: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor] | tuple[None, None]:
+        """Gather embeddings and quality scores from all ranks.
+
+        Allocates the gather buffer dynamically from the actual local tensor shape
+        so that prompt-sliced embeddings (gen_length < sequence_length) are handled
+        correctly without a size mismatch.
+        """
         assert self.is_distributed(), "all_gather can only be called in distributed mode"
-        assert self.embeddings.is_cuda and self.qualities.is_cuda, "Placeholders must be on CUDA device"
         assert local_embeddings.is_cuda and local_qualities.is_cuda, "Local tensors must be on CUDA device"
 
-        torch.distributed.all_gather_into_tensor(self.embeddings, local_embeddings)
-        torch.distributed.all_gather_into_tensor(self.qualities, local_qualities)
+        gathered_emb = self._all_gather_flattened_rows(local_embeddings)
+        gathered_q = self._all_gather_flattened_rows(local_qualities.reshape(-1, 1))
 
         if self.rank != 0:
             return None, None
 
-        return self.embeddings, self.qualities
+        assert gathered_emb is not None
+        assert gathered_q is not None
+        return gathered_emb, gathered_q.reshape(-1)
 
     def all_gather_scores(
         self,
@@ -360,31 +367,73 @@ class DistributedUtils:
         self,
         local_embeddings: torch.Tensor,
     ) -> torch.Tensor | None:
+        """Gather embeddings from all ranks.
+
+        Allocates the gather buffer dynamically from the actual local tensor shape
+        so that prompt-sliced embeddings (gen_length < sequence_length) are handled
+        correctly without a size mismatch.
+        """
         assert self.is_distributed(), "all_gather_embeddings can only be called in distributed mode"
-        assert self.embeddings.is_cuda, "Placeholder must be on CUDA device"
         assert local_embeddings.is_cuda, "Local embeddings must be on CUDA device"
 
-        torch.distributed.all_gather_into_tensor(self.embeddings, local_embeddings)
+        return self._all_gather_flattened_rows(local_embeddings)  # [W*B, L*E]
+
+    def _all_gather_flattened_rows(self, local_rows: torch.Tensor) -> torch.Tensor | None:
+        flat = local_rows.contiguous().reshape(-1)
+        gather_buffer = torch.zeros(
+            self.world_size * flat.numel(),
+            dtype=flat.dtype,
+            device=flat.device,
+        )
+        torch.distributed.all_gather_into_tensor(gather_buffer, flat)
 
         if self.rank != 0:
             return None
 
-        return self.embeddings  # [B, L*E]
+        return gather_buffer.reshape(self.world_size * local_rows.size(0), -1)
 
-    def dispatch_sequences(self, sequences: torch.Tensor | None, last: bool = False) -> torch.Tensor:
+    def dispatch_sequences(
+        self,
+        sequences: torch.Tensor | None,
+        last: bool = False,
+        rows_per_rank: int | None = None,
+    ) -> torch.Tensor:
         """
         Gathers sequences from all ranks and redistributes them.
-        Handles 2D tensors [B, L] by synchronizing sequence length across ranks.
+
+        By default, each rank receives ``cfg.batch_size`` rows from the global
+        gathered pool. Pass ``rows_per_rank`` for loops whose local state keeps a
+        different row count, such as UDLM/GIDD post-selection states with
+        ``cfg.n_groups`` rows per rank.
         """
         assert self.is_distributed(), "dispatch_sequences can only be called in distributed mode"
 
+        all_sequences, all_batch_sizes = self._gather_padded_sequences(sequences)
+
+        if last:
+            return all_sequences
+
+        slice_rows = self.cfg.batch_size if rows_per_rank is None else rows_per_rank
+        if rows_per_rank is not None and torch.any(all_batch_sizes != rows_per_rank):
+            raise ValueError(
+                "dispatch_sequences rows_per_rank mismatch: "
+                f"expected every rank to contribute {rows_per_rank} row(s), got {all_batch_sizes.tolist()}",
+            )
+
+        rank_start = self.rank * slice_rows
+        rank_end = (self.rank + 1) * slice_rows
+        return all_sequences[rank_start:rank_end]
+
+    def _gather_padded_sequences(self, sequences: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
         # Determine local size and shape
         local_batch_size = sequences.size(0) if sequences is not None else 0
         local_seq_len = sequences.size(1) if sequences is not None and sequences.dim() > 1 else 0
+        dtype = sequences.dtype if sequences is not None else torch.int64
+        device = sequences.device if sequences is not None else torch.device("cuda")
 
         # Gather sizes and sequence lengths from all ranks
-        stats = torch.tensor([local_batch_size, local_seq_len], dtype=torch.int32, device="cuda")
-        all_stats = torch.zeros((self.world_size, 2), dtype=torch.int32, device="cuda")
+        stats = torch.tensor([local_batch_size, local_seq_len], dtype=torch.int32, device=device)
+        all_stats = torch.zeros((self.world_size, 2), dtype=torch.int32, device=device)
         torch.distributed.all_gather_into_tensor(all_stats, stats)
 
         all_batch_sizes = all_stats[:, 0]
@@ -396,12 +445,12 @@ class DistributedUtils:
 
         # Handle empty case
         if all_batch_sizes.sum().item() == 0:
-            return torch.empty((0, max_seq_len), dtype=torch.int32, device="cuda")
+            return torch.empty((0, max_seq_len), dtype=dtype, device=device), all_batch_sizes
 
         if local_batch_size == 0 or sequences is None:
-            local_data = torch.full((max_batch_size, max_seq_len), -1, dtype=torch.int32, device="cuda")
+            local_data = torch.full((max_batch_size, max_seq_len), -1, dtype=dtype, device=device)
         else:
-            local_data = sequences.to(dtype=torch.int32, device="cuda")
+            local_data = sequences.to(device=device)
             if local_data.dim() == 1:
                 local_data = local_data.unsqueeze(1)
 
@@ -413,27 +462,19 @@ class DistributedUtils:
             # Pad batch size if needed
             if local_data.size(0) < max_batch_size:
                 pad_h = max_batch_size - local_data.size(0)
-                padding = torch.full((pad_h, max_seq_len), -1, dtype=torch.int32, device="cuda")
+                padding = torch.full((pad_h, max_seq_len), -1, dtype=dtype, device=device)
                 local_data = torch.cat([local_data, padding], dim=0)
 
         # Gather all data
         # gather_buffer shape: [world_size * max_batch_size, max_seq_len]
-        gather_buffer = torch.zeros((self.world_size * max_batch_size, max_seq_len), dtype=torch.int32, device="cuda")
+        gather_buffer = torch.zeros((self.world_size * max_batch_size, max_seq_len), dtype=dtype, device=device)
         torch.distributed.all_gather_into_tensor(gather_buffer, local_data)
 
         # Filter out sentinel values (only for rows where all values are -1)
         # We use a mask to identify non-padded rows
         mask = (gather_buffer != -1).any(dim=1)
         all_sequences = gather_buffer[mask]
-
-        if last:
-            return all_sequences
-
-        # Slice for this rank (matching original logic)
-        rank_start = self.rank * self.cfg.batch_size
-        rank_end = (self.rank + 1) * self.cfg.batch_size
-        rank_sequences = all_sequences[rank_start:rank_end]
-        return rank_sequences
+        return all_sequences, all_batch_sizes
 
     def dispatch_batch_indices(self, ids: torch.Tensor | None) -> torch.Tensor | None:
         """
