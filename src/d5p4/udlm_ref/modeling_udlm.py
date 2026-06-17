@@ -192,7 +192,6 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
-        t_freq = t_freq.to(dtype=self.mlp[0].weight.dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -388,38 +387,32 @@ class DITBackbone(nn.Module):
             sigma = torch.zeros_like(sigma)
         all_hidden_states = []
 
-        c = F.silu(self.sigma_map(sigma))
-        if cond is not None:
-            if self.cond_map is None:
-                raise ValueError(
-                    "Conditioning variable provided, but Model was not initialized with condition embedding layer."
-                )
-            else:
-                c = c + F.silu(self.cond_map(cond))
+        ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if SUPPORTS_FLASH else nullcontext()
 
-        if x_emb is None:
-            x = self.vocab_embed(indices)
-            if output_hidden_states:
-                all_hidden_states.append(x)
+        with ctx:
+            c = F.silu(self.sigma_map(sigma))
+            if cond is not None:
+                if self.cond_map is None:
+                    raise ValueError(
+                        "Conditioning variable provided, but Model was not initialized with condition embedding layer."
+                    )
+                else:
+                    c = c + F.silu(self.cond_map(cond))
 
-            rotary_cos_sin = self.rotary_emb(x)
+            if x_emb is None:
+                x = self.vocab_embed(indices)
+                if output_hidden_states:
+                    all_hidden_states.append(x)
 
-            ctx = (
-                torch.amp.autocast(device_type="cuda", dtype=self.precision)
-                if torch.cuda.is_available() and self.precision != torch.float32
-                else nullcontext()
-            )
-            with ctx:
+                rotary_cos_sin = self.rotary_emb(x)
+
                 for i in range(len(self.blocks)):
                     x = self.blocks[i](x, rotary_cos_sin, c, seqlens=None)
                     if output_hidden_states:
                         all_hidden_states.append(x)
-        else:
-            x = x_emb
-        ctx = (
-            torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
-        )
-        with ctx:
+            else:
+                x = x_emb
+
             logits = self.output_layer(x, c)
         return logits, all_hidden_states
 
