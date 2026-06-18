@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 from datasets import load_dataset
@@ -30,22 +30,26 @@ def _limit(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return df
 
 
-def _format_mbpp_few_shot_prefix(examples: list[dict[str, Any]]) -> str:
+def _format_mbpp_docstring(prompt_text: str, test_list: list[str] | None) -> str:
+    first_test = test_list[0] if test_list else ""
+    return f'"""\n{prompt_text}\n{first_test}\n"""'
+
+
+def _format_mbpp_few_shot_prefix(examples: list[Any]) -> str:
     prefix = ""
     for item in examples:
-        prefix += f"Problem: {item['prompt']}\nSolution:\n```python\n{item['code']}\n```\n\n"
+        test_imports = _as_list(item.get("test_imports"))
+        test_list = test_imports + _as_list(item.get("test_list"))
+        docstring = _format_mbpp_docstring(item["prompt"], test_list)
+        prefix += f"{docstring}\n{item['code']}\n\n"
     return prefix
-
-
-def _format_mbpp_query(prompt: str) -> str:
-    return f"Problem: {prompt}\nSolution:\n```python\n"
 
 
 def humaneval(cfg: Config) -> pd.DataFrame:
     """Load HumanEval test tasks with a normalized code-eval schema."""
     assert cfg.code_n_shots == 0, "HumanEval paper evaluation uses 0-shot prompting"
-    dataset = load_dataset(cfg.humaneval_path, cache_dir=cfg.cache_dir)["test"]
-    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore[assignment]
+    dataset = cast(Any, load_dataset(cfg.humaneval_path, cache_dir=cfg.cache_dir)["test"])
+    dataset = dataset.shuffle(seed=cfg.seed)
 
     rows = []
     for item in dataset:
@@ -65,23 +69,24 @@ def humaneval(cfg: Config) -> pd.DataFrame:
 
 def mbpp(cfg: Config) -> pd.DataFrame:
     """Load MBPP sanitized test tasks with a normalized code-eval schema."""
-    dataset_splits = load_dataset(cfg.mbpp_path, cfg.mbpp_subset, cache_dir=cfg.cache_dir)
-    dataset = dataset_splits["test"]
-    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore[assignment]
-    train_dataset = dataset_splits["train"].shuffle(seed=cfg.seed) if cfg.code_n_shots > 0 else None  # type: ignore[index]
+    dataset_splits = cast(Any, load_dataset(cfg.mbpp_path, cfg.mbpp_subset, cache_dir=cfg.cache_dir))
+    dataset = cast(Any, dataset_splits["test"])
+    dataset = dataset.shuffle(seed=cfg.seed)
+    train_dataset = cast(Any, dataset_splits["train"].shuffle(seed=cfg.seed)) if cfg.code_n_shots > 0 else None
 
     rows = []
     for i, item in enumerate(dataset):
         test_imports = _as_list(item.get("test_imports"))
         tests = [*test_imports, *_as_list(item.get("test_list"))]
-        prompt = str(item["prompt"])
+        prompt_text = str(item["prompt"])
+        prompt = _format_mbpp_docstring(prompt_text, tests)
         if cfg.code_n_shots > 0:
             assert train_dataset is not None
             start_idx = i * cfg.code_n_shots
-            examples: list[dict[str, Any]] = [
+            examples: list[Any] = [
                 train_dataset[idx % len(train_dataset)] for idx in range(start_idx, start_idx + cfg.code_n_shots)
             ]
-            prompt = f"{_format_mbpp_few_shot_prefix(examples)}{_format_mbpp_query(prompt)}"
+            prompt = f"{_format_mbpp_few_shot_prefix(examples)}{prompt}"
         rows.append(
             {
                 "task_id": str(item["task_id"]),
