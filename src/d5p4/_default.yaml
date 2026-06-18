@@ -26,7 +26,8 @@ ar_tokenizer: /Brain/public/models/meta-llama/Meta-Llama-3-8B/
 
 # UDLM / GIDD
 udlm_model_path: /Brain/public/models/kuleshov-group/udlm-lm1b/
-gidd_model_path: /Brain/public/models/dvruette/gidd-unif-3b/
+# gidd_model_path: /Brain/public/models/dvruette/gidd-unif-3b/
+gidd_model_path: /Brain/public/models/dvruette/gidd-unif-10b/
 
 # ar_model_path: gpt2-large
 # ar_tokenizer: gpt2-large
