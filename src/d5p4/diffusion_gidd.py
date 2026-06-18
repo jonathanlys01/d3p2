@@ -101,7 +101,7 @@ class GIDDSampler(nn.Module):
 
     def _infer_vocab_size(self) -> int:
         if hasattr(self.model, "get_output_embeddings") and self.model.get_output_embeddings() is not None:
-            return int(self.model.get_output_embeddings().weight.shape[0])
+            return int(self.model.get_output_embeddings().weight.shape[0])  # type: ignore
         if hasattr(self.model.config, "vocab_size"):
             return int(self.model.config.vocab_size)
         return len(self.tokenizer)

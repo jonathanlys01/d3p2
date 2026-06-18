@@ -4,7 +4,7 @@ from builtins import print as bprint
 from collections.abc import Iterable, Iterator
 from datetime import datetime
 from time import monotonic
-from typing import TypeVar
+from typing import TypeVar, cast
 
 import idr_torch
 import numpy as np
@@ -219,7 +219,10 @@ def get_tokenizer(config: Config, model: str):
 
     path = config.mdlm_tokenizer
     add_args = {"local_files_only": True} if os.path.isdir(path) else {}
-    tokenizer = transformers.AutoTokenizer.from_pretrained(path, cache_dir=config.cache_dir, **add_args)
+    tokenizer = cast(
+        transformers.PreTrainedTokenizer,
+        transformers.AutoTokenizer.from_pretrained(path, cache_dir=config.cache_dir, **add_args),
+    )
 
     if tokenizer.bos_token is None:
         if tokenizer.cls_token is None:

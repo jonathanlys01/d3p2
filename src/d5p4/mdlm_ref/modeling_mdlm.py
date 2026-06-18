@@ -378,7 +378,7 @@ class MDLM(transformers.PreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: torch.LongTensor | torch.Tensor = None,
         timesteps: torch.FloatTensor = None,
         output_hidden_states: typing.Optional[bool] = None,
         return_dict: typing.Optional[bool] = None,

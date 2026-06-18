@@ -16,8 +16,8 @@ MBPP_LENGTH=${MBPP_LENGTH:-256}
 HUMANEVAL_N_SHOTS=${HUMANEVAL_N_SHOTS:-0}
 MBPP_N_SHOTS=${MBPP_N_SHOTS:-4}
 
-N_GROUPS=${N_GROUPS:-4}
-GROUP_SIZE=${GROUP_SIZE:-1}
+N_GROUPS=${N_GROUPS:-3}
+GROUP_SIZE=${GROUP_SIZE:-3}
 METHOD=${METHOD:-baseline}
 CODE_TIMEOUT_S=${CODE_TIMEOUT_S:-5.0}
 
@@ -73,3 +73,38 @@ run_llada_code \
   group_size="$GROUP_SIZE" \
   comment="LLaDA paper code instruct ${CODE_DATASET}, shots=${CODE_N_SHOTS}, length=${GEN_LENGTH}" \
   "$@"
+
+# ==============================================================================
+# Methods Comparison (4 methods x 2 datasets = 8 commands)
+# ==============================================================================
+#
+# --- HumanEval (164 samples, 0-shot, gen_length=512, block_length=512) ---
+#
+# 1. Independent (Baseline)
+# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=baseline n_groups=9 group_size=1 comment="LLaDA baseline HumanEval"
+#
+# 2. Greedy MAP
+# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=greedy_map n_groups=3 group_size=3 subsample_end=256 _w_interaction=10.0 comment="LLaDA greedy_map HumanEval"
+#
+# 3. Diverse Beam Search
+# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=diverse_beam n_groups=3 group_size=3 subsample_end=256 _diversity_alpha=20.0 comment="LLaDA diverse_beam HumanEval"
+#
+# 4. Greedy Beam Search
+# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=greedy_beam n_groups=3 group_size=3 subsample_end=256 comment="LLaDA greedy_beam HumanEval"
+#
+#
+# --- MBPP (257 samples, 4-shot, gen_length=256, block_length=256) ---
+#
+# 5. Independent (Baseline)
+# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=baseline n_groups=9 group_size=1 comment="LLaDA baseline MBPP"
+#
+# 6. Greedy MAP
+# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=greedy_map n_groups=3 group_size=3 subsample_end=128 _w_interaction=10.0 comment="LLaDA greedy_map MBPP"
+#
+# 7. Diverse Beam Search
+# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=diverse_beam n_groups=3 group_size=3 subsample_end=128 _diversity_alpha=20.0 comment="LLaDA diverse_beam MBPP"
+#
+# 8. Greedy Beam Search
+# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=greedy_beam n_groups=3 group_size=3 subsample_end=128 comment="LLaDA greedy_beam MBPP"
+
+

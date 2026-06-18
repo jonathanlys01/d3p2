@@ -6,6 +6,7 @@ from typing import Optional
 
 import torch
 from torch import nn
+from transformers.modeling_outputs import MaskedLMOutput
 
 from d5p4.config import Cache, Config
 from d5p4.mdlm_ref.modeling_mdlm import MDLM, MDLMConfig
@@ -31,7 +32,8 @@ class SMC_MDLMSampler(nn.Module):
         self.config = config
         self.tokenizer = get_tokenizer(config, "mdlm")
 
-        model_config: MDLMConfig = self.model.config
+        model_config = self.model.config
+        assert isinstance(model_config, MDLMConfig)
         self.vocab_size = model_config.vocab_size
         self.mask_index = model_config.vocab_size - 1
         self.model_length = model_config.model_length
@@ -58,9 +60,10 @@ class SMC_MDLMSampler(nn.Module):
             logits[unmasked_indices, xt[unmasked_indices]] = 0
         return logits
 
-    def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _forward_model(self, x: torch.Tensor | torch.LongTensor):
         with torch.amp.autocast(device_type="cuda", dtype=torch.float32):  # type: ignore
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
+            assert isinstance(out, MaskedLMOutput)
             logits = out.logits
             embeddings = out.hidden_states
         return self._subs_parameterization(logits=logits, xt=x), embeddings

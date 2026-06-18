@@ -72,9 +72,8 @@ def _load_default_config(path: Path) -> Config:
     base = OmegaConf.structured(Config(disable_sys_args=True))
     file_cfg = OmegaConf.load(path)
     cfg = OmegaConf.merge(base, file_cfg, {"disable_sys_args": True, "model": "gidd"})
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    assert isinstance(cfg_dict, dict)
-    return Config(**cfg_dict)
+    base.__dict__.update(cfg)
+    return base
 
 
 def _build_parser(default_cfg: Config) -> argparse.ArgumentParser:
