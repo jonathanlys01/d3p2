@@ -10,11 +10,11 @@ NPROC=${NPROC:-gpu}
 
 # Paper protocol for Instruct model:
 #   HumanEval: 512 length, 0-shot
-#   MBPP: 256 length, 0-shot
+#   MBPP: 256 length, 4-shot
 HUMANEVAL_LENGTH=${HUMANEVAL_LENGTH:-512}
 MBPP_LENGTH=${MBPP_LENGTH:-256}
 HUMANEVAL_N_SHOTS=${HUMANEVAL_N_SHOTS:-0}
-MBPP_N_SHOTS=${MBPP_N_SHOTS:-0}
+MBPP_N_SHOTS=${MBPP_N_SHOTS:-4}
 
 N_GROUPS=${N_GROUPS:-3}
 GROUP_SIZE=${GROUP_SIZE:-3}
