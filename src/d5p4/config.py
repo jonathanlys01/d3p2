@@ -92,7 +92,8 @@ class Config:
 
     # UDLM / GIDD
     udlm_model_path: str = "kuleshov-group/udlm-lm1b"
-    gidd_model_path: str = "dvruette/gidd-unif-3b"
+    # gidd_model_path: str = "dvruette/gidd-unif-3b"
+    gidd_model_path: str = "dvruette/gidd-unif-10b"
     diffusion_steps: int = 128
     sampling_eps: float = 1e-5
     time_grid: str = "linear"  # "linear", "loglinear"
