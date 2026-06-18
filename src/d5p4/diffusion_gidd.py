@@ -192,7 +192,12 @@ class GIDDSampler(nn.Module):
             add_special_tokens=False,
             return_tensors="pt",
         )
-        return encoded["input_ids"].to(self.device)
+        input_ids = encoded["input_ids"].to(self.device)
+        bos = self.tokenizer.bos_token_id
+        if bos is not None and (input_ids.numel() == 0 or input_ids[0, 0].item() != bos):
+            bos_tensor = torch.full((input_ids.size(0), 1), bos, dtype=input_ids.dtype, device=input_ids.device)
+            input_ids = torch.cat([bos_tensor, input_ids], dim=1)
+        return input_ids
 
     def _build_local_initial_tokens(self, prompt: str | None) -> tuple[torch.Tensor, int]:
         if prompt is None:
@@ -234,7 +239,7 @@ class GIDDSampler(nn.Module):
             max_length=self.config.gen_length,
             min_length=0,
             temperature=self.config.cat_temperature,
-            block_length=self.config.block_length,
+            block_length=self.config.gidd_block_length,
             steps=self.config.diffusion_steps,
             bos_token_id=self.tokenizer.bos_token_id or 0,
             eos_token_id=self.tokenizer.eos_token_id or 1,

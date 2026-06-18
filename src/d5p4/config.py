@@ -99,6 +99,7 @@ class Config:
     posterior_sampler: str = "udlm_posterior"  # "udlm_posterior", "gidd_posterior", "gidd_hf_generate"
     self_correction: bool = False
     self_correction_temp: float = 0.1
+    gidd_block_length: int = 128
     gidd_schedule: str = "uniform"  # "uniform", "hybrid"
     gidd_hybrid_p_unif: float = 1.0
 
@@ -242,6 +243,7 @@ class Config:
             f"Unknown posterior_sampler: {self.posterior_sampler}"
         )
         assert self._score_method in SCORE_METHOD_CHOICES, f"Unknown _score_method: {self._score_method}"
+        assert self.gidd_block_length > 0, "gidd_block_length must be positive"
         assert self.gidd_schedule in GIDD_SCHEDULE_CHOICES, f"Unknown gidd_schedule: {self.gidd_schedule}"
         assert 0.0 <= self.gidd_hybrid_p_unif <= 1.0, "gidd_hybrid_p_unif must be in [0, 1]"
 

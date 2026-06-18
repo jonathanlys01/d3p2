@@ -237,8 +237,8 @@ def test_prompt_conditioned_local_sampling_preserves_prompt_and_shape():
 
     samples = sampler.sample(prompt="ABC")
 
-    assert samples.shape == (cfg.n_groups, 3 + cfg.gen_length)
-    torch.testing.assert_close(samples[:, :3], torch.tensor([[1, 2, 3], [1, 2, 3]]))
+    assert samples.shape == (cfg.n_groups, 4 + cfg.gen_length)
+    torch.testing.assert_close(samples[:, :4], torch.tensor([[0, 1, 2, 3], [0, 1, 2, 3]]))
 
 
 def test_prompt_conditioned_selector_receives_completion_only_cache():
@@ -294,6 +294,7 @@ def test_gidd_hf_generate_uses_source_signature():
         model="gidd",
         gen_length=8,
         block_length=4,
+        gidd_block_length=4,
         diffusion_steps=3,
         n_groups=2,
         posterior_sampler="gidd_hf_generate",
@@ -319,10 +320,40 @@ def test_gidd_hf_generate_uses_source_signature():
     assert cast(torch.Tensor, model.kwargs["inputs"]).shape == (cfg.n_groups, 1)
     assert model.kwargs["max_length"] == cfg.gen_length
     assert model.kwargs["temperature"] == cfg.cat_temperature
-    assert model.kwargs["block_length"] == cfg.block_length
+    assert model.kwargs["block_length"] == cfg.gidd_block_length
     assert model.kwargs["steps"] == cfg.diffusion_steps
     assert model.kwargs["sampling_method"] == "ancestral"
     assert model.kwargs["noise_schedule"] == "cosine"
+
+
+def test_gidd_hf_generate_defaults_to_source_block_length():
+    cfg = Config(
+        disable_sys_args=True,
+        model="gidd",
+        gen_length=128,
+        diffusion_steps=3,
+        n_groups=2,
+        posterior_sampler="gidd_hf_generate",
+    )
+    sampler = GIDDSampler.__new__(GIDDSampler)
+    nn.Module.__init__(sampler)
+    sampler.config = cfg
+    sampler.device = "cpu"
+    model = _RecordingGenerateModel()
+    sampler.model = model
+    sampler.tokenizer = SimpleNamespace(
+        bos_token_id=0,
+        eos_token_id=1,
+        pad_token_id=2,
+        mask_token_id=3,
+    )
+
+    sampler._sample_hf_generate()
+
+    assert model.kwargs is not None
+    assert cfg.block_length == 32
+    assert cfg.gidd_block_length == 128
+    assert model.kwargs["block_length"] == 128
 
 
 def test_gidd_prompt_encoding_does_not_append_eos_for_hf_generate():
@@ -331,6 +362,7 @@ def test_gidd_prompt_encoding_does_not_append_eos_for_hf_generate():
         model="gidd",
         gen_length=8,
         block_length=4,
+        gidd_block_length=4,
         diffusion_steps=3,
         n_groups=2,
         posterior_sampler="gidd_hf_generate",
@@ -348,5 +380,6 @@ def test_gidd_prompt_encoding_does_not_append_eos_for_hf_generate():
     assert model.kwargs is not None
     inputs = cast(torch.Tensor, model.kwargs["inputs"])
     assert sampler.tokenizer.calls == [{"add_special_tokens": False, "return_tensors": "pt"}]
-    assert inputs.shape == (cfg.n_groups, 3)
+    assert inputs.shape == (cfg.n_groups, 4)
+    assert torch.all(inputs[:, 0] == sampler.tokenizer.bos_token_id)
     assert not torch.any(inputs == sampler.tokenizer.eos_token_id)
