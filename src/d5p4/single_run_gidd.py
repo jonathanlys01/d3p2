@@ -22,6 +22,7 @@ def _decode_generations(model: GIDDSampler, prompt: str, raw_samples: Any) -> li
         completion_tokens = sample[prompt_len:]
         gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
         generations.append(gen_text)
+        print(f"  Generated: {gen_text}", verbose=True)
     return generations
 
 
@@ -65,6 +66,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
         references_all: list[list[str]] | None = [row.correct_answers for row in rows]  # type: ignore[union-attr]
 
     for i, prompt in enumerate(prompts):
+        print(f"Prompt: {prompt}", verbose=True)
         print(f"Sampling batch {i + 1}/{len(prompts)}...")
         samples = model.sample(prompt=prompt)
         texts.append(_decode_generations(model, prompt, samples))
