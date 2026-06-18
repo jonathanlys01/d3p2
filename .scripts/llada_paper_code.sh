@@ -10,11 +10,11 @@ NPROC=${NPROC:-gpu}
 
 # Paper protocol for Instruct model:
 #   HumanEval: 512 length, 0-shot
-#   MBPP: 256 length, 4-shot
+#   MBPP: 256 length, 0-shot
 HUMANEVAL_LENGTH=${HUMANEVAL_LENGTH:-512}
 MBPP_LENGTH=${MBPP_LENGTH:-256}
 HUMANEVAL_N_SHOTS=${HUMANEVAL_N_SHOTS:-0}
-MBPP_N_SHOTS=${MBPP_N_SHOTS:-4}
+MBPP_N_SHOTS=${MBPP_N_SHOTS:-0}
 
 N_GROUPS=${N_GROUPS:-3}
 GROUP_SIZE=${GROUP_SIZE:-3}
@@ -81,30 +81,31 @@ run_llada_code \
 # --- HumanEval (164 samples, 0-shot, gen_length=512, block_length=512) ---
 #
 # 1. Independent (Baseline)
-# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=baseline n_groups=9 group_size=1 comment="LLaDA baseline HumanEval"
+# CODE_DATASET=humaneval METHOD=baseline N_GROUPS=9 GROUP_SIZE=1 .scripts/llada_paper_code.sh
 #
 # 2. Greedy MAP
-# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=greedy_map n_groups=3 group_size=3 subsample_end=256 _w_interaction=10.0 comment="LLaDA greedy_map HumanEval"
+# CODE_DATASET=humaneval METHOD=greedy_map N_GROUPS=3 GROUP_SIZE=3 .scripts/llada_paper_code.sh subsample_end=256 _w_interaction=10.0
 #
 # 3. Diverse Beam Search
-# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=diverse_beam n_groups=3 group_size=3 subsample_end=256 _diversity_alpha=20.0 comment="LLaDA diverse_beam HumanEval"
+# CODE_DATASET=humaneval METHOD=diverse_beam N_GROUPS=3 GROUP_SIZE=3 .scripts/llada_paper_code.sh subsample_end=256 _diversity_alpha=20.0
 #
 # 4. Greedy Beam Search
-# run_llada_code code_dataset=humaneval code_n_shots=0 gen_length=512 llada_steps=512 block_length=512 method=greedy_beam n_groups=3 group_size=3 subsample_end=256 comment="LLaDA greedy_beam HumanEval"
+# CODE_DATASET=humaneval METHOD=greedy_beam N_GROUPS=3 GROUP_SIZE=3 .scripts/llada_paper_code.sh subsample_end=256
 #
 #
 # --- MBPP (257 samples, 4-shot, gen_length=256, block_length=256) ---
 #
 # 5. Independent (Baseline)
-# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=baseline n_groups=9 group_size=1 comment="LLaDA baseline MBPP"
+# CODE_DATASET=mbpp METHOD=baseline N_GROUPS=9 GROUP_SIZE=1 .scripts/llada_paper_code.sh
 #
 # 6. Greedy MAP
-# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=greedy_map n_groups=3 group_size=3 subsample_end=128 _w_interaction=10.0 comment="LLaDA greedy_map MBPP"
+# CODE_DATASET=mbpp METHOD=greedy_map N_GROUPS=3 GROUP_SIZE=3 .scripts/llada_paper_code.sh subsample_end=128 _w_interaction=10.0
 #
 # 7. Diverse Beam Search
-# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=diverse_beam n_groups=3 group_size=3 subsample_end=128 _diversity_alpha=20.0 comment="LLaDA diverse_beam MBPP"
+# CODE_DATASET=mbpp METHOD=diverse_beam N_GROUPS=3 GROUP_SIZE=3 .scripts/llada_paper_code.sh subsample_end=128 _diversity_alpha=20.0
 #
 # 8. Greedy Beam Search
-# run_llada_code code_dataset=mbpp code_n_shots=4 gen_length=256 llada_steps=256 block_length=256 method=greedy_beam n_groups=3 group_size=3 subsample_end=128 comment="LLaDA greedy_beam MBPP"
+# CODE_DATASET=mbpp METHOD=greedy_beam N_GROUPS=3 GROUP_SIZE=3 .scripts/llada_paper_code.sh subsample_end=128
+
 
 
