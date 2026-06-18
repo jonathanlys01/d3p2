@@ -301,7 +301,8 @@ class GIDDSampler(nn.Module):
             if prompt_len > 0:
                 keep_prob[:, :prompt_len] = 1.0
             tokens = torch.where(torch.rand_like(keep_prob) < keep_prob, tokens, noise)
-            for i in range(midpoint):
+            disable = self.distributed_utils is not None and self.distributed_utils.rank != 0
+            for i in tqdm(range(midpoint), desc="Self Correcting", disable=disable):
                 t = timesteps[i].expand(tokens.size(0), 1)
                 s = timesteps[i + 1].expand(tokens.size(0), 1)
                 tokens = self.denoise_step(tokens, t, s).tokens
