@@ -20,8 +20,16 @@ from collections import OrderedDict
 from typing import Mapping
 
 from transformers.configuration_utils import PretrainedConfig
-from transformers.onnx import OnnxConfig
 from transformers.utils import logging
+
+try:
+    from transformers.onnx import OnnxConfig
+except ModuleNotFoundError:
+
+    class OnnxConfig:
+        def __init__(self, config=None, task="default", **kwargs):
+            del config, kwargs
+            self.task = task
 
 
 logger = logging.get_logger(__name__)
