@@ -166,6 +166,10 @@ class Config:
     # cache
     cache_dir: str = CACHE_DIR
     results_dir: str = RESULTS_DIR
+    resume_runs: bool = True
+    resume_db_dir: str | None = None
+    resume_db_timeout_s: float = 60.0
+    resume_db_keep_completed: bool = False
 
     # optuna
     n_trials: int = 100  # number of Optuna trials for hyperparameter sweeps
