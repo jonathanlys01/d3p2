@@ -13,6 +13,10 @@ from d5p4.data.math_ds import gsm8k
 from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.eval_core import MathEvaluator
 from d5p4.result_schema import build_generation_result_payload
+from d5p4.resume_db import (
+    release_resumable_run,
+    run_generator_loop,
+)
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -35,6 +39,24 @@ def _decode_generations(model: GIDDSampler, prompt: str, raw_samples: Any) -> li
     return generations
 
 
+def _score_result(
+    evaluator: MathEvaluator,
+    *,
+    prompt: str,
+    gold: str,
+    answer_str: str,
+    generations: list[str],
+) -> dict[str, Any]:
+    scores = evaluator.score_group(generations, gold)
+    return {
+        "question": prompt,
+        "gold_answer": gold,
+        "answer_str": answer_str,
+        "generations": generations,
+        "scores": scores,
+        "accuracy": evaluator.accuracy(generations, gold),
+    }
+
 def save(results: list[dict[str, Any]], config: Config, uid: uuid.UUID, rank: int = 0) -> None:
     payload = build_generation_result_payload(
         text_samples=_text_samples_from_results(results),
@@ -50,7 +72,7 @@ def save(results: list[dict[str, Any]], config: Config, uid: uuid.UUID, rank: in
         json.dump(payload, f, indent=4)
 
 
-def run(config: Config | None = None, *, result_prefix: str = "math") -> None:
+def run(config: Config | None = None, *, result_prefix: str = "math") -> None:  # noqa: C901, PLR0912, PLR0915
     config = Config() if config is None else config
     assert config.model == "gidd"
     assert config.qa_dataset == "gsm8k"
@@ -65,9 +87,6 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:
 
     seed_all(config.seed + offset)
 
-    unique_id = uuid.uuid4()
-    print(f"Experiment ID: {unique_id}")
-
     dataset = gsm8k(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
@@ -76,30 +95,61 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:
     answer_numbers: list[str] = [row.answer_number for row in rows]  # type: ignore[union-attr]
 
     evaluator = MathEvaluator()
-    results: list[dict[str, Any]] = []
 
-    for i, (prompt, gold, answer_str) in enumerate(zip(prompts, answer_numbers, answer_strings, strict=True)):
-        print(f"Sampling {i + 1}/{len(prompts)}  (gold={gold!r})...", progress=True)
+    master = model.distributed_utils is None or model.distributed_utils.rank == 0
+    metadata = [
+        {"gold_answer": gold, "answer_str": answer_str, "item_key": f"gsm8k:{idx}"}
+        for idx, (gold, answer_str) in enumerate(zip(answer_numbers, answer_strings, strict=True))
+    ]
+    workflow_id = "math_generation:gidd"
+    string_references = [[answer_str] for answer_str in answer_strings]
 
-        raw_samples = model.sample(prompt=prompt)
-        generations = _decode_generations(model, prompt, raw_samples)
+    def sample_fn(prompt: str):
+        return model.sample(prompt=prompt), None
 
-        scores = evaluator.score_group(generations, gold)
-        acc = evaluator.accuracy(generations, gold)
+    def decode_fn(prompt: str, tokens) -> list[str]:
+        return _decode_generations(model, prompt, tokens)
 
-        results.append(
-            {
-                "question": prompt,
-                "gold_answer": gold,
-                "answer_str": answer_str,
-                "generations": generations,
-                "scores": scores,
-                "accuracy": acc,
-            },
+    def score_fn(i: int, prompt: str, generations: list[str]) -> dict:
+        gold = answer_numbers[i]
+        answer_str = answer_strings[i]
+        return _score_result(
+            evaluator,
+            prompt=prompt,
+            gold=gold,
+            answer_str=answer_str,
+            generations=generations,
         )
 
-        print(f"  -> accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
-        save(results, config, unique_id, rank=offset)
+    def verbose_log_fn(_i: int, result: dict | None, _generations: list[str]) -> None:
+        if result is not None:
+            scores = result["scores"]
+            acc = result["accuracy"]
+            print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
+
+    loop_outputs = run_generator_loop(
+        config=config,
+        model=model,
+        prompts=prompts,
+        references=string_references,
+        metadata=metadata,
+        workflow_id=workflow_id,
+        prefix="gsm8k",
+        mode="math_generation",
+        sample_fn=sample_fn,
+        decode_fn=decode_fn,
+        score_fn=score_fn,
+        verbose_log_fn=verbose_log_fn,
+    )
+
+    results = loop_outputs["results"] or []
+    unique_id = loop_outputs["unique_id"]
+    work_items = loop_outputs["work_items"]
+
+    if not master:
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
 
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} qs with >=1 correct)")
@@ -107,7 +157,6 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:
     all_generations = _text_samples_from_results(results)
     num_workers = min(8, os.cpu_count() or 1)
     print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
-    string_references = [[answer_str] for answer_str in answer_strings]
     math_metrics = (
         evaluator.evaluate(
             all_generations,
@@ -135,17 +184,13 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:
         },
     )
 
-    if model.distributed_utils is None or model.distributed_utils.rank == 0:
-        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
-        os.makedirs(config.results_dir, exist_ok=True)
-        out_path = os.path.join(config.results_dir, f"{result_prefix}-{name}.json")
-        with open(out_path, "w") as f:
-            json.dump(payload, f, indent=4)
-        print(f"Saved results to {out_path}")
-
-    for file in os.listdir(config.results_dir):
-        if file.startswith("temp_math_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
-            os.remove(os.path.join(config.results_dir, file))
+    name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
+    os.makedirs(config.results_dir, exist_ok=True)
+    out_path = os.path.join(config.results_dir, f"{result_prefix}-{name}.json")
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=4)
+    print(f"Saved results to {out_path}")
+    release_resumable_run(config=config, workflow_id=workflow_id, work_items=work_items, result_path=out_path)
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

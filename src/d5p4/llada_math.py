@@ -16,6 +16,10 @@ from d5p4.data.math_ds import gsm8k
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import MathEvaluator
 from d5p4.result_schema import build_generation_result_payload
+from d5p4.resume_db import (
+    release_resumable_run,
+    run_generator_loop,
+)
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -34,6 +38,33 @@ def _text_samples_from_results(results: list[dict]) -> list[list[str]]:
 def _references_from_results(results: list[dict]) -> list[list[str]]:
     return [[row["answer_str"] if row["answer_str"] else row["gold_answer"]] for row in results]
 
+
+def _decode_generations(model: LLADASampler, prompt: str, raw_samples) -> list[str]:
+    prompt_len = model._preprocess_prompt(prompt).shape[1]
+    generations = []
+    for sample in raw_samples:
+        completion_tokens = sample[prompt_len:]
+        generations.append(model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip())
+    return generations
+
+
+def _score_result(
+    evaluator: MathEvaluator,
+    *,
+    prompt: str,
+    gold: str,
+    answer_str: str,
+    generations: list[str],
+) -> dict:
+    scores = evaluator.score_group(generations, gold)
+    return {
+        "question": prompt,
+        "gold_answer": gold,
+        "answer_str": answer_str,
+        "generations": generations,
+        "scores": scores,
+        "accuracy": evaluator.accuracy(generations, gold),
+    }
 
 def save(
     results: list[dict],
@@ -59,7 +90,7 @@ def save(
         json.dump(payload, f, indent=4)
 
 
-def main() -> None:  # noqa: PLR0912, PLR0915
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     config = Config()
     assert config.qa_dataset == "gsm8k"
 
@@ -71,9 +102,6 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         offset = model.distributed_utils.rank
 
     seed_all(config.seed + offset)
-
-    unique_id = uuid.uuid4()
-    print(f"Experiment ID: {unique_id}")
 
     # ── dataset ──────────────────────────────────────────────────────────────
     dataset = gsm8k(config)
@@ -87,41 +115,61 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     evaluator = MathEvaluator()
 
     # ── generation + evaluation loop ─────────────────────────────────────────
-    results: list[dict] = []  # one entry per question
-    internal_scores_all: list[list[float]] = []
+    master = model.distributed_utils is None or model.distributed_utils.rank == 0
+    metadata = [
+        {"gold_answer": gold, "answer_str": answer_str, "item_key": f"gsm8k:{idx}"}
+        for idx, (gold, answer_str) in enumerate(zip(answer_numbers, answer_strings, strict=True))
+    ]
+    workflow_id = "math_generation:llada"
+    string_references = [[answer_str] for answer_str in answer_strings]
 
-    for i, (prompt, gold, answer_str) in enumerate(zip(prompts, answer_numbers, answer_strings)):
-        print(f"Sampling {i + 1}/{len(prompts)}  (gold={gold!r})...", progress=True)
+    def sample_fn(prompt: str):
+        return model.sample(prompt=prompt, return_internal_scores=True)
 
-        raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
+    def decode_fn(prompt: str, tokens) -> list[str]:
+        return _decode_generations(model, prompt, tokens)
 
-        generations: list[str] = []
-        for sample in raw_samples:
-            prompt_tokens = model._preprocess_prompt(prompt)
-            prompt_len = prompt_tokens.shape[1]
-            completion_tokens = sample[prompt_len:]
-            gen_text = model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip()
-            generations.append(gen_text)
-
-        internal_score_group = [float(score) for score in internal_scores.detach().cpu().tolist()]
-        internal_scores_all.append(internal_score_group)
-
-        scores = evaluator.score_group(generations, gold)
-        acc = evaluator.accuracy(generations, gold)
-
-        results.append(
-            {
-                "question": prompt,
-                "gold_answer": gold,
-                "answer_str": answer_str,
-                "generations": generations,
-                "scores": scores,
-                "accuracy": acc,
-            },
+    def score_fn(i: int, prompt: str, generations: list[str]) -> dict:
+        gold = answer_numbers[i]
+        answer_str = answer_strings[i]
+        return _score_result(
+            evaluator,
+            prompt=prompt,
+            gold=gold,
+            answer_str=answer_str,
+            generations=generations,
         )
 
-        print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
-        save(results, config, unique_id, rank=offset, internal_scores=internal_scores_all)
+    def verbose_log_fn(_i: int, result: dict | None, _generations: list[str]) -> None:
+        if result is not None:
+            scores = result["scores"]
+            acc = result["accuracy"]
+            print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
+
+    loop_outputs = run_generator_loop(
+        config=config,
+        model=model,
+        prompts=prompts,
+        references=string_references,
+        metadata=metadata,
+        workflow_id=workflow_id,
+        prefix="gsm8k",
+        mode="math_generation",
+        sample_fn=sample_fn,
+        decode_fn=decode_fn,
+        score_fn=score_fn,
+        verbose_log_fn=verbose_log_fn,
+    )
+
+    results = loop_outputs["results"] or []
+    internal_scores_all = loop_outputs["internal_scores"] or []
+    unique_id = loop_outputs["unique_id"]
+    work_items = loop_outputs["work_items"]
+
+    if not master:
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
 
     # ── final aggregation ────────────────────────────────────────────────────
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
@@ -130,7 +178,6 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     all_generations: list[list[str]] = [r["generations"] for r in results]
     num_workers = min(8, os.cpu_count() or 1)
     print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
-    string_references = [[answer_str] for answer_str in answer_strings]
     math_metrics = (
         evaluator.evaluate(
             all_generations,
@@ -150,7 +197,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         config=config,
         references=string_references,
         internal_scores=internal_scores_all,
-        internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA,
+        internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA if internal_scores_all else None,
         metrics=math_metrics,
         experiment_id=str(unique_id),
         extra={
@@ -160,21 +207,17 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         },
     )
 
-    if model.distributed_utils is None or model.distributed_utils.rank == 0:
-        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
-        os.makedirs(config.results_dir, exist_ok=True)
-        out_path = os.path.join(config.results_dir, f"math-{name}.json")
-        with open(out_path, "w") as f:
-            json.dump(payload, f, indent=4)
-        print(f"Saved results to {out_path}")
-
-    # Clean up temp files
-    for file in os.listdir(config.results_dir):
-        if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
-            os.remove(os.path.join(config.results_dir, file))
+    name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
+    os.makedirs(config.results_dir, exist_ok=True)
+    out_path = os.path.join(config.results_dir, f"math-{name}.json")
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=4)
+    print(f"Saved results to {out_path}")
+    release_resumable_run(config=config, workflow_id=workflow_id, work_items=work_items, result_path=out_path)
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
+
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 
 import json
 import os
-import uuid
 from datetime import datetime
 from typing import Any
 
@@ -11,6 +10,10 @@ from d5p4.data import get_qa_dataset
 from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.eval_core import Evaluator
 from d5p4.result_schema import build_generation_result_payload
+from d5p4.resume_db import (
+    release_resumable_run,
+    run_generator_loop,
+)
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -26,19 +29,6 @@ def _decode_generations(model: GIDDSampler, prompt: str, raw_samples: Any) -> li
     return generations
 
 
-def save(text, config, uid, rank=0, references=None):
-    samples = build_generation_result_payload(
-        text_samples=text,
-        config=config,
-        references=references,
-        experiment_id=str(uid),
-    )
-    name = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_rank{rank}_{str(uid)}"
-    os.makedirs(config.results_dir, exist_ok=True)
-    with open(os.path.join(config.results_dir, f"{name}.json"), "w") as f:
-        json.dump(samples, f, indent=4)
-
-
 def main():  # noqa: C901, PLR0912, PLR0915
     config = Config()
     model = GIDDSampler(config)
@@ -50,10 +40,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
         offset = model.distributed_utils.rank
 
     seed_all(config.seed + offset)
-    texts = []
-    unique_id = uuid.uuid4()
     master = model.distributed_utils is None or model.distributed_utils.rank == 0
-    print(f"Experiment ID: {unique_id}")
 
     if config.prompt is not None:
         prompts = [config.prompt]
@@ -65,31 +52,51 @@ def main():  # noqa: C901, PLR0912, PLR0915
         prompts: list[str] = [row.question for row in rows]  # type: ignore[union-attr]
         references_all: list[list[str]] | None = [row.correct_answers for row in rows]  # type: ignore[union-attr]
 
-    for i, prompt in enumerate(prompts):
-        print(f"Prompt: {prompt}")
-        print(f"Sampling batch {i + 1}/{len(prompts)}...")
-        samples = model.sample(prompt=prompt)
-        texts.append(_decode_generations(model, prompt, samples))
-        references = references_all[: i + 1] if references_all is not None else None
-        save(texts, config, unique_id, rank=offset, references=references)
+    workflow_id = "prompt_generation:gidd"
+
+    def sample_fn(prompt: str):
+        return model.sample(prompt=prompt), None
+
+    def decode_fn(prompt: str, tokens) -> list[str]:
+        return _decode_generations(model, prompt, tokens)
+
+    loop_outputs = run_generator_loop(
+        config=config,
+        model=model,
+        prompts=prompts,
+        references=references_all,
+        workflow_id=workflow_id,
+        prefix="prompt",
+        mode="prompt_generation",
+        sample_fn=sample_fn,
+        decode_fn=decode_fn,
+    )
+
+    texts = loop_outputs["generations"]
+    unique_id = loop_outputs["unique_id"]
+    work_items = loop_outputs["work_items"]
+
+    if not master:
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
 
     metrics = None
-    if master:
-        if references_all is None:
-            print("Skipping evaluation because prompt mode has no dataset references.")
-        elif config.skip_eval:
-            print("Skipping evaluation because skip_eval=True.")
-        else:
-            print("Running evaluation...")
-            evaluator = Evaluator(
-                batch_size=config.eval_batch_size,
-                force=True,
-                ppl_model_id=config.ppl_model_id,
-                cos_model_id=config.cos_model_id,
-            )
-            metrics = evaluator.evaluate(texts, references=references_all)
-            assert metrics["metrics_summary"] is not None
-            print(f"Evaluation complete: {metrics['metrics_summary']}")
+    if references_all is None:
+        print("Skipping evaluation because prompt mode has no dataset references.")
+    elif config.skip_eval:
+        print("Skipping evaluation because skip_eval=True.")
+    else:
+        print("Running evaluation...")
+        evaluator = Evaluator(
+            batch_size=config.eval_batch_size,
+            force=True,
+            ppl_model_id=config.ppl_model_id,
+            cos_model_id=config.cos_model_id,
+        )
+        metrics = evaluator.evaluate(texts, references=references_all)
+        assert metrics["metrics_summary"] is not None
+        print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     payload = build_generation_result_payload(
         text_samples=texts,
@@ -99,17 +106,13 @@ def main():  # noqa: C901, PLR0912, PLR0915
         experiment_id=str(unique_id),
     )
 
-    if master:
-        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
-        os.makedirs(config.results_dir, exist_ok=True)
-        output_path = os.path.join(config.results_dir, f"exp-{name}.json")
-        with open(output_path, "w") as f:
-            json.dump(payload, f, indent=4)
-        print(f"Saved in {output_path}")
-
-    for file in os.listdir(config.results_dir):
-        if file.startswith("temp_") and file.endswith(f"_rank{offset}_{unique_id}.json"):
-            os.remove(os.path.join(config.results_dir, file))
+    name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"
+    os.makedirs(config.results_dir, exist_ok=True)
+    output_path = os.path.join(config.results_dir, f"exp-{name}.json")
+    with open(output_path, "w") as f:
+        json.dump(payload, f, indent=4)
+    print(f"Saved in {output_path}")
+    release_resumable_run(config=config, workflow_id=workflow_id, work_items=work_items, result_path=output_path)
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()

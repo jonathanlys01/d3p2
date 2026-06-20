@@ -13,6 +13,7 @@ python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.5
 import torch
 import torch.nn.functional as F
 from torch import nn
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from d5p4.config import Cache, Config
 from d5p4.data import get_qa_dataset
@@ -37,7 +38,8 @@ class LLADASampler(nn.Module):
         self.config: Config = config
         self.tokenizer = get_tokenizer(config, "llada")
 
-        model_config: LLaDAConfig = self.model.config
+        model_config = self.model.config
+        assert isinstance(model_config, LLaDAConfig)
         self.mask_index = model_config.mask_token_id
         sequence_length = config.sequence_length
         assert sequence_length <= model_config.max_sequence_length, "Requested sequence length exceeds model's maximum."
@@ -66,9 +68,10 @@ class LLADASampler(nn.Module):
             self.selector.config = config
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
-    def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _forward_model(self, x):
         with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore
             out = self.model.forward(x, return_dict=True, output_hidden_states=True)
+            assert isinstance(out, CausalLMOutputWithPast) and out.hidden_states is not None and out.logits is not None
             logits = out.logits
             embeddings = out.hidden_states
         return logits, embeddings
