@@ -37,6 +37,7 @@ HASH_EXCLUDED_CONFIG_KEYS = {
     "resume_db_dir",
     "resume_db_timeout_s",
     "resume_db_keep_completed",
+    "skip_eval",
 }
 
 
@@ -267,10 +268,16 @@ class ResumableRunStore:
                 self.conn.execute(
                     """
                     UPDATE runs
-                    SET status = ?, owner_json = ?, updated_at = ?
+                    SET status = ?, config_json = ?, owner_json = ?, updated_at = ?
                     WHERE experiment_hash = ?
                     """,
-                    ("running", _json_dumps(owner_metadata()), now, self.experiment_hash),
+                    (
+                        "running",
+                        _json_dumps(_config_to_dict(self.config)),
+                        _json_dumps(owner_metadata()),
+                        now,
+                        self.experiment_hash,
+                    ),
                 )
 
     def generated_indices(self) -> set[int]:
@@ -467,6 +474,73 @@ def release_resumable_run(
     release_store.release(result_path)
 
 
+def is_run_completed(  # noqa: PLR0911
+    config: Any,
+    workflow_id: str,
+    work_items: list[dict[str, Any]],
+    mode: str = "prompt_generation",
+) -> bool:
+    """Check if the experiment database exists and is marked as complete."""
+    if not bool(getattr(config, "resume_runs", False)):
+        return False
+
+    store = ResumableRunStore(
+        config=config,
+        workflow_id=workflow_id,
+        mode=mode,
+        work_items=work_items,
+        write_lock=False,
+    )
+
+    if not store.db_path.exists():
+        return False
+
+    try:
+        store.open()
+        row = store.conn.execute(
+            "SELECT status, config_json FROM runs WHERE experiment_hash = ?",
+            (store.experiment_hash,),
+        ).fetchone()
+        if row is None or row["status"] != "complete":
+            return False
+
+        current_skip_eval = bool(getattr(config, "skip_eval", False))
+        if current_skip_eval:
+            return True
+
+        try:
+            db_config = json.loads(row["config_json"])
+            db_skip_eval = bool(db_config.get("skip_eval", False))
+            return not db_skip_eval
+        except Exception:
+            return False
+    except Exception:
+        return False
+    finally:
+        store.close()
+
+
+def is_run_completed_distributed(  # noqa: PLR0913
+    config: Any,
+    workflow_id: str,
+    work_items: list[dict[str, Any]],
+    distributed_utils: Any | None,
+    master: bool,
+    mode: str = "prompt_generation",
+) -> bool:
+    """Check if the run is completed, synced across all distributed ranks."""
+    is_complete = False
+    if master:
+        is_complete = is_run_completed(config, workflow_id, work_items, mode)
+
+    if distributed_utils is not None and torch.distributed.is_available() and torch.distributed.is_initialized():
+        obj_list = [is_complete] if distributed_utils.rank == 0 else [None]
+        torch.distributed.broadcast_object_list(obj_list, src=0)
+        is_complete = bool(obj_list[0])
+
+    return is_complete
+
+
 def sync_resume_state(
     completed_indices: set[int],
     run_uuid: str,
@@ -584,6 +658,7 @@ def run_generator_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     )
             else:
                 if master:
+
                     def _shorten_val(val: Any, max_len: int = 40) -> str:
                         if isinstance(val, str):
                             val_clean = " ".join(val.split())

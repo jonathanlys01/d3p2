@@ -17,6 +17,8 @@ from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import MathEvaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
+    is_run_completed_distributed,
+    make_work_items,
     release_resumable_run,
     run_generator_loop,
 )
@@ -65,6 +67,7 @@ def _score_result(
         "scores": scores,
         "accuracy": evaluator.accuracy(generations, gold),
     }
+
 
 def save(
     results: list[dict],
@@ -123,6 +126,28 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     workflow_id = "math_generation:llada"
     string_references = [[answer_str] for answer_str in answer_strings]
 
+    work_items = make_work_items(
+        len(prompts),
+        prefix="gsm8k",
+        prompts=prompts,
+        references=string_references,
+        metadata=metadata,
+    )
+
+    if is_run_completed_distributed(
+        config,
+        workflow_id=workflow_id,
+        work_items=work_items,
+        distributed_utils=model.distributed_utils,
+        master=master,
+        mode="math_generation",
+    ):
+        if master:
+            print("Run is already completed and finalized in resume DB. Skipping entire run.")
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     def sample_fn(prompt: str):
         return model.sample(prompt=prompt, return_internal_scores=True)
 
@@ -157,7 +182,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mode="math_generation",
         sample_fn=sample_fn,
         decode_fn=decode_fn,
-        score_fn=score_fn,
+        score_fn=None if config.skip_eval else score_fn,
         verbose_log_fn=verbose_log_fn,
     )
 
@@ -175,7 +200,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} qs with ≥1 correct)")
 
-    all_generations: list[list[str]] = [r["generations"] for r in results]
+    all_generations = loop_outputs["generations"]
     num_workers = min(8, os.cpu_count() or 1)
     print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
     math_metrics = (
@@ -217,7 +242,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
-
 
 
 if __name__ == "__main__":

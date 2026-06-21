@@ -19,6 +19,8 @@ from d5p4.data.code_ds import get_code_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
+    is_run_completed_distributed,
+    make_work_items,
     release_resumable_run,
     run_generator_loop,
 )
@@ -84,6 +86,7 @@ def _evaluate_generations(  # noqa: PLR0913
         "accuracy": evaluator.accuracy(validation_results),
     }, validation_results
 
+
 def save(
     results: list[dict[str, Any]],
     config: Config,
@@ -141,6 +144,28 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
     master = model.distributed_utils is None or model.distributed_utils.rank == 0
     workflow_id = "code_generation:llada"
 
+    work_items = make_work_items(
+        len(prompts),
+        prefix="code",
+        prompts=prompts,
+        references=references,
+        metadata=metadata,
+    )
+
+    if is_run_completed_distributed(
+        config,
+        workflow_id=workflow_id,
+        work_items=work_items,
+        distributed_utils=model.distributed_utils,
+        master=master,
+        mode="code_generation",
+    ):
+        if master:
+            print("Run is already completed and finalized in resume DB. Skipping entire run.")
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     def sample_fn(prompt: str):
         return model.sample(prompt=prompt, return_internal_scores=True)
 
@@ -180,7 +205,7 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
         mode="code_generation",
         sample_fn=sample_fn,
         decode_fn=decode_fn,
-        score_fn=score_fn,
+        score_fn=None if config.skip_eval else score_fn,
         verbose_log_fn=verbose_log_fn,
     )
 
@@ -197,9 +222,7 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} tasks with >=1 pass)")
 
-    validation_groups = [
-        [CodeValidationResult(**val) for val in r["validation"]] for r in results
-    ]
+    validation_groups = [[CodeValidationResult(**val) for val in r["validation"]] for r in results]
 
     code_metrics = evaluator.evaluate(validation_groups) if results else {}
     code_metrics_summary = code_metrics.get("code_metrics_summary")
@@ -207,9 +230,9 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
         print(f"code metrics: {code_metrics_summary}")
 
     payload = build_generation_result_payload(
-        text_samples=_text_samples_from_results(results),
+        text_samples=loop_outputs["generations"],
         config=config,
-        references=_references_from_results(results),
+        references=references,
         metrics=code_metrics,
         internal_scores=internal_scores_all,
         internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA if internal_scores_all else None,
@@ -231,8 +254,6 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
 
     if model.distributed_utils:
         model.distributed_utils.cleanup()
-
-
 
 
 def main() -> None:

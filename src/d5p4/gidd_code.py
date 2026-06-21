@@ -14,6 +14,8 @@ from d5p4.data.code_ds import get_code_dataset
 from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
+    is_run_completed_distributed,
+    make_work_items,
     release_resumable_run,
     run_generator_loop,
 )
@@ -122,6 +124,28 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
     master = model.distributed_utils is None or model.distributed_utils.rank == 0
     workflow_id = "code_generation:gidd"
 
+    work_items = make_work_items(
+        len(prompts),
+        prefix="code",
+        prompts=prompts,
+        references=references,
+        metadata=metadata,
+    )
+
+    if is_run_completed_distributed(
+        config,
+        workflow_id=workflow_id,
+        work_items=work_items,
+        distributed_utils=model.distributed_utils,
+        master=master,
+        mode="code_generation",
+    ):
+        if master:
+            print("Run is already completed and finalized in resume DB. Skipping entire run.")
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     def sample_fn(prompt: str):
         return model.sample(prompt=prompt), None
 
@@ -161,7 +185,7 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
         mode="code_generation",
         sample_fn=sample_fn,
         decode_fn=decode_fn,
-        score_fn=score_fn,
+        score_fn=None if config.skip_eval else score_fn,
         verbose_log_fn=verbose_log_fn,
     )
 
@@ -185,9 +209,9 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
         print(f"code metrics: {code_metrics_summary}")
 
     payload = build_generation_result_payload(
-        text_samples=_text_samples_from_results(results),
+        text_samples=loop_outputs["generations"],
         config=config,
-        references=_references_from_results(results),
+        references=references,
         metrics=code_metrics,
         experiment_id=str(unique_id),
         extra={
