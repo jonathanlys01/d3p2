@@ -139,6 +139,8 @@ class JinaBertConfig(PretrainedConfig):
         feed_forward_type="original",
         emb_pooler=None,
         attn_implementation="torch",
+        is_decoder=False,
+        add_cross_attention=False,
         **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
@@ -161,6 +163,8 @@ class JinaBertConfig(PretrainedConfig):
         self.feed_forward_type = feed_forward_type
         self.emb_pooler = emb_pooler
         self.attn_implementation = attn_implementation
+        self.is_decoder = is_decoder
+        self.add_cross_attention = add_cross_attention
 
 
 class JinaBertOnnxConfig(OnnxConfig):

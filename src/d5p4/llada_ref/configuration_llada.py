@@ -430,6 +430,7 @@ class LLaDAConfig(PretrainedConfig):
         all_kwargs.update({"use_cache": use_cache})
         all_kwargs.update({"architectures": all_kwargs.get("architectures", ["LLaDAModelLM"])})
         super().__init__(**all_kwargs)
+        self.use_cache = use_cache
 
     @property
     def num_attention_heads(self):
