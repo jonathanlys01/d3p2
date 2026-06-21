@@ -1571,7 +1571,7 @@ class LLaDAModelLM(PreTrainedModel):
         else:
             self.model.transformer.ff_out = value
 
-    def tie_weights(self):
+    def tie_weights(self, *args, **kwargs):
         if self.config.weight_tying:
             self.model.transformer.ff_out = self.model.transformer.wte
 

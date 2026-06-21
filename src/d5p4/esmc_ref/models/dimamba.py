@@ -930,9 +930,9 @@ class BiMambaForMaskedLM(BiMambaPreTrainedModel):
         """Overrides output embeddings."""
         self.lm_head = new_embeddings
 
-    def tie_weights(self):
+    def tie_weights(self, *args, **kwargs):
         """Tie weights."""
-        super().tie_weights()
+        super().tie_weights(*args, **kwargs)
 
     def get_decoder(self):
         """Get decoder (backbone) for the model."""
