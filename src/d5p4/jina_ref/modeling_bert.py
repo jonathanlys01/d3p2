@@ -803,6 +803,7 @@ class JinaBertPreTrainedModel(PreTrainedModel):
     base_model_prefix = "bert"
     supports_gradient_checkpointing = True
     _no_split_modules = ["JinaBertLayer"]
+    all_tied_weights_keys = dict()
 
     def _init_weights(self, module):
         """Initialize the weights"""

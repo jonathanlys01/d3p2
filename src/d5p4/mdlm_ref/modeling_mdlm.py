@@ -371,6 +371,7 @@ class MDLM(transformers.PreTrainedModel):
 
     config_class = MDLMConfig
     base_model_prefix = "mdlm"
+    all_tied_weights_keys = dict()
 
     def __init__(self, config: MDLMConfig):
         super().__init__(config)

@@ -422,6 +422,7 @@ class UDLM(transformers.PreTrainedModel):
 
     config_class = UDLMConfig
     base_model_prefix = "udlm"
+    all_tied_weights_keys = dict()
 
     def __init__(self, config: UDLMConfig):
         super().__init__(config)

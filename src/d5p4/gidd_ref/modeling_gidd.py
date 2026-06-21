@@ -632,6 +632,7 @@ class GiddPreTrainedModel(PreTrainedModel):
         "hidden_states": GiddLayer,
         "attentions": GiddAttention,
     }
+    all_tied_weights_keys = dict()
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Embedding, ScaledLinear)):

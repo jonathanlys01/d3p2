@@ -782,6 +782,7 @@ class BiMambaPreTrainedModel(PreTrainedModel):
     base_model_prefix = "bimamba"
     supports_gradient_checkpointing = False
     _no_split_modules = ["BiMambaWrapper"]
+    all_tied_weights_keys = dict()
 
     def _init_weights(
         self,
