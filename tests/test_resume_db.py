@@ -138,6 +138,41 @@ def test_store_lock_rejects_second_live_owner():
             first.close()
 
 
+def test_generator_loop_skips_when_resume_lock_is_owned():
+    class DummyModel:
+        distributed_utils = None
+
+        def _preprocess_prompt(self, _prompt: str):
+            return torch.tensor([[1, 2]], dtype=torch.long)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = _cfg(tmpdir, resume_runs=True)
+        items = make_work_items(1, prefix="item", prompts=["hello"])
+        owner = ResumableRunStore(
+            config=cfg,
+            workflow_id="prompt_generation:llada",
+            mode="prompt_generation",
+            work_items=items,
+        )
+        owner.open()
+
+        try:
+            output = run_generator_loop(
+                config=cfg,
+                model=DummyModel(),
+                prompts=["hello"],
+                workflow_id="prompt_generation:llada",
+                sample_fn=lambda _prompt: (_ for _ in ()).throw(AssertionError("should not sample locked runs")),
+                decode_fn=lambda _prompt, _tokens: ["decoded"],
+            )
+        finally:
+            owner.close()
+
+        assert output["claimed_by_another_worker"] is True
+        assert output["generations"] == []
+        assert output["results"] is None
+
+
 def test_generator_loop_works_without_resume_store():
     class DummyModel:
         distributed_utils = None

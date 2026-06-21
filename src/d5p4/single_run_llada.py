@@ -112,6 +112,11 @@ def main():  # noqa: C901, PLR0912, PLR0915
         post_process_fn=post_process_fn,
     )
 
+    if loop_outputs.get("claimed_by_another_worker"):
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     texts = loop_outputs["generations"]
     internal_scores_all = loop_outputs["internal_scores"] or []
     eval_texts = loop_outputs["eval_generations"]

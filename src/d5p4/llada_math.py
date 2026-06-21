@@ -186,6 +186,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         verbose_log_fn=verbose_log_fn,
     )
 
+    if loop_outputs.get("claimed_by_another_worker"):
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     results = loop_outputs["results"] or []
     internal_scores_all = loop_outputs["internal_scores"] or []
     unique_id = loop_outputs["unique_id"]

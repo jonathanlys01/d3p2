@@ -189,6 +189,11 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
         verbose_log_fn=verbose_log_fn,
     )
 
+    if loop_outputs.get("claimed_by_another_worker"):
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     results = loop_outputs["results"] or []
     unique_id = loop_outputs["unique_id"]
     work_items = loop_outputs["work_items"]

@@ -50,6 +50,7 @@ class ResumeRunState:
     store: ResumableRunStore | None
     completed_indices: set[int]
     unique_id: uuid.UUID
+    claimed_by_another_worker: bool = False
 
 
 def _json_dumps(value: Any) -> str:
@@ -432,6 +433,7 @@ def open_resumable_run(  # noqa: PLR0913
 ) -> ResumeRunState:
     store = None
     completed_indices: set[int] = set()
+    claimed_by_another_worker = False
     if bool(getattr(config, "resume_runs", False)) and master:
         store = ResumableRunStore(
             config=config,
@@ -439,18 +441,30 @@ def open_resumable_run(  # noqa: PLR0913
             mode=mode,
             work_items=work_items,
         )
-        store.open()
-        completed_indices = store.generated_indices()
-        assert store.run_uuid is not None
-        unique_id = uuid.UUID(store.run_uuid)
+        try:
+            store.open()
+            completed_indices = store.generated_indices()
+            assert store.run_uuid is not None
+            unique_id = uuid.UUID(store.run_uuid)
+        except ResumeLockError:
+            store.close()
+            store = None
+            claimed_by_another_worker = True
+            unique_id = uuid.uuid4()
     else:
         unique_id = uuid.uuid4()
 
-    completed_indices, unique_id_str = sync_resume_state(completed_indices, str(unique_id), distributed_utils)
+    completed_indices, unique_id_str, claimed_by_another_worker = sync_resume_state(
+        completed_indices,
+        str(unique_id),
+        distributed_utils,
+        claimed_by_another_worker,
+    )
     return ResumeRunState(
         store=store,
         completed_indices=completed_indices,
         unique_id=uuid.UUID(unique_id_str),
+        claimed_by_another_worker=claimed_by_another_worker,
     )
 
 
@@ -545,15 +559,18 @@ def sync_resume_state(
     completed_indices: set[int],
     run_uuid: str,
     distributed_utils: Any | None,
-) -> tuple[set[int], str]:
+    claimed_by_another_worker: bool = False,
+) -> tuple[set[int], str, bool]:
     if distributed_utils is None or not torch.distributed.is_available() or not torch.distributed.is_initialized():
-        return completed_indices, run_uuid
+        return completed_indices, run_uuid, claimed_by_another_worker
 
-    obj_list = [(sorted(completed_indices), run_uuid)] if distributed_utils.rank == 0 else [None]
+    obj_list = (
+        [(sorted(completed_indices), run_uuid, claimed_by_another_worker)] if distributed_utils.rank == 0 else [None]
+    )
     torch.distributed.broadcast_object_list(obj_list, src=0)
     assert obj_list[0] is not None
-    completed, synced_uuid = obj_list[0]
-    return set(completed), synced_uuid
+    completed, synced_uuid, synced_claimed = obj_list[0]
+    return set(completed), synced_uuid, synced_claimed
 
 
 def sync_resume_item(item: Any, distributed_utils: Any | None) -> Any:
@@ -607,6 +624,21 @@ def run_generator_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     store = resume_state.store
     completed_indices = resume_state.completed_indices
     unique_id = resume_state.unique_id
+
+    if resume_state.claimed_by_another_worker:
+        if master:
+            print("Another live worker owns this resumable run. Skipping this command.")
+        return {
+            "claimed_by_another_worker": True,
+            "unique_id": unique_id,
+            "results": None,
+            "generations": [],
+            "internal_scores": None,
+            "eval_generations": None,
+            "selected_indices": None,
+            "work_items": work_items,
+        }
+
     print(f"Experiment ID: {unique_id}")
 
     results = []
@@ -745,6 +777,7 @@ def run_generator_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             store.close()
 
     return {
+        "claimed_by_another_worker": False,
         "unique_id": unique_id,
         "results": results if results else None,
         "generations": generations_all,

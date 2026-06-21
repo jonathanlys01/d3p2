@@ -28,6 +28,13 @@ run is already finalized (status = "complete") in the SQLite DB. If so, it print
 a skip notice and exits with status 0. The orchestrator then immediately moves
 on to the next command.
 
+COOPERATIVE WORKERS:
+--------------------
+Multiple one-GPU sweep workers may traverse the same command list against the
+same resume DB directory. If a worker reaches an experiment whose DB lock is
+already held by another live worker, `llada_code.py` exits cleanly and this
+orchestrator moves on to the next configuration.
+
 PORT ALLOCATION:
 ----------------
 A new, unused master port is dynamically allocated for `torchrun` on each
@@ -91,8 +98,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
             for seed in seeds:
                 for method in methods:
                     cmd_args = [
-                        "python3",
-                        "-m",
                         "torchrun",
                         f"--nproc_per_node={args.nproc}",
                         "llada_code.py",

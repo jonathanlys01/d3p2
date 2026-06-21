@@ -72,6 +72,11 @@ def main():  # noqa: C901, PLR0912, PLR0915
         decode_fn=decode_fn,
     )
 
+    if loop_outputs.get("claimed_by_another_worker"):
+        if model.distributed_utils:
+            model.distributed_utils.cleanup()
+        return
+
     texts = loop_outputs["generations"]
     unique_id = loop_outputs["unique_id"]
     work_items = loop_outputs["work_items"]
