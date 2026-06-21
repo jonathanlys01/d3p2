@@ -3,10 +3,10 @@ name = "d3p2"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "transformers>=4.57.0",
-    "torch>=2.7.0",
+    "torch>=2.10.0,<2.11.0",
     "omegaconf>=2.3.0",
     "dppy>=0.3.3",
     "idr-torch>=2.4.0",
@@ -27,7 +27,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "flash-attn>=2.8.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "flash-attn==2.8.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "nvidia-ml-py",
     "pytest>=9.1.0",
 ]
