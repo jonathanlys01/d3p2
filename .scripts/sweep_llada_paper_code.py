@@ -43,9 +43,21 @@ subprocess spawn to prevent port collision issues.
 
 import argparse
 import os
+import re
 import socket
 import subprocess
 import sys
+
+
+_SAFE_OVERRIDE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _cfg_arg(key: str, value: object) -> str:
+    """Build an OmegaConf CLI override whose value cannot be parsed as YAML syntax."""
+    value_str = str(value).lower() if isinstance(value, bool) else str(value)
+    if not _SAFE_OVERRIDE_VALUE_RE.fullmatch(value_str):
+        raise ValueError(f"Unsafe OmegaConf override value for {key}: {value_str!r}")
+    return f"{key}={value_str}"
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
@@ -104,20 +116,20 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         "--config=_default.yaml",
                         "minimal_log=true",
                         "model=llada",
-                        f"code_dataset={dataset}",
-                        f"code_n_shots={n_shots}",
-                        f"seed={seed}",
-                        f"remasking={remasking}",
+                        _cfg_arg("code_dataset", dataset),
+                        _cfg_arg("code_n_shots", n_shots),
+                        _cfg_arg("seed", seed),
+                        _cfg_arg("remasking", remasking),
                         "logits_eos_inf=False",
                         "cfg_scale=1.0",
-                        f"llada_steps={gen_len}",
-                        f"gen_length={gen_len}",
-                        f"block_length={gen_len}",
+                        _cfg_arg("llada_steps", gen_len),
+                        _cfg_arg("gen_length", gen_len),
+                        _cfg_arg("block_length", gen_len),
                         "confidence_eos_eot_inf=True",
-                        f"skip_eval={args.skip_eval.lower()}",
-                        f"resume_db_keep_completed={args.resume_db_keep_completed.lower()}",
+                        _cfg_arg("skip_eval", args.skip_eval),
+                        _cfg_arg("resume_db_keep_completed", args.resume_db_keep_completed),
                         "resume_runs=True",
-                        f"method={method}",
+                        _cfg_arg("method", method),
                     ]
 
                     # Add method-specific parameters
@@ -133,7 +145,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             [
                                 "n_groups=3",
                                 "group_size=3",
-                                f"subsample_end={subsample_end}",
+                                _cfg_arg("subsample_end", subsample_end),
                                 "_w_interaction=10.0",
                             ],
                         )
@@ -142,7 +154,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             [
                                 "n_groups=3",
                                 "group_size=3",
-                                f"subsample_end={subsample_end}",
+                                _cfg_arg("subsample_end", subsample_end),
                                 "_diversity_alpha=20.0",
                             ],
                         )
@@ -151,13 +163,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             [
                                 "n_groups=3",
                                 "group_size=3",
-                                f"subsample_end={subsample_end}",
+                                _cfg_arg("subsample_end", subsample_end),
                             ],
                         )
 
                     cmd_args.append(
-                        f"comment=LLaDA sweep: dataset={dataset}, remasking={remasking}, "
-                        f"seed={seed}, method={method}, skip_eval={args.skip_eval}",
+                        _cfg_arg(
+                            "comment",
+                            f"llada_sweep_dataset-{dataset}_remasking-{remasking}_"
+                            f"seed-{seed}_method-{method}_skip_eval-{args.skip_eval}",
+                        ),
                     )
                     commands.append(cmd_args)
 
