@@ -584,18 +584,30 @@ def run_generator_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     )
             else:
                 if master:
+                    def _shorten_val(val: Any, max_len: int = 40) -> str:
+                        if isinstance(val, str):
+                            val_clean = " ".join(val.split())
+                            if len(val_clean) > max_len:
+                                return repr(val_clean[:max_len] + "...")
+                            return repr(val_clean)
+                        val_repr = repr(val)
+                        if len(val_repr) > max_len:
+                            return val_repr[:max_len] + "..."
+                        return val_repr
+
                     log_suffix = ""
-                    if references is not None and i < len(references) and references[i]:
-                        ref_val = references[i][0] if isinstance(references[i], list) else references[i]
-                        log_suffix = f"  (ref={ref_val!r})"
-                    elif metadata is not None and i < len(metadata):
-                        meta = metadata[i]
-                        if "gold_answer" in meta:
-                            log_suffix = f"  (gold={meta['gold_answer']!r})"
-                        elif "task_id" in meta:
-                            log_suffix = f"  (task={meta['task_id']!r})"
-                        elif "item_key" in meta:
-                            log_suffix = f"  (item={meta['item_key']!r})"
+                    if not getattr(config, "minimal_log", False) and getattr(config, "interactive", True):
+                        if references is not None and i < len(references) and references[i]:
+                            ref_val = references[i][0] if isinstance(references[i], list) else references[i]
+                            log_suffix = f"  (ref={_shorten_val(ref_val)})"
+                        elif metadata is not None and i < len(metadata):
+                            meta = metadata[i]
+                            if "gold_answer" in meta:
+                                log_suffix = f"  (gold={_shorten_val(meta['gold_answer'])})"
+                            elif "task_id" in meta:
+                                log_suffix = f"  (task={_shorten_val(meta['task_id'])})"
+                            elif "item_key" in meta:
+                                log_suffix = f"  (item={_shorten_val(meta['item_key'])})"
                     print(f"Sampling {i + 1}/{len(prompts)}{log_suffix}...", progress=True)
 
                 raw_samples, internal_scores = sample_fn(prompt)
