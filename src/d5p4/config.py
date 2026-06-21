@@ -52,7 +52,16 @@ def env_path_or(env_name: str, suffix: str, fallback: str) -> str:
     return str(Path(val) / suffix) if val else fallback
 
 
+def get_user(default: str = "user") -> str:
+    for var in ("USER", "LOGNAME", "USERNAME"):
+        val = os.getenv(var)
+        if val:
+            return val
+    return default
+
+
 OmegaConf.register_new_resolver("env_path_or", env_path_or, replace=True)
+OmegaConf.register_new_resolver("user", get_user, replace=True)
 
 
 @dataclass(frozen=True)
