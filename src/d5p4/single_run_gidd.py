@@ -11,8 +11,9 @@ from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.eval_core import Evaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
+    prepare_resumable_run,
     release_resumable_run,
-    run_generator_loop,
+    sync_resume_item,
 )
 from d5p4.utils import compile_model, print, seed_all
 
@@ -31,16 +32,6 @@ def _decode_generations(model: GIDDSampler, prompt: str, raw_samples: Any) -> li
 
 def main():  # noqa: C901, PLR0912, PLR0915
     config = Config()
-    model = GIDDSampler(config)
-    if config.posterior_sampler != "gidd_hf_generate":
-        model.model = compile_model(model.model, config, dynamic=True)
-
-    offset = 0
-    if model.distributed_utils:
-        offset = model.distributed_utils.rank
-
-    seed_all(config.seed + offset)
-    master = model.distributed_utils is None or model.distributed_utils.rank == 0
 
     if config.prompt is not None:
         prompts = [config.prompt]
@@ -53,33 +44,69 @@ def main():  # noqa: C901, PLR0912, PLR0915
         references_all: list[list[str]] | None = [row.correct_answers for row in rows]  # type: ignore[union-attr]
 
     workflow_id = "prompt_generation:gidd"
-
-    def sample_fn(prompt: str):
-        return model.sample(prompt=prompt), None
-
-    def decode_fn(prompt: str, tokens) -> list[str]:
-        return _decode_generations(model, prompt, tokens)
-
-    loop_outputs = run_generator_loop(
+    preflight = prepare_resumable_run(
         config=config,
-        model=model,
+        workflow_id=workflow_id,
         prompts=prompts,
         references=references_all,
-        workflow_id=workflow_id,
         prefix="prompt",
         mode="prompt_generation",
-        sample_fn=sample_fn,
-        decode_fn=decode_fn,
     )
-
-    if loop_outputs.get("claimed_by_another_worker"):
-        if model.distributed_utils:
-            model.distributed_utils.cleanup()
+    if preflight.should_exit:
         return
 
-    texts = loop_outputs["generations"]
-    unique_id = loop_outputs["unique_id"]
-    work_items = loop_outputs["work_items"]
+    offset = preflight.offset
+    master = preflight.master
+    seed_all(config.seed + offset)
+
+    model = GIDDSampler(config)
+    if config.posterior_sampler != "gidd_hf_generate":
+        model.model = compile_model(model.model, config, dynamic=True)
+
+    assert preflight.resume_state is not None
+    store = preflight.resume_state.store
+    completed_indices = preflight.resume_state.completed_indices
+    unique_id = preflight.resume_state.unique_id
+    work_items = preflight.work_items
+    texts = []
+
+    if master:
+        print(f"Experiment ID: {unique_id}")
+
+    try:
+        for i, prompt_item in enumerate(prompts):
+            prompt = sync_resume_item(prompt_item, model.distributed_utils)
+            if i in completed_indices:
+                if not master:
+                    continue
+                assert store is not None
+                generation = store.get_generation(i)
+                assert generation is not None
+                raw_samples = generation["tokens"]
+                decoded = generation["decoded"] or _decode_generations(model, prompt, raw_samples)
+                if generation["decoded"] is None:
+                    store.record_decoded(item_index=i, decoded=decoded)
+            else:
+                if master:
+                    print(f"Sampling {i + 1}/{len(prompts)}...", progress=True)
+                raw_samples = model.sample(prompt=prompt)
+                if not master:
+                    continue
+                if store is not None:
+                    store.record_generated(
+                        item_index=i,
+                        token_ids=raw_samples,
+                        prompt_len=model._preprocess_prompt(prompt).shape[1],
+                    )
+                decoded = _decode_generations(model, prompt, raw_samples)
+                if store is not None:
+                    store.record_decoded(item_index=i, decoded=decoded)
+
+            if master:
+                texts.append(decoded)
+    finally:
+        if store is not None:
+            store.close()
 
     if not master:
         if model.distributed_utils:

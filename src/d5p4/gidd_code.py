@@ -14,10 +14,9 @@ from d5p4.data.code_ds import get_code_dataset
 from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
-    is_run_completed_distributed,
-    make_work_items,
+    prepare_resumable_run,
     release_resumable_run,
-    run_generator_loop,
+    sync_resume_item,
 )
 from d5p4.utils import compile_model, print, seed_all
 
@@ -94,16 +93,6 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
     assert config.model == "gidd"
     assert config.code_dataset in {"humaneval", "mbpp"}
 
-    model = GIDDSampler(config)
-    if config.posterior_sampler != "gidd_hf_generate":
-        model.model = compile_model(model.model, config, dynamic=True)
-
-    offset = 0
-    if model.distributed_utils:
-        offset = model.distributed_utils.rank
-
-    seed_all(config.seed + offset)
-
     dataset = get_code_dataset(config)
     limit = config.code_dataset_len if config.code_dataset_len > 0 else len(dataset)
     rows: list[Any] = list(dataset.itertuples())[:limit]
@@ -121,38 +110,28 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
         }
         for row in rows
     ]
-    master = model.distributed_utils is None or model.distributed_utils.rank == 0
     workflow_id = "code_generation:gidd"
-
-    work_items = make_work_items(
-        len(prompts),
-        prefix="code",
+    preflight = prepare_resumable_run(
+        config=config,
+        workflow_id=workflow_id,
         prompts=prompts,
         references=references,
         metadata=metadata,
-    )
-
-    if is_run_completed_distributed(
-        config,
-        workflow_id=workflow_id,
-        work_items=work_items,
-        distributed_utils=model.distributed_utils,
-        master=master,
+        prefix="code",
         mode="code_generation",
-    ):
-        if master:
-            print("Run is already completed and finalized in resume DB. Skipping entire run.")
-        if model.distributed_utils:
-            model.distributed_utils.cleanup()
+    )
+    if preflight.should_exit:
         return
 
-    def sample_fn(prompt: str):
-        return model.sample(prompt=prompt), None
+    offset = preflight.offset
+    master = preflight.master
+    seed_all(config.seed + offset)
 
-    def decode_fn(prompt: str, tokens) -> list[str]:
-        return _decode_generations(model, prompt, tokens)
+    model = GIDDSampler(config)
+    if config.posterior_sampler != "gidd_hf_generate":
+        model.model = compile_model(model.model, config, dynamic=True)
 
-    def score_fn(i: int, prompt: str, generations: list[str]) -> dict:
+    def score_generations(i: int, prompt: str, generations: list[str]) -> tuple[dict[str, Any], list[Any]]:
         row = rows[i]
         return _evaluate_generations(
             evaluator,
@@ -163,40 +142,74 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
             dataset_name=str(row.dataset),
             reference_code=str(row.reference_code),
             generations=generations,
-        )[0]
+        )
 
-    def verbose_log_fn(_i: int, result: dict | None, _generations: list[str]) -> None:
-        if result is not None:
-            for gen_idx, gen in enumerate(result["generations"]):
-                print(f"--- Generation {gen_idx} ---\n{gen}\n", verbose=True)
-            scores = result["scores"]
-            print(
-                f"  -> accuracy for this task: {result['accuracy']:.2%}  ({sum(scores)}/{len(scores)} passed)",
-            )
+    assert preflight.resume_state is not None
+    store = preflight.resume_state.store
+    completed_indices = preflight.resume_state.completed_indices
+    unique_id = preflight.resume_state.unique_id
+    work_items = preflight.work_items
+    results = []
+    all_generations = []
+    validation_groups = []
 
-    loop_outputs = run_generator_loop(
-        config=config,
-        model=model,
-        prompts=prompts,
-        references=references,
-        metadata=metadata,
-        workflow_id=workflow_id,
-        prefix="code",
-        mode="code_generation",
-        sample_fn=sample_fn,
-        decode_fn=decode_fn,
-        score_fn=None if config.skip_eval else score_fn,
-        verbose_log_fn=verbose_log_fn,
-    )
+    if master:
+        print(f"Experiment ID: {unique_id}")
 
-    if loop_outputs.get("claimed_by_another_worker"):
-        if model.distributed_utils:
-            model.distributed_utils.cleanup()
-        return
+    try:
+        for i, prompt_item in enumerate(prompts):
+            prompt = sync_resume_item(prompt_item, model.distributed_utils)
+            if i in completed_indices:
+                if not master:
+                    continue
+                assert store is not None
+                generation = store.get_generation(i)
+                assert generation is not None
+                raw_samples = generation["tokens"]
+                decoded = generation["decoded"] or _decode_generations(model, prompt, raw_samples)
+                result = generation["result"]
+                validations = None
+                if result is None and not config.skip_eval:
+                    result, validations = score_generations(i, prompt, decoded)
+                elif result is not None:
+                    validations = [CodeValidationResult(**val) for val in result["validation"]]
+                if generation["decoded"] is None or (generation["result"] is None and result is not None):
+                    store.record_decoded(item_index=i, decoded=decoded, result=result)
+            else:
+                if master:
+                    print(f"Sampling {i + 1}/{len(prompts)}...", progress=True)
+                raw_samples = model.sample(prompt=prompt)
+                if not master:
+                    continue
+                if store is not None:
+                    store.record_generated(
+                        item_index=i,
+                        token_ids=raw_samples,
+                        prompt_len=model._preprocess_prompt(prompt).shape[1],
+                    )
+                decoded = _decode_generations(model, prompt, raw_samples)
+                result = None
+                validations = None
+                if not config.skip_eval:
+                    result, validations = score_generations(i, prompt, decoded)
+                if store is not None:
+                    store.record_decoded(item_index=i, decoded=decoded, result=result)
 
-    results = loop_outputs["results"] or []
-    unique_id = loop_outputs["unique_id"]
-    work_items = loop_outputs["work_items"]
+            if master:
+                all_generations.append(decoded)
+                if result is not None:
+                    assert validations is not None
+                    results.append(result)
+                    validation_groups.append(validations)
+                    for gen_idx, gen in enumerate(result["generations"]):
+                        print(f"--- Generation {gen_idx} ---\n{gen}\n", verbose=True)
+                    scores = result["scores"]
+                    print(
+                        f"  -> accuracy for this task: {result['accuracy']:.2%}  ({sum(scores)}/{len(scores)} passed)",
+                    )
+    finally:
+        if store is not None:
+            store.close()
 
     if not master:
         if model.distributed_utils:
@@ -206,15 +219,13 @@ def run(config: Config | None = None, *, result_prefix: str = "gidd-code") -> No
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} tasks with >=1 pass)")
 
-    validation_groups = [[CodeValidationResult(**val) for val in r["validation"]] for r in results]
-
     code_metrics = evaluator.evaluate(validation_groups) if results else {}
     code_metrics_summary = code_metrics.get("code_metrics_summary")
     if code_metrics_summary:
         print(f"code metrics: {code_metrics_summary}")
 
     payload = build_generation_result_payload(
-        text_samples=loop_outputs["generations"],
+        text_samples=all_generations,
         config=config,
         references=references,
         metrics=code_metrics,

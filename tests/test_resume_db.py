@@ -11,20 +11,21 @@ from d5p4.resume_db import (
     experiment_hash,
     make_work_items,
     manifest_hash,
-    run_generator_loop,
+    prepare_resumable_run,
     semantic_config_dict,
 )
 
 
 def _cfg(tmpdir: str, **kwargs):
-    return Config(
-        disable_sys_args=True,
-        model="llada",
-        results_dir=os.path.join(tmpdir, "results-a"),
-        resume_db_dir=os.path.join(tmpdir, "shared-resume"),
-        resume_db_keep_completed=False,
-        **kwargs,
-    )
+    defaults = {
+        "disable_sys_args": True,
+        "model": "llada",
+        "results_dir": os.path.join(tmpdir, "results-a"),
+        "resume_db_dir": os.path.join(tmpdir, "shared-resume"),
+        "resume_db_keep_completed": False,
+    }
+    defaults.update(kwargs)
+    return Config(**defaults)
 
 
 def test_semantic_config_excludes_node_local_paths():
@@ -138,13 +139,7 @@ def test_store_lock_rejects_second_live_owner():
             first.close()
 
 
-def test_generator_loop_skips_when_resume_lock_is_owned():
-    class DummyModel:
-        distributed_utils = None
-
-        def _preprocess_prompt(self, _prompt: str):
-            return torch.tensor([[1, 2]], dtype=torch.long)
-
+def test_prepare_resumable_run_exits_when_resume_lock_is_owned():
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg = _cfg(tmpdir, resume_runs=True)
         items = make_work_items(1, prefix="item", prompts=["hello"])
@@ -157,40 +152,60 @@ def test_generator_loop_skips_when_resume_lock_is_owned():
         owner.open()
 
         try:
-            output = run_generator_loop(
+            preflight = prepare_resumable_run(
                 config=cfg,
-                model=DummyModel(),
-                prompts=["hello"],
                 workflow_id="prompt_generation:llada",
-                sample_fn=lambda _prompt: (_ for _ in ()).throw(AssertionError("should not sample locked runs")),
-                decode_fn=lambda _prompt, _tokens: ["decoded"],
+                prompts=["hello"],
+                prefix="item",
+                mode="prompt_generation",
             )
         finally:
             owner.close()
 
-        assert output["claimed_by_another_worker"] is True
-        assert output["generations"] == []
-        assert output["results"] is None
+        assert preflight.should_exit is True
+        assert preflight.resume_state is not None
+        assert preflight.resume_state.claimed_by_another_worker is True
+        assert preflight.resume_state.store is None
 
 
-def test_generator_loop_works_without_resume_store():
-    class DummyModel:
-        distributed_utils = None
-
-        def _preprocess_prompt(self, _prompt: str):
-            return torch.tensor([[1, 2]], dtype=torch.long)
-
+def test_prepare_resumable_run_works_without_resume_store():
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg = _cfg(tmpdir, resume_runs=False)
-        output = run_generator_loop(
+        preflight = prepare_resumable_run(
             config=cfg,
-            model=DummyModel(),
-            prompts=["hello"],
             workflow_id="prompt_generation:llada",
-            sample_fn=lambda _prompt: (torch.tensor([[1, 2, 3]], dtype=torch.long), None),
-            decode_fn=lambda _prompt, _tokens: ["decoded"],
+            prompts=["hello"],
+            prefix="item",
+            mode="prompt_generation",
         )
 
-        assert output["generations"] == [["decoded"]]
-        assert output["results"] is None
+        assert preflight.should_exit is False
+        assert preflight.resume_state is not None
+        assert preflight.resume_state.store is None
+        assert preflight.work_items == make_work_items(1, prefix="item", prompts=["hello"])
         assert not os.path.exists(cfg.resume_db_dir)
+
+
+def test_prepare_resumable_run_exits_when_db_is_complete():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = _cfg(tmpdir, resume_runs=True, resume_db_keep_completed=True)
+        items = make_work_items(1, prefix="item", prompts=["hello"])
+        store = ResumableRunStore(
+            config=cfg,
+            workflow_id="prompt_generation:llada",
+            mode="prompt_generation",
+            work_items=items,
+        )
+        store.open()
+        store.release("result.json")
+
+        preflight = prepare_resumable_run(
+            config=cfg,
+            workflow_id="prompt_generation:llada",
+            prompts=["hello"],
+            prefix="item",
+            mode="prompt_generation",
+        )
+
+        assert preflight.should_exit is True
+        assert preflight.resume_state is None

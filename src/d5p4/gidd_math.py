@@ -14,10 +14,9 @@ from d5p4.diffusion_gidd import GIDDSampler
 from d5p4.eval_core import MathEvaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
-    is_run_completed_distributed,
-    make_work_items,
+    prepare_resumable_run,
     release_resumable_run,
-    run_generator_loop,
+    sync_resume_item,
 )
 from d5p4.utils import compile_model, print, seed_all
 
@@ -80,16 +79,6 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:  
     assert config.model == "gidd"
     assert config.qa_dataset == "gsm8k"
 
-    model = GIDDSampler(config)
-    if config.posterior_sampler != "gidd_hf_generate":
-        model.model = compile_model(model.model, config, dynamic=True)
-
-    offset = 0
-    if model.distributed_utils:
-        offset = model.distributed_utils.rank
-
-    seed_all(config.seed + offset)
-
     dataset = gsm8k(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
@@ -99,43 +88,33 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:  
 
     evaluator = MathEvaluator()
 
-    master = model.distributed_utils is None or model.distributed_utils.rank == 0
     metadata = [
         {"gold_answer": gold, "answer_str": answer_str, "item_key": f"gsm8k:{idx}"}
         for idx, (gold, answer_str) in enumerate(zip(answer_numbers, answer_strings, strict=True))
     ]
     workflow_id = "math_generation:gidd"
     string_references = [[answer_str] for answer_str in answer_strings]
-
-    work_items = make_work_items(
-        len(prompts),
-        prefix="gsm8k",
+    preflight = prepare_resumable_run(
+        config=config,
+        workflow_id=workflow_id,
         prompts=prompts,
         references=string_references,
         metadata=metadata,
-    )
-
-    if is_run_completed_distributed(
-        config,
-        workflow_id=workflow_id,
-        work_items=work_items,
-        distributed_utils=model.distributed_utils,
-        master=master,
+        prefix="gsm8k",
         mode="math_generation",
-    ):
-        if master:
-            print("Run is already completed and finalized in resume DB. Skipping entire run.")
-        if model.distributed_utils:
-            model.distributed_utils.cleanup()
+    )
+    if preflight.should_exit:
         return
 
-    def sample_fn(prompt: str):
-        return model.sample(prompt=prompt), None
+    offset = preflight.offset
+    master = preflight.master
+    seed_all(config.seed + offset)
 
-    def decode_fn(prompt: str, tokens) -> list[str]:
-        return _decode_generations(model, prompt, tokens)
+    model = GIDDSampler(config)
+    if config.posterior_sampler != "gidd_hf_generate":
+        model.model = compile_model(model.model, config, dynamic=True)
 
-    def score_fn(i: int, prompt: str, generations: list[str]) -> dict:
+    def score_generations(i: int, prompt: str, generations: list[str]) -> dict:
         gold = answer_numbers[i]
         answer_str = answer_strings[i]
         return _score_result(
@@ -146,35 +125,63 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:  
             generations=generations,
         )
 
-    def verbose_log_fn(_i: int, result: dict | None, _generations: list[str]) -> None:
-        if result is not None:
-            scores = result["scores"]
-            acc = result["accuracy"]
-            print(f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)", progress=True)
+    assert preflight.resume_state is not None
+    store = preflight.resume_state.store
+    completed_indices = preflight.resume_state.completed_indices
+    unique_id = preflight.resume_state.unique_id
+    work_items = preflight.work_items
+    results = []
+    all_generations = []
 
-    loop_outputs = run_generator_loop(
-        config=config,
-        model=model,
-        prompts=prompts,
-        references=string_references,
-        metadata=metadata,
-        workflow_id=workflow_id,
-        prefix="gsm8k",
-        mode="math_generation",
-        sample_fn=sample_fn,
-        decode_fn=decode_fn,
-        score_fn=None if config.skip_eval else score_fn,
-        verbose_log_fn=verbose_log_fn,
-    )
+    if master:
+        print(f"Experiment ID: {unique_id}")
 
-    if loop_outputs.get("claimed_by_another_worker"):
-        if model.distributed_utils:
-            model.distributed_utils.cleanup()
-        return
+    try:
+        for i, prompt_item in enumerate(prompts):
+            prompt = sync_resume_item(prompt_item, model.distributed_utils)
+            if i in completed_indices:
+                if not master:
+                    continue
+                assert store is not None
+                generation = store.get_generation(i)
+                assert generation is not None
+                raw_samples = generation["tokens"]
+                decoded = generation["decoded"] or _decode_generations(model, prompt, raw_samples)
+                result = generation["result"]
+                if result is None and not config.skip_eval:
+                    result = score_generations(i, prompt, decoded)
+                if generation["decoded"] is None or (generation["result"] is None and result is not None):
+                    store.record_decoded(item_index=i, decoded=decoded, result=result)
+            else:
+                if master:
+                    print(f"Sampling {i + 1}/{len(prompts)}...", progress=True)
+                raw_samples = model.sample(prompt=prompt)
+                if not master:
+                    continue
+                if store is not None:
+                    store.record_generated(
+                        item_index=i,
+                        token_ids=raw_samples,
+                        prompt_len=model._preprocess_prompt(prompt).shape[1],
+                    )
+                decoded = _decode_generations(model, prompt, raw_samples)
+                result = None if config.skip_eval else score_generations(i, prompt, decoded)
+                if store is not None:
+                    store.record_decoded(item_index=i, decoded=decoded, result=result)
 
-    results = loop_outputs["results"] or []
-    unique_id = loop_outputs["unique_id"]
-    work_items = loop_outputs["work_items"]
+            if master:
+                all_generations.append(decoded)
+                if result is not None:
+                    results.append(result)
+                    scores = result["scores"]
+                    acc = result["accuracy"]
+                    print(
+                        f"  → accuracy for this question: {acc:.2%}  ({sum(scores)}/{len(scores)} correct)",
+                        progress=True,
+                    )
+    finally:
+        if store is not None:
+            store.close()
 
     if not master:
         if model.distributed_utils:
@@ -184,7 +191,6 @@ def run(config: Config | None = None, *, result_prefix: str = "math") -> None:  
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} qs with >=1 correct)")
 
-    all_generations = loop_outputs["generations"]
     num_workers = min(8, os.cpu_count() or 1)
     print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
     math_metrics = (

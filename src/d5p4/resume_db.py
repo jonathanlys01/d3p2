@@ -11,7 +11,7 @@ import socket
 import sqlite3
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
@@ -20,7 +20,7 @@ from typing import Any
 import torch
 
 from d5p4.config import Config
-from d5p4.utils import print
+from d5p4.utils import get_runtime_local_rank, get_runtime_rank, get_runtime_world_size, print
 
 
 SCHEMA_VERSION = 1
@@ -51,6 +51,48 @@ class ResumeRunState:
     completed_indices: set[int]
     unique_id: uuid.UUID
     claimed_by_another_worker: bool = False
+
+
+@dataclass
+class ResumeDistributedContext:
+    rank: int
+    local_rank: int
+    world_size: int
+    initialized_here: bool = False
+
+    @classmethod
+    def from_config(cls, config: Config) -> ResumeDistributedContext | None:
+        world_size = get_runtime_world_size(config)
+        if world_size <= 1:
+            return None
+
+        rank = get_runtime_rank(config)
+        local_rank = get_runtime_local_rank(config)
+        initialized_here = False
+        if not torch.distributed.is_initialized():
+            torch.cuda.set_device(f"cuda:{local_rank}")
+            torch.distributed.init_process_group(
+                backend="nccl",
+                init_method="env://",
+                world_size=world_size,
+                rank=rank,
+            )
+            initialized_here = True
+        return cls(rank=rank, local_rank=local_rank, world_size=world_size, initialized_here=initialized_here)
+
+    def cleanup(self) -> None:
+        if self.initialized_here and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+
+
+@dataclass
+class ResumePreflight:
+    distributed_utils: ResumeDistributedContext | None
+    master: bool
+    offset: int
+    work_items: list[dict[str, Any]]
+    resume_state: ResumeRunState | None = None
+    should_exit: bool = False
 
 
 def _json_dumps(value: Any) -> str:
@@ -468,6 +510,78 @@ def open_resumable_run(  # noqa: PLR0913
     )
 
 
+def prepare_resumable_run(  # noqa: PLR0913
+    *,
+    config: Config,
+    workflow_id: str,
+    prompts: list[str],
+    references: list[Any] | None = None,
+    metadata: list[dict[str, Any]] | None = None,
+    prefix: str = "item",
+    mode: str = "prompt_generation",
+) -> ResumePreflight:
+    distributed_utils = ResumeDistributedContext.from_config(config)
+    master = distributed_utils is None or distributed_utils.rank == 0
+    offset = 0 if distributed_utils is None else distributed_utils.rank
+    work_items = make_work_items(
+        len(prompts),
+        prefix=prefix,
+        prompts=prompts,
+        references=references,
+        metadata=metadata,
+    )
+
+    if is_run_completed_distributed(
+        config,
+        workflow_id=workflow_id,
+        work_items=work_items,
+        distributed_utils=distributed_utils,
+        master=master,
+        mode=mode,
+    ):
+        if master:
+            print("Run is already completed and finalized in resume DB. Skipping entire run.")
+        if distributed_utils is not None:
+            distributed_utils.cleanup()
+        return ResumePreflight(
+            distributed_utils=distributed_utils,
+            master=master,
+            offset=offset,
+            work_items=work_items,
+            should_exit=True,
+        )
+
+    resume_state = open_resumable_run(
+        config=config,
+        workflow_id=workflow_id,
+        work_items=work_items,
+        distributed_utils=distributed_utils,
+        master=master,
+        mode=mode,
+    )
+    if resume_state.claimed_by_another_worker:
+        if master:
+            print("Another live worker owns this resumable run. Skipping this command.")
+        if distributed_utils is not None:
+            distributed_utils.cleanup()
+        return ResumePreflight(
+            distributed_utils=distributed_utils,
+            master=master,
+            offset=offset,
+            work_items=work_items,
+            resume_state=resume_state,
+            should_exit=True,
+        )
+
+    return ResumePreflight(
+        distributed_utils=distributed_utils,
+        master=master,
+        offset=offset,
+        work_items=work_items,
+        resume_state=resume_state,
+    )
+
+
 def release_resumable_run(
     *,
     config: Any,
@@ -580,209 +694,3 @@ def sync_resume_item(item: Any, distributed_utils: Any | None) -> Any:
     obj_list = [item] if distributed_utils.rank == 0 else [None]
     torch.distributed.broadcast_object_list(obj_list, src=0)
     return obj_list[0]
-
-
-def run_generator_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
-    *,
-    config: Config,
-    model: Any,
-    prompts: list[str],
-    references: list[Any] | None = None,
-    metadata: list[dict[str, Any]] | None = None,
-    workflow_id: str,
-    prefix: str = "item",
-    mode: str = "prompt_generation",
-    sample_fn: Callable[[str], Any],
-    decode_fn: Callable[[str, Any], list[str]],
-    score_fn: Callable[..., Any] | None = None,
-    post_process_fn: Callable[..., Any] | None = None,
-    verbose_log_fn: Callable[..., Any] | None = None,
-) -> dict[str, Any]:
-    """A generic, resumable sampling and scoring engine for distributed/single runs.
-
-    Coordinates SQLite caching on rank 0 and DDP broadcasts to worker ranks.
-    """
-    master = model.distributed_utils is None or model.distributed_utils.rank == 0
-
-    work_items = make_work_items(
-        len(prompts),
-        prefix=prefix,
-        prompts=prompts,
-        references=references,
-        metadata=metadata,
-    )
-
-    resume_state = open_resumable_run(
-        config=config,
-        workflow_id=workflow_id,
-        work_items=work_items,
-        distributed_utils=model.distributed_utils,
-        master=master,
-        mode=mode,
-    )
-
-    store = resume_state.store
-    completed_indices = resume_state.completed_indices
-    unique_id = resume_state.unique_id
-
-    if resume_state.claimed_by_another_worker:
-        if master:
-            print("Another live worker owns this resumable run. Skipping this command.")
-        return {
-            "claimed_by_another_worker": True,
-            "unique_id": unique_id,
-            "results": None,
-            "generations": [],
-            "internal_scores": None,
-            "eval_generations": None,
-            "selected_indices": None,
-            "work_items": work_items,
-        }
-
-    print(f"Experiment ID: {unique_id}")
-
-    results = []
-    generations_all = []
-    internal_scores_all = []
-    eval_generations_all = []
-    selected_indices_all = []
-
-    try:
-        for i, prompt_item in enumerate(prompts):
-            prompt = sync_resume_item(prompt_item, model.distributed_utils)
-
-            if i in completed_indices:
-                if not master:
-                    continue
-
-                assert store is not None
-                generation = store.get_generation(i)
-                assert generation is not None
-
-                raw_samples = generation["tokens"]
-                scores = generation["internal_scores"]
-
-                decoded = generation["decoded"]
-                if decoded is None:
-                    decoded = decode_fn(prompt, raw_samples)
-
-                result = generation["result"]
-                if result is None and score_fn is not None:
-                    result = score_fn(i, prompt, decoded)
-                    store.record_decoded(
-                        item_index=i,
-                        decoded=decoded,
-                        result=result,
-                        eval_decoded=generation["eval_decoded"],
-                        selected_indices=generation["selected_indices"],
-                    )
-
-                eval_decoded = generation["eval_decoded"]
-                sel_indices = generation["selected_indices"]
-                if post_process_fn is not None and (eval_decoded is None or sel_indices is None):
-                    eval_decoded, sel_indices = post_process_fn(i, prompt, decoded, scores)
-                    store.record_decoded(
-                        item_index=i,
-                        decoded=decoded,
-                        result=result,
-                        eval_decoded=eval_decoded,
-                        selected_indices=sel_indices,
-                    )
-            else:
-                if master:
-
-                    def _shorten_val(val: Any, max_len: int = 40) -> str:
-                        if isinstance(val, str):
-                            val_clean = " ".join(val.split())
-                            if len(val_clean) > max_len:
-                                return repr(val_clean[:max_len] + "...")
-                            return repr(val_clean)
-                        val_repr = repr(val)
-                        if len(val_repr) > max_len:
-                            return val_repr[:max_len] + "..."
-                        return val_repr
-
-                    log_suffix = ""
-                    if not getattr(config, "minimal_log", False) and getattr(config, "interactive", True):
-                        if references is not None and i < len(references) and references[i]:
-                            ref_val = references[i][0] if isinstance(references[i], list) else references[i]
-                            log_suffix = f"  (ref={_shorten_val(ref_val)})"
-                        elif metadata is not None and i < len(metadata):
-                            meta = metadata[i]
-                            if "gold_answer" in meta:
-                                log_suffix = f"  (gold={_shorten_val(meta['gold_answer'])})"
-                            elif "task_id" in meta:
-                                log_suffix = f"  (task={_shorten_val(meta['task_id'])})"
-                            elif "item_key" in meta:
-                                log_suffix = f"  (item={_shorten_val(meta['item_key'])})"
-                    print(f"Sampling {i + 1}/{len(prompts)}{log_suffix}...", progress=True)
-
-                raw_samples, internal_scores = sample_fn(prompt)
-
-                if not master:
-                    continue
-
-                prompt_len = model._preprocess_prompt(prompt).shape[1]
-
-                scores = None
-                if internal_scores is not None:
-                    if torch.is_tensor(internal_scores):
-                        scores = [float(s) for s in internal_scores.detach().cpu().tolist()]
-                    else:
-                        scores = internal_scores
-
-                if store is not None:
-                    store.record_generated(
-                        item_index=i,
-                        token_ids=raw_samples,
-                        prompt_len=prompt_len,
-                        internal_scores=scores,
-                    )
-
-                decoded = decode_fn(prompt, raw_samples)
-
-                result = None
-                if score_fn is not None:
-                    result = score_fn(i, prompt, decoded)
-
-                eval_decoded = None
-                sel_indices = None
-                if post_process_fn is not None:
-                    eval_decoded, sel_indices = post_process_fn(i, prompt, decoded, scores)
-
-                if store is not None:
-                    store.record_decoded(
-                        item_index=i,
-                        decoded=decoded,
-                        result=result,
-                        eval_decoded=eval_decoded,
-                        selected_indices=sel_indices,
-                    )
-
-            if master:
-                if result is not None:
-                    results.append(result)
-                generations_all.append(decoded)
-                if scores is not None:
-                    internal_scores_all.append(scores)
-                if eval_decoded is not None:
-                    eval_generations_all.append(eval_decoded)
-                if sel_indices is not None:
-                    selected_indices_all.append(sel_indices)
-
-                if verbose_log_fn is not None:
-                    verbose_log_fn(i, result, decoded)
-    finally:
-        if store is not None:
-            store.close()
-
-    return {
-        "claimed_by_another_worker": False,
-        "unique_id": unique_id,
-        "results": results if results else None,
-        "generations": generations_all,
-        "internal_scores": internal_scores_all if internal_scores_all else None,
-        "eval_generations": eval_generations_all if eval_generations_all else None,
-        "selected_indices": selected_indices_all if selected_indices_all else None,
-        "work_items": work_items,
-    }

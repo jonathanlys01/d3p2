@@ -6,14 +6,17 @@ import json
 import os
 from datetime import datetime
 
+import torch
+
 from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
+    prepare_resumable_run,
     release_resumable_run,
-    run_generator_loop,
+    sync_resume_item,
 )
 from d5p4.utils import compile_model, print, seed_all
 
@@ -55,17 +58,6 @@ def _select_group_representatives(
 def main():  # noqa: C901, PLR0912, PLR0915
     config = Config()
 
-    model = LLADASampler(config)
-    model.model = compile_model(model.model, config, dynamic=True)
-
-    offset = 0
-    if model.distributed_utils:
-        offset = model.distributed_utils.rank
-
-    seed_all(config.seed + offset)
-    use_internal_representatives = config.group_size > 1
-    master = model.distributed_utils is None or model.distributed_utils.rank == 0
-
     dataset = get_qa_dataset(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
@@ -73,15 +65,31 @@ def main():  # noqa: C901, PLR0912, PLR0915
     references_all: list[list[str]] = [row.correct_answers for row in rows]  # type: ignore
 
     workflow_id = "prompt_generation:llada"
+    preflight = prepare_resumable_run(
+        config=config,
+        workflow_id=workflow_id,
+        prompts=prompts,
+        references=references_all,
+        prefix="prompt",
+        mode="prompt_generation",
+    )
+    if preflight.should_exit:
+        return
+
+    offset = preflight.offset
+    master = preflight.master
+    seed_all(config.seed + offset)
+    use_internal_representatives = config.group_size > 1
+
+    model = LLADASampler(config)
+    model.model = compile_model(model.model, config, dynamic=True)
+
     if master:
         print("Dumping final-step internal confidence scores for every generated sequence.")
     if use_internal_representatives and master:
         print("Using final-step internal scores to select one evaluation representative per group.")
 
-    def sample_fn(prompt: str):
-        return model.sample(prompt=prompt, return_internal_scores=True)
-
-    def decode_fn(prompt: str, tokens) -> list[str]:
+    def decode_generations(prompt: str, tokens) -> list[str]:
         prompt_len = model._preprocess_prompt(prompt).shape[1]
         generations = []
         for sample in tokens:
@@ -89,40 +97,90 @@ def main():  # noqa: C901, PLR0912, PLR0915
             generations.append(model.tokenizer.decode(completion_tokens.tolist(), skip_special_tokens=True).strip())
         return generations
 
-    def post_process_fn(
-        _i: int,
-        _prompt: str,
-        generations: list[str],
-        scores: list[float] | None,
-    ) -> tuple[list[str] | None, list[int] | None]:
-        if use_internal_representatives and scores is not None:
-            return _select_group_representatives(generations, scores, config.group_size)
-        return None, None
+    assert preflight.resume_state is not None
+    store = preflight.resume_state.store
+    completed_indices = preflight.resume_state.completed_indices
+    unique_id = preflight.resume_state.unique_id
+    work_items = preflight.work_items
+    texts = []
+    internal_scores_all = []
+    eval_texts = [] if use_internal_representatives else None
+    eval_selected_indices = [] if use_internal_representatives else None
 
-    loop_outputs = run_generator_loop(
-        config=config,
-        model=model,
-        prompts=prompts,
-        references=references_all,
-        workflow_id=workflow_id,
-        prefix="prompt",
-        mode="prompt_generation",
-        sample_fn=sample_fn,
-        decode_fn=decode_fn,
-        post_process_fn=post_process_fn,
-    )
+    if master:
+        print(f"Experiment ID: {unique_id}")
 
-    if loop_outputs.get("claimed_by_another_worker"):
-        if model.distributed_utils:
-            model.distributed_utils.cleanup()
-        return
+    try:
+        for i, prompt_item in enumerate(prompts):
+            prompt = sync_resume_item(prompt_item, model.distributed_utils)
+            if i in completed_indices:
+                if not master:
+                    continue
+                assert store is not None
+                generation = store.get_generation(i)
+                assert generation is not None
+                raw_samples = generation["tokens"]
+                scores = generation["internal_scores"]
+                decoded = generation["decoded"] or decode_generations(prompt, raw_samples)
+                selected = generation["selected_indices"]
+                eval_decoded = generation["eval_decoded"]
+                if use_internal_representatives and (eval_decoded is None or selected is None):
+                    assert scores is not None
+                    eval_decoded, selected = _select_group_representatives(decoded, scores, config.group_size)
+                if generation["decoded"] is None or (
+                    use_internal_representatives and generation["eval_decoded"] is None
+                ):
+                    store.record_decoded(
+                        item_index=i,
+                        decoded=decoded,
+                        eval_decoded=eval_decoded,
+                        selected_indices=selected,
+                    )
+            else:
+                if master:
+                    print(f"Sampling {i + 1}/{len(prompts)}...", progress=True)
+                raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
+                if not master:
+                    continue
+                prompt_len = model._preprocess_prompt(prompt).shape[1]
+                scores = (
+                    [float(score) for score in internal_scores.detach().cpu().tolist()]
+                    if torch.is_tensor(internal_scores)
+                    else internal_scores
+                )
+                if store is not None:
+                    store.record_generated(
+                        item_index=i,
+                        token_ids=raw_samples,
+                        prompt_len=prompt_len,
+                        internal_scores=scores,
+                    )
+                decoded = decode_generations(prompt, raw_samples)
+                eval_decoded = None
+                selected = None
+                if use_internal_representatives:
+                    eval_decoded, selected = _select_group_representatives(decoded, scores, config.group_size)
+                if store is not None:
+                    store.record_decoded(
+                        item_index=i,
+                        decoded=decoded,
+                        eval_decoded=eval_decoded,
+                        selected_indices=selected,
+                    )
 
-    texts = loop_outputs["generations"]
-    internal_scores_all = loop_outputs["internal_scores"] or []
-    eval_texts = loop_outputs["eval_generations"]
-    eval_selected_indices = loop_outputs["selected_indices"]
-    unique_id = loop_outputs["unique_id"]
-    work_items = loop_outputs["work_items"]
+            if master:
+                texts.append(decoded)
+                internal_scores_all.append(scores)
+                if use_internal_representatives:
+                    assert eval_texts is not None
+                    assert eval_selected_indices is not None
+                    assert eval_decoded is not None
+                    assert selected is not None
+                    eval_texts.append(eval_decoded)
+                    eval_selected_indices.append(selected)
+    finally:
+        if store is not None:
+            store.close()
 
     if not master:
         if model.distributed_utils:
