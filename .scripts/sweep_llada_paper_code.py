@@ -6,6 +6,11 @@ Orchestrates the LLaDA paper code generation sweep over 48 configurations:
   - 4 Sampling Methods (independent/baseline, greedy_map, diverse_beam, greedy_beam)
   - 3 Seeds (0, 1, 2)
 
+Commands are emitted seed-major: the script completes all dataset/remasking/method
+configurations for seed 0 before moving to seed 1, then seed 2. This makes it
+possible to run a full one-seed validation pass before committing cluster time
+to the remaining seeds.
+
 TWO-PHASE PIPELINE DESIGN:
 ---------------------------
 Phase 1: Generation Only (Fast)
@@ -95,19 +100,19 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     commands = []
 
-    for dataset in datasets:
-        # Dataset-specific lengths/shots
-        if dataset == "humaneval":
-            gen_len = 512
-            n_shots = 0
-            subsample_end = 256
-        else:
-            gen_len = 256
-            n_shots = 4
-            subsample_end = 128
+    for seed in seeds:
+        for dataset in datasets:
+            # Dataset-specific lengths/shots
+            if dataset == "humaneval":
+                gen_len = 512
+                n_shots = 0
+                subsample_end = 256
+            else:
+                gen_len = 256
+                n_shots = 4
+                subsample_end = 128
 
-        for remasking in remasking_methods:
-            for seed in seeds:
+            for remasking in remasking_methods:
                 for method in methods:
                     cmd_args = [
                         "torchrun",
