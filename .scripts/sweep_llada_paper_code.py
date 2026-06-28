@@ -220,34 +220,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
             print(f"Error executing command: {e}")
             sys.exit(e.returncode)
 
-    # Run post-hoc Best-of-N selection for independent baseline runs when evaluation is enabled
-    if args.skip_eval.lower() == "false":
-        print("\n================================================================================")
-        print("Running post-hoc Best-of-N selection for baseline (independent) runs...")
-        print("================================================================================")
-
-        bon_cmd = [
-            "python3",
-            "_oversample_baseline.py",
-            "subsample_k=3",
-            "resume_runs=True",
-        ]
-
-        env = os.environ.copy()
-        env["OMP_NUM_THREADS"] = "1"
-        env["OVERSAMPLE_BASELINE_PATH"] = os.path.join(cwd, "results")
-        env["OVERSAMPLE_BASELINE_METHOD"] = "baseline"
-
-        print("Running baseline post-processor:")
-        print(" ".join(bon_cmd))
-
-        if not args.dry_run:
-            try:
-                subprocess.run(bon_cmd, cwd=cwd, env=env, check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"Error running baseline post-processing: {e}")
-                sys.exit(e.returncode)
-
 
 if __name__ == "__main__":
     main()
