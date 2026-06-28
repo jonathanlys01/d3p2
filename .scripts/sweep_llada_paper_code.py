@@ -47,14 +47,56 @@ subprocess spawn to prevent port collision issues.
 """
 
 import argparse
+import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from omegaconf import OmegaConf
+
+from d5p4.config import Config
+from d5p4.resume_db import default_resume_dir
 
 
 _SAFE_OVERRIDE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+@dataclass
+class SweepEntry:
+    cmd: list[str]
+    overrides: dict[str, Any]
+
+
+PROGRESS_MATCH_KEYS = (
+    "model",
+    "code_dataset",
+    "code_dataset_len",
+    "code_n_shots",
+    "seed",
+    "remasking",
+    "logits_eos_inf",
+    "cfg_scale",
+    "llada_steps",
+    "gen_length",
+    "block_length",
+    "confidence_eos_eot_inf",
+    "method",
+    "n_groups",
+    "group_size",
+    "subsample_end",
+    "_w_interaction",
+    "_diversity_alpha",
+)
+DEFAULT_CODE_DATASET_LENGTHS = {
+    "humaneval": 164,
+    "mbpp": 427,
+}
 
 
 def _cfg_arg(key: str, value: object) -> str:
@@ -63,6 +105,154 @@ def _cfg_arg(key: str, value: object) -> str:
     if not _SAFE_OVERRIDE_VALUE_RE.fullmatch(value_str):
         raise ValueError(f"Unsafe OmegaConf override value for {key}: {value_str!r}")
     return f"{key}={value_str}"
+
+
+def _src_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "src" / "d5p4"
+
+
+def _ensure_src_on_path() -> None:
+    src_parent = str(_src_root().parent)
+    if src_parent not in sys.path:
+        sys.path.insert(0, src_parent)
+
+
+def _config_from_overrides(overrides: dict[str, Any]):
+    _ensure_src_on_path()
+
+    base = OmegaConf.structured(Config(disable_sys_args=True))
+    cfg_file = OmegaConf.load(_src_root() / "_default.yaml")
+    cli = OmegaConf.create(overrides)
+    merged = OmegaConf.merge(base, cfg_file, cli, {"disable_sys_args": True})
+    data = OmegaConf.to_container(merged, resolve=True)
+    assert isinstance(data, dict)
+    # pyrefly: ignore [bad-unpacking]
+    return Config(**data)
+
+
+def _resume_dir(config) -> Path:
+    _ensure_src_on_path()
+
+    return default_resume_dir(config)
+
+
+def _progress_key(config_or_dict: Any) -> tuple[tuple[str, Any], ...]:
+    if isinstance(config_or_dict, dict):
+        return tuple((key, config_or_dict.get(key)) for key in PROGRESS_MATCH_KEYS)
+    return tuple((key, getattr(config_or_dict, key)) for key in PROGRESS_MATCH_KEYS)
+
+
+def _expected_total(config: Any) -> int | None:
+    if config.code_dataset_len > 0:
+        return config.code_dataset_len
+    return DEFAULT_CODE_DATASET_LENGTHS.get(config.code_dataset)
+
+
+def _scan_resume_dir(resume_dir: Path) -> dict[tuple[tuple[str, Any], ...], dict[str, Any]]:
+    progress: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
+    if not resume_dir.exists():
+        return progress
+
+    for db_path in sorted(resume_dir.glob("*.sqlite3")):
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            run = conn.execute(
+                """
+                SELECT experiment_hash, status, workflow_id, mode, config_json, work_manifest_json
+                FROM runs
+                LIMIT 1
+                """,
+            ).fetchone()
+            if run is None or run["workflow_id"] != "code_generation:llada" or run["mode"] != "code_generation":
+                conn.close()
+                continue
+            config_dict = json.loads(run["config_json"])
+            work_manifest = json.loads(run["work_manifest_json"])
+            generated = conn.execute(
+                "SELECT COUNT(*) AS n FROM generations WHERE experiment_hash = ?",
+                (run["experiment_hash"],),
+            ).fetchone()["n"]
+            conn.close()
+        except Exception as exc:
+            print(f"Skipping unreadable resume DB {db_path}: {exc}", file=sys.stderr)
+            continue
+
+        key = _progress_key(config_dict)
+        item = {
+            "status": str(run["status"]),
+            "generated": int(generated),
+            "total": len(work_manifest) if isinstance(work_manifest, list) else None,
+            "hash": str(run["experiment_hash"]),
+            "db": str(db_path),
+        }
+        previous = progress.get(key)
+        if previous is None or (item["generated"], item["status"] == "complete") > (
+            previous["generated"],
+            previous["status"] == "complete",
+        ):
+            progress[key] = item
+    return progress
+
+
+def _state_from_progress(
+    item: dict[str, Any] | None,
+    fallback_total: int | None,
+) -> tuple[str, int, int | None, str, str]:
+    if item is None:
+        return "not_done", 0, fallback_total, "-", "-"
+
+    generated = int(item["generated"])
+    total = item["total"] if item["total"] is not None else fallback_total
+    run_status = item["status"]
+    if run_status == "complete" and total is not None and generated >= total:
+        state = "done"
+    elif generated > 0 or run_status == "running":
+        state = "in_progress"
+    else:
+        state = "not_done"
+    return state, generated, total, item["hash"], item["db"]
+
+
+def _print_progress(entries: list[SweepEntry]) -> None:
+    configs = [_config_from_overrides(entry.overrides) for entry in entries]
+    resume_dirs = {_resume_dir(config) for config in configs}
+    progress_by_dir = {resume_dir: _scan_resume_dir(resume_dir) for resume_dir in resume_dirs}
+
+    rows = []
+    for idx, config in enumerate(configs, start=1):
+        progress = progress_by_dir[_resume_dir(config)].get(_progress_key(config))
+        state, generated, total, exp_hash, db_path = _state_from_progress(progress, _expected_total(config))
+        progress_text = f"{generated}/{total}" if total is not None else f"{generated}/?"
+        rows.append(
+            {
+                "idx": idx,
+                "seed": config.seed,
+                "dataset": config.code_dataset,
+                "remasking": config.remasking,
+                "method": config.method,
+                "state": state,
+                "progress": progress_text,
+                "hash": exp_hash[:12] if exp_hash != "-" else "-",
+                "db": db_path,
+            },
+        )
+
+    headers = ["idx", "seed", "dataset", "remasking", "method", "state", "progress", "hash"]
+    widths = {header: max(len(header), *(len(str(row[header])) for row in rows)) for header in headers}
+    print(" | ".join(header.ljust(widths[header]) for header in headers))
+    print("-+-".join("-" * widths[header] for header in headers))
+    for row in rows:
+        print(" | ".join(str(row[header]).ljust(widths[header]) for header in headers))
+
+    counts = {state: sum(1 for row in rows if row["state"] == state) for state in ("done", "in_progress", "not_done")}
+    print(
+        "\nSummary: "
+        f"done={counts['done']} "
+        f"in_progress={counts['in_progress']} "
+        f"not_done={counts['not_done']} "
+        f"total={len(rows)}",
+    )
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
@@ -87,6 +277,11 @@ def main():  # noqa: C901, PLR0912, PLR0915
         default="gpu",
         help="Number of GPUs / processes per node for torchrun (default: gpu)",
     )
+    parser.add_argument(
+        "--progress_only",
+        action="store_true",
+        help="Only print resume DB progress for the sweep configs; do not run generation.",
+    )
     parser.add_argument("--dry_run", action="store_true", help="Only print the commands, don't run them")
     args = parser.parse_args()
 
@@ -98,7 +293,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
     # Each method has unique parameters depending on the dataset
     methods = ["baseline", "greedy_map", "diverse_beam", "greedy_beam"]
 
-    commands = []
+    entries: list[SweepEntry] = []
 
     for seed in seeds:
         for dataset in datasets:
@@ -114,6 +309,31 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
             for remasking in remasking_methods:
                 for method in methods:
+                    # Keep this stable across skip_eval=true/false so the eval pass
+                    # reuses DBs created by generation-only runs.
+                    comment = (
+                        f"llada_sweep_dataset-{dataset}_remasking-{remasking}_"
+                        f"seed-{seed}_method-{method}_skip_eval-true"
+                    )
+                    overrides: dict[str, Any] = {
+                        "minimal_log": True,
+                        "model": "llada",
+                        "code_dataset": dataset,
+                        "code_n_shots": n_shots,
+                        "seed": seed,
+                        "remasking": remasking,
+                        "logits_eos_inf": False,
+                        "cfg_scale": 1.0,
+                        "llada_steps": gen_len,
+                        "gen_length": gen_len,
+                        "block_length": gen_len,
+                        "confidence_eos_eot_inf": True,
+                        "skip_eval": args.skip_eval,
+                        "resume_db_keep_completed": args.resume_db_keep_completed,
+                        "resume_runs": True,
+                        "method": method,
+                        "comment": comment,
+                    }
                     cmd_args = [
                         "torchrun",
                         f"--nproc_per_node={args.nproc}",
@@ -139,6 +359,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
                     # Add method-specific parameters
                     if method == "baseline":
+                        overrides.update({"n_groups": 9, "group_size": 1})
                         cmd_args.extend(
                             [
                                 "n_groups=9",
@@ -146,6 +367,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             ],
                         )
                     elif method == "greedy_map":
+                        overrides.update(
+                            {
+                                "n_groups": 3,
+                                "group_size": 3,
+                                "subsample_end": subsample_end,
+                                "_w_interaction": 10.0,
+                            },
+                        )
                         cmd_args.extend(
                             [
                                 "n_groups=3",
@@ -155,6 +384,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             ],
                         )
                     elif method == "diverse_beam":
+                        overrides.update(
+                            {
+                                "n_groups": 3,
+                                "group_size": 3,
+                                "subsample_end": subsample_end,
+                                "_diversity_alpha": 20.0,
+                            },
+                        )
                         cmd_args.extend(
                             [
                                 "n_groups=3",
@@ -164,6 +401,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             ],
                         )
                     elif method == "greedy_beam":
+                        overrides.update({"n_groups": 3, "group_size": 3, "subsample_end": subsample_end})
                         cmd_args.extend(
                             [
                                 "n_groups=3",
@@ -173,22 +411,23 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         )
 
                     cmd_args.append(
-                        _cfg_arg(
-                            "comment",
-                            f"llada_sweep_dataset-{dataset}_remasking-{remasking}_"
-                            f"seed-{seed}_method-{method}_skip_eval-{args.skip_eval}",
-                        ),
+                        _cfg_arg("comment", comment),
                     )
-                    commands.append(cmd_args)
+                    entries.append(SweepEntry(cmd=cmd_args, overrides=overrides))
 
-    print(f"Generated {len(commands)} commands for the sweep.")
+    if args.progress_only:
+        _print_progress(entries)
+        return
+
+    print(f"Generated {len(entries)} commands for the sweep.")
 
     # We must run from src/d5p4 where llada_code.py lives
     cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), "../src/d5p4"))
 
-    for idx, cmd in enumerate(commands):
+    for idx, entry in enumerate(entries):
+        cmd = entry.cmd
         print("\n================================================================================")
-        print(f"Running command {idx + 1}/{len(commands)}:")
+        print(f"Running command {idx + 1}/{len(entries)}:")
         print(" ".join(cmd))
         print("================================================================================")
 
