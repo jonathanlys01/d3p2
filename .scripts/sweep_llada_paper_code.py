@@ -97,6 +97,18 @@ DEFAULT_CODE_DATASET_LENGTHS = {
     "humaneval": 164,
     "mbpp": 427,
 }
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_DIM = "\033[2m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_RED = "\033[31m"
+ANSI_CYAN = "\033[36m"
+STATE_COLORS = {
+    "done": ANSI_GREEN,
+    "in_progress": ANSI_YELLOW,
+    "not_done": ANSI_RED,
+}
 
 
 def _cfg_arg(key: str, value: object) -> str:
@@ -146,6 +158,19 @@ def _expected_total(config: Any) -> int | None:
     if config.code_dataset_len > 0:
         return config.code_dataset_len
     return DEFAULT_CODE_DATASET_LENGTHS.get(config.code_dataset)
+
+
+def _colors_enabled() -> bool:
+    force_color = os.getenv("FORCE_COLOR")
+    if force_color is not None:
+        return force_color != "0"
+    return "NO_COLOR" not in os.environ and os.getenv("TERM") != "dumb"
+
+
+def _color(text: str, color: str) -> str:
+    if not color or not _colors_enabled():
+        return text
+    return f"{color}{text}{ANSI_RESET}"
 
 
 def _scan_resume_dir(resume_dir: Path) -> dict[tuple[tuple[str, Any], ...], dict[str, Any]]:
@@ -240,19 +265,25 @@ def _print_progress(entries: list[SweepEntry]) -> None:
 
     headers = ["idx", "seed", "dataset", "remasking", "method", "state", "progress", "hash"]
     widths = {header: max(len(header), *(len(str(row[header])) for row in rows)) for header in headers}
-    print(" | ".join(header.ljust(widths[header]) for header in headers))
-    print("-+-".join("-" * widths[header] for header in headers))
+    print(_color(" | ".join(header.ljust(widths[header]) for header in headers), ANSI_BOLD))
+    print(_color("-+-".join("-" * widths[header] for header in headers), ANSI_DIM))
     for row in rows:
-        print(" | ".join(str(row[header]).ljust(widths[header]) for header in headers))
+        cells = []
+        state_color = STATE_COLORS.get(str(row["state"]), "")
+        for header in headers:
+            cell = str(row[header]).ljust(widths[header])
+            if header in {"state", "progress"}:
+                cell = _color(cell, state_color)
+            elif header == "hash" and row["hash"] != "-":
+                cell = _color(cell, ANSI_CYAN)
+            cells.append(cell)
+        print(" | ".join(cells))
 
     counts = {state: sum(1 for row in rows if row["state"] == state) for state in ("done", "in_progress", "not_done")}
-    print(
-        "\nSummary: "
-        f"done={counts['done']} "
-        f"in_progress={counts['in_progress']} "
-        f"not_done={counts['not_done']} "
-        f"total={len(rows)}",
-    )
+    done_text = _color(f"done={counts['done']}", ANSI_GREEN)
+    in_progress_text = _color(f"in_progress={counts['in_progress']}", ANSI_YELLOW)
+    not_done_text = _color(f"not_done={counts['not_done']}", ANSI_RED)
+    print(f"\nSummary: {done_text} {in_progress_text} {not_done_text} total={len(rows)}")
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
