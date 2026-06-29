@@ -47,6 +47,7 @@ subprocess spawn to prevent port collision issues.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -104,9 +105,11 @@ ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
 ANSI_RED = "\033[31m"
 ANSI_CYAN = "\033[36m"
+ANSI_MAGENTA = "\033[35m"
 STATE_COLORS = {
     "done": ANSI_GREEN,
     "in_progress": ANSI_YELLOW,
+    "partial": ANSI_MAGENTA,
     "not_done": ANSI_RED,
 }
 
@@ -173,6 +176,21 @@ def _color(text: str, color: str) -> str:
     return f"{color}{text}{ANSI_RESET}"
 
 
+def _lock_is_held(lock_path: Path) -> bool:
+    if not lock_path.exists():
+        return False
+    try:
+        with lock_path.open("r+") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
+
+
 def _scan_resume_dir(resume_dir: Path) -> dict[tuple[tuple[str, Any], ...], dict[str, Any]]:
     progress: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
     if not resume_dir.exists():
@@ -210,11 +228,13 @@ def _scan_resume_dir(resume_dir: Path) -> dict[tuple[tuple[str, Any], ...], dict
             "total": len(work_manifest) if isinstance(work_manifest, list) else None,
             "hash": str(run["experiment_hash"]),
             "db": str(db_path),
+            "lock_held": _lock_is_held(db_path.with_suffix(".lock")),
         }
         previous = progress.get(key)
-        if previous is None or (item["generated"], item["status"] == "complete") > (
+        if previous is None or (item["generated"], item["status"] == "complete", item["lock_held"]) > (
             previous["generated"],
             previous["status"] == "complete",
+            previous["lock_held"],
         ):
             progress[key] = item
     return progress
@@ -232,8 +252,10 @@ def _state_from_progress(
     run_status = item["status"]
     if run_status == "complete" and total is not None and generated >= total:
         state = "done"
-    elif generated > 0 or run_status == "running":
+    elif item["lock_held"]:
         state = "in_progress"
+    elif generated > 0:
+        state = "partial"
     else:
         state = "not_done"
     return state, generated, total, item["hash"], item["db"]
@@ -279,11 +301,15 @@ def _print_progress(entries: list[SweepEntry]) -> None:
             cells.append(cell)
         print(" | ".join(cells))
 
-    counts = {state: sum(1 for row in rows if row["state"] == state) for state in ("done", "in_progress", "not_done")}
+    counts = {
+        state: sum(1 for row in rows if row["state"] == state)
+        for state in ("done", "in_progress", "partial", "not_done")
+    }
     done_text = _color(f"done={counts['done']}", ANSI_GREEN)
     in_progress_text = _color(f"in_progress={counts['in_progress']}", ANSI_YELLOW)
+    partial_text = _color(f"partial={counts['partial']}", ANSI_MAGENTA)
     not_done_text = _color(f"not_done={counts['not_done']}", ANSI_RED)
-    print(f"\nSummary: {done_text} {in_progress_text} {not_done_text} total={len(rows)}")
+    print(f"\nSummary: {done_text} {in_progress_text} {partial_text} {not_done_text} total={len(rows)}")
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
