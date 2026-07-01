@@ -229,6 +229,7 @@ def _scan_resume_dir(resume_dir: Path) -> dict[tuple[tuple[str, Any], ...], dict
             "hash": str(run["experiment_hash"]),
             "db": str(db_path),
             "lock_held": _lock_is_held(db_path.with_suffix(".lock")),
+            "db_skip_eval": _as_bool(config_dict.get("skip_eval", False)),
         }
         previous = progress.get(key)
         if previous is None or (item["generated"], item["status"] == "complete", item["lock_held"]) > (
@@ -238,6 +239,14 @@ def _scan_resume_dir(resume_dir: Path) -> dict[tuple[tuple[str, Any], ...], dict
         ):
             progress[key] = item
     return progress
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _state_from_progress(
@@ -261,6 +270,32 @@ def _state_from_progress(
     return state, generated, total, item["hash"], item["db"]
 
 
+def _progress_for_config(
+    config: Any,
+    progress_by_dir: dict[Path, dict[tuple[tuple[str, Any], ...], dict[str, Any]]] | None = None,
+) -> tuple[str, int, int | None, str, str, dict[str, Any] | None]:
+    resume_dir = _resume_dir(config)
+    progress = _scan_resume_dir(resume_dir) if progress_by_dir is None else progress_by_dir[resume_dir]
+    item = progress.get(_progress_key(config))
+    state, generated, total, exp_hash, db_path = _state_from_progress(item, _expected_total(config))
+    return state, generated, total, exp_hash, db_path, item
+
+
+def _skip_reason(config: Any) -> str | None:
+    state, generated, total, _exp_hash, _db_path, item = _progress_for_config(config)
+    progress_text = f"{generated}/{total}" if total is not None else f"{generated}/?"
+    if state == "in_progress":
+        return f"resume DB is locked by another live worker ({progress_text})"
+    if state != "done":
+        return None
+
+    current_skip_eval = _as_bool(getattr(config, "skip_eval", False))
+    db_skip_eval = _as_bool(item.get("db_skip_eval", False)) if item is not None else False
+    if current_skip_eval or not db_skip_eval:
+        return f"resume DB is already complete ({progress_text})"
+    return None
+
+
 def _print_progress(entries: list[SweepEntry]) -> None:
     configs = [_config_from_overrides(entry.overrides) for entry in entries]
     resume_dirs = {_resume_dir(config) for config in configs}
@@ -268,8 +303,7 @@ def _print_progress(entries: list[SweepEntry]) -> None:
 
     rows = []
     for idx, config in enumerate(configs, start=1):
-        progress = progress_by_dir[_resume_dir(config)].get(_progress_key(config))
-        state, generated, total, exp_hash, db_path = _state_from_progress(progress, _expected_total(config))
+        state, generated, total, exp_hash, db_path, _item = _progress_for_config(config, progress_by_dir)
         progress_text = f"{generated}/{total}" if total is not None else f"{generated}/?"
         rows.append(
             {
@@ -483,6 +517,15 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     for idx, entry in enumerate(entries):
         cmd = entry.cmd
+        config = _config_from_overrides(entry.overrides)
+        reason = _skip_reason(config)
+        if reason is not None:
+            print("\n================================================================================")
+            print(f"Skipping command {idx + 1}/{len(entries)}: {reason}")
+            print(" ".join(cmd))
+            print("================================================================================")
+            continue
+
         print("\n================================================================================")
         print(f"Running command {idx + 1}/{len(entries)}:")
         print(" ".join(cmd))
