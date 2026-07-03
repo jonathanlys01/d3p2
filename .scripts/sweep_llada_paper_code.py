@@ -62,7 +62,7 @@ from typing import Any
 from omegaconf import OmegaConf
 
 from d5p4.config import Config
-from d5p4.resume_db import default_resume_dir
+from d5p4.resume_db import default_resume_dir, force_completed_resume_from_env
 
 
 _SAFE_OVERRIDE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -294,6 +294,9 @@ def _skip_reason(config: Any) -> str | None:
     if state == "in_progress":
         return f"resume DB is locked by another live worker ({progress_text})"
     if state != "done":
+        return None
+
+    if force_completed_resume_from_env():
         return None
 
     current_skip_eval = _as_bool(getattr(config, "skip_eval", False))

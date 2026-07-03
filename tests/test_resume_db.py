@@ -209,3 +209,32 @@ def test_prepare_resumable_run_exits_when_db_is_complete():
 
         assert preflight.should_exit is True
         assert preflight.resume_state is None
+
+
+def test_prepare_resumable_run_can_force_completed_db_from_env(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = _cfg(tmpdir, resume_runs=True, resume_db_keep_completed=True)
+        items = make_work_items(1, prefix="item", prompts=["hello"])
+        store = ResumableRunStore(
+            config=cfg,
+            workflow_id="prompt_generation:llada",
+            mode="prompt_generation",
+            work_items=items,
+        )
+        store.open()
+        store.record_generated(item_index=0, token_ids=torch.tensor([[1, 2]]), prompt_len=1)
+        store.release("result.json")
+
+        monkeypatch.setenv("D5P4_RESUME_FORCE_COMPLETED", "1")
+        preflight = prepare_resumable_run(
+            config=cfg,
+            workflow_id="prompt_generation:llada",
+            prompts=["hello"],
+            prefix="item",
+            mode="prompt_generation",
+        )
+
+        assert preflight.should_exit is False
+        assert preflight.resume_state is not None
+        assert preflight.resume_state.store is not None
+        preflight.resume_state.store.close()

@@ -150,6 +150,11 @@ def owner_metadata() -> dict[str, Any]:
     }
 
 
+def force_completed_resume_from_env() -> bool:
+    value = os.getenv("D5P4_RESUME_FORCE_COMPLETED")
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class ResumableRunStore:
     """Persistent token rows for one prompt/task generation experiment."""
 
@@ -610,6 +615,8 @@ def is_run_completed(  # noqa: PLR0911
 ) -> bool:
     """Check if the experiment database exists and is marked as complete."""
     if not bool(getattr(config, "resume_runs", False)):
+        return False
+    if force_completed_resume_from_env():
         return False
 
     store = ResumableRunStore(
