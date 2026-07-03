@@ -13,6 +13,7 @@ set -euo pipefail
 #   CODE_METRICS=acc,ppl,int,random            # selectors for independent baseline comparisons
 #   CODE_BASELINE_METHOD=baseline              # source method to post-process
 #   CODE_SUBSAMPLE_METHODS=greedy_map,diverse_beam,greedy_beam
+#   CODE_SUBSAMPLE_METRIC=group_int            # group_int or group_random representative per method group
 #   PPL_MODEL_ID=gpt2                          # external LM for PPL selection
 #   CONFIRM=false                              # skip pause after printing preflight
 #
@@ -22,7 +23,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 SRC_ROOT="${ROOT}/src/d5p4"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '4,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
@@ -44,6 +45,7 @@ CODE_BASELINE_K="${CODE_BASELINE_K:-3}"
 CODE_METRICS="${CODE_METRICS:-acc,ppl,int,random}"
 CODE_BASELINE_METHOD="${CODE_BASELINE_METHOD:-${CODE_METHOD:-baseline}}"
 CODE_SUBSAMPLE_METHODS="${CODE_SUBSAMPLE_METHODS:-greedy_map,diverse_beam,greedy_beam}"
+CODE_SUBSAMPLE_METRIC="${CODE_SUBSAMPLE_METRIC:-group_int}"
 PPL_MODEL_ID="${PPL_MODEL_ID:-/Brain/public/models/meta-llama/Meta-Llama-3-8B/}"
 
 mkdir -p "${EVAL_OUTPUT_ROOT}"
@@ -91,6 +93,7 @@ echo "Independent baseline selectors: ${CODE_METRICS}"
 echo "Code baseline k: ${CODE_BASELINE_K}"
 echo "Code baseline method: ${CODE_BASELINE_METHOD}"
 echo "Code subsample methods: ${CODE_SUBSAMPLE_METHODS}"
+echo "Code subsample metric: ${CODE_SUBSAMPLE_METRIC}"
 echo "PPL model: ${PPL_MODEL_ID}"
 echo
 echo "Candidate source JSON files:"
@@ -121,7 +124,7 @@ for method in "${subsample_methods[@]}"; do
   OVERSAMPLE_CODE_BASELINE_PATH="${tmp_src_root}" \
   OVERSAMPLE_CODE_BASELINE_SAVE_RAW="false" \
   OVERSAMPLE_CODE_BASELINE_METHOD="${method}" \
-  OVERSAMPLE_CODE_BASELINE_METRICS="all" \
+  OVERSAMPLE_CODE_BASELINE_METRICS="${CODE_SUBSAMPLE_METRIC}" \
   OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K="${CODE_BASELINE_K}" \
   uv run python -m d5p4._oversample_code_baseline \
     config="${SRC_ROOT}/_default.yaml" \

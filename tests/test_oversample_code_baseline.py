@@ -83,3 +83,62 @@ def test_code_oracle_accuracy_selection_reuses_stored_validation_rows():
     assert selected[0]["generations"] == ["good", "also_good"]
     assert selected[0]["scores"] == [1, 1]
     assert selected[0]["accuracy"] == 1.0
+
+
+def test_code_group_internal_selection_picks_one_representative_per_group():
+    rows = [
+        {
+            "generations": ["a0", "a1", "a2", "b0", "b1", "b2"],
+            "validation": [
+                _validation(False),
+                _validation(True),
+                _validation(False),
+                _validation(False),
+                _validation(False),
+                _validation(True),
+            ],
+        },
+    ]
+
+    selected, indices = _selected_code_results(
+        rows=rows,
+        metric="group_int",
+        subsample_k=3,
+        selection_scores=[[0.1, 0.9, 0.2, 0.4, 0.3, 0.8]],
+        random_seed=0,
+        group_size=3,
+    )
+
+    assert indices == [[1, 5]]
+    assert selected[0]["generations"] == ["a1", "b2"]
+    assert selected[0]["scores"] == [1, 1]
+
+
+def test_code_group_random_selection_picks_one_representative_per_group():
+    rows = [
+        {
+            "generations": ["a0", "a1", "a2", "b0", "b1", "b2"],
+            "validation": [
+                _validation(False),
+                _validation(True),
+                _validation(False),
+                _validation(False),
+                _validation(False),
+                _validation(True),
+            ],
+        },
+    ]
+    rng = random.Random(7)
+    expected = [[rng.randrange(3), 3 + rng.randrange(3)]]
+
+    selected, indices = _selected_code_results(
+        rows=rows,
+        metric="group_random",
+        subsample_k=3,
+        selection_scores=None,
+        random_seed=7,
+        group_size=3,
+    )
+
+    assert indices == expected
+    assert len(selected[0]["generations"]) == 2

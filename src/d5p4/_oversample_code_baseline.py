@@ -8,6 +8,8 @@ Supported selectors:
 - acc: top-k by stored benchmark pass/fail labels (oracle).
 - ppl: top-k by external LM perplexity (lower is better).
 - int: top-k by LLaDA internal confidence scores.
+- group_int: one top-internal-score representative per contiguous lineage group.
+- group_random: one random representative per contiguous lineage group.
 - random: deterministic random k candidates per task.
 - all: use all candidates in the source file.
 """
@@ -17,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 import random
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from typing import Any
 
 from d5p4.code_eval import CodeEvaluator, CodeValidationResult, validation_results_to_json
@@ -25,6 +27,14 @@ from d5p4.config import CODE_DATASET_CHOICES, Config
 
 
 GENERATED_MARKERS = ("-bon-", "-math-bon-", "-code-bon-", "-metrics")
+
+
+@dataclass(frozen=True)
+class SelectionSpec:
+    metric: str
+    subsample_k: int
+    group_size: int
+    rng: random.Random
 
 
 def _stable_variant_seed(base_seed: int, variant_name: str) -> int:
@@ -101,29 +111,60 @@ def _internal_scores(data: dict[str, Any], expected_rows: int) -> list[list[floa
     return scores
 
 
-def _select_indices(
-    *,
-    metric: str,
-    candidate_count: int,
-    subsample_k: int,
-    scores: list[float] | None,
-    rng: random.Random,
-) -> list[int]:
-    if metric == "all":
+def _require_scores(metric: str, candidate_count: int, scores: list[float] | None) -> list[float]:
+    if scores is None:
+        raise ValueError(f"scores are required for {metric} selection")
+    if len(scores) != candidate_count:
+        raise ValueError(f"Expected {candidate_count} selection scores, got {len(scores)}")
+    return scores
+
+
+def _validate_group_selection(candidate_count: int, group_size: int, metric: str) -> None:
+    if group_size <= 0:
+        raise ValueError(f"group_size must be positive for {metric} selection, got {group_size}")
+    if candidate_count % group_size != 0:
+        raise ValueError(
+            f"Expected candidate count divisible by group_size for {metric} selection, "
+            f"got {candidate_count} and {group_size}",
+        )
+
+
+def _select_group_internal_indices(candidate_count: int, scores: list[float], group_size: int) -> list[int]:
+    _validate_group_selection(candidate_count, group_size, "group_int")
+    selected = []
+    for start in range(0, candidate_count, group_size):
+        group_scores = scores[start : start + group_size]
+        best_local_idx = max(range(group_size), key=lambda idx: group_scores[idx])
+        selected.append(start + best_local_idx)
+    return selected
+
+
+def _select_group_random_indices(candidate_count: int, group_size: int, rng: random.Random) -> list[int]:
+    _validate_group_selection(candidate_count, group_size, "group_random")
+    return [start + rng.randrange(group_size) for start in range(0, candidate_count, group_size)]
+
+
+def _select_indices(candidate_count: int, scores: list[float] | None, spec: SelectionSpec) -> list[int]:
+    if spec.metric == "all":
         return list(range(candidate_count))
+    if spec.metric == "group_random":
+        return _select_group_random_indices(candidate_count, spec.group_size, spec.rng)
+    if spec.metric == "group_int":
+        return _select_group_internal_indices(
+            candidate_count,
+            _require_scores(spec.metric, candidate_count, scores),
+            spec.group_size,
+        )
 
-    k = min(subsample_k, candidate_count)
-    if metric == "random":
-        return sorted(rng.sample(range(candidate_count), k))
-    if metric in {"acc", "int", "ppl"}:
-        if scores is None:
-            raise ValueError(f"scores are required for {metric} selection")
-        if len(scores) != candidate_count:
-            raise ValueError(f"Expected {candidate_count} selection scores, got {len(scores)}")
-        reverse = metric != "ppl"
-        return sorted(sorted(range(candidate_count), key=lambda idx: scores[idx], reverse=reverse)[:k])
+    k = min(spec.subsample_k, candidate_count)
+    if spec.metric == "random":
+        return sorted(spec.rng.sample(range(candidate_count), k))
+    if spec.metric in {"acc", "int", "ppl"}:
+        metric_scores = _require_scores(spec.metric, candidate_count, scores)
+        reverse = spec.metric != "ppl"
+        return sorted(sorted(range(candidate_count), key=lambda idx: metric_scores[idx], reverse=reverse)[:k])
 
-    raise ValueError(f"Unsupported code selection metric: {metric}")
+    raise ValueError(f"Unsupported code selection metric: {spec.metric}")
 
 
 def _selected_code_results(  # noqa: PLR0913
@@ -133,10 +174,16 @@ def _selected_code_results(  # noqa: PLR0913
     subsample_k: int,
     selection_scores: list[list[float]] | None,
     random_seed: int,
+    group_size: int = 1,
 ) -> tuple[list[dict[str, Any]], list[list[int]]]:
     selected_rows: list[dict[str, Any]] = []
     selected_indices: list[list[int]] = []
-    rng = random.Random(random_seed)
+    spec = SelectionSpec(
+        metric=metric,
+        subsample_k=subsample_k,
+        group_size=group_size,
+        rng=random.Random(random_seed),
+    )
 
     for row_idx, row in enumerate(rows):
         generations = row.get("generations")
@@ -149,13 +196,7 @@ def _selected_code_results(  # noqa: PLR0913
             )
 
         scores = selection_scores[row_idx] if selection_scores is not None else None
-        indices = _select_indices(
-            metric=metric,
-            candidate_count=len(generations),
-            subsample_k=subsample_k,
-            scores=scores,
-            rng=rng,
-        )
+        indices = _select_indices(len(generations), scores, spec)
         selected_validations = [CodeValidationResult(**validations[idx]) for idx in indices]
         selected_scores = [int(result.passed) for result in selected_validations]
 
@@ -180,16 +221,29 @@ def _accuracy_scores(rows: list[dict[str, Any]]) -> list[list[float]]:
     return scores
 
 
-def _ppl_scores(evaluator: Any, rows: list[dict[str, Any]]) -> list[list[float]]:
+def _ppl_scores(perplexity_model: Any, rows: list[dict[str, Any]], batch_size: int) -> list[list[float]]:
     texts: list[list[str]] = []
     for row_idx, row in enumerate(rows):
         generations = row.get("generations")
         if not isinstance(generations, list):
             raise ValueError(f"Code result row {row_idx} is missing generations list")
         texts.append([str(generation) for generation in generations])
-    scores, reverse = evaluator.score_baseline_candidates(texts, "ppl")
-    if reverse:
-        raise RuntimeError("PPL selection should sort lower scores first.")
+
+    flattened_texts = [text for group in texts for text in group]
+    group_sizes = [len(group) for group in texts]
+    effective_batch_size = batch_size or len(flattened_texts)
+
+    flat_scores: list[float] = []
+    for start in range(0, len(flattened_texts), effective_batch_size):
+        result = perplexity_model._forward(flattened_texts[start : start + effective_batch_size])
+        if result is not None:
+            flat_scores.extend(result["mean_nll"].cpu().tolist())
+
+    scores: list[list[float]] = []
+    cursor = 0
+    for size in group_sizes:
+        scores.append(flat_scores[cursor : cursor + size])
+        cursor += size
     return scores
 
 
@@ -213,12 +267,13 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     save_raw = _env_flag("OVERSAMPLE_CODE_BASELINE_SAVE_RAW", default=False)
     method_filter = os.getenv("OVERSAMPLE_CODE_BASELINE_METHOD", "baseline")
     requested_metrics = _env_list("OVERSAMPLE_CODE_BASELINE_METRICS", "acc,ppl,int,random")
+    group_size_override = os.getenv("OVERSAMPLE_CODE_BASELINE_GROUP_SIZE")
     expected_selected_k_env = os.getenv("OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K")
     expected_selected_k = int(expected_selected_k_env) if expected_selected_k_env is not None else None
     path = os.path.abspath(os.path.expanduser(os.getenv("OVERSAMPLE_CODE_BASELINE_PATH", config.results_dir)))
     output_dir, files = _resolve_input_files(path)
     subsample_k = config.subsample_k
-    ppl_evaluators: dict[tuple[int, str, str], Any] = {}
+    ppl_models: dict[str, Any] = {}
 
     if "all" not in requested_metrics and subsample_k <= 0:
         raise ValueError("subsample_k must be positive unless only the all selector is requested")
@@ -244,10 +299,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"Skipping {rel_file}: no code result rows")
             continue
 
+        group_size = (
+            int(group_size_override)
+            if group_size_override is not None
+            else int(data.get("config", {}).get("group_size", current_config.group_size))
+        )
         scores = _internal_scores(data, len(rows))
-        available_metrics = ["acc", "ppl", "random", "all"]
+        available_metrics = ["acc", "ppl", "random", "group_random", "all"]
         if scores is not None:
-            available_metrics.insert(2, "int")
+            available_metrics[2:2] = ["int", "group_int"]
 
         metrics_to_run = [metric for metric in requested_metrics if metric in available_metrics]
         skipped_metrics = [metric for metric in requested_metrics if metric not in available_metrics]
@@ -267,25 +327,16 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             selection_scores = None
             if metric == "acc":
                 selection_scores = _accuracy_scores(rows)
-            elif metric == "int":
+            elif metric in {"int", "group_int"}:
                 selection_scores = scores
             elif metric == "ppl":
-                from d5p4.eval_core import Evaluator
+                from d5p4.eval_core import _build_perplexity_model
 
-                evaluator_key = (
-                    current_config.eval_batch_size,
-                    current_config.ppl_model_id,
-                    current_config.cos_model_id,
-                )
-                selection_evaluator = ppl_evaluators.get(evaluator_key)
-                if selection_evaluator is None:
-                    selection_evaluator = Evaluator(
-                        batch_size=current_config.eval_batch_size,
-                        ppl_model_id=current_config.ppl_model_id,
-                        cos_model_id=current_config.cos_model_id,
-                    )
-                    ppl_evaluators[evaluator_key] = selection_evaluator
-                selection_scores = _ppl_scores(selection_evaluator, rows)
+                ppl_model = ppl_models.get(current_config.ppl_model_id)
+                if ppl_model is None:
+                    ppl_model = _build_perplexity_model(current_config.ppl_model_id)
+                    ppl_models[current_config.ppl_model_id] = ppl_model
+                selection_scores = _ppl_scores(ppl_model, rows, current_config.eval_batch_size)
 
             selected_rows, selected_indices = _selected_code_results(
                 rows=rows,
@@ -293,6 +344,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 subsample_k=subsample_k,
                 selection_scores=selection_scores,
                 random_seed=_stable_variant_seed(current_config.seed, f"{output_stem}-{metric}"),
+                group_size=group_size,
             )
             _validate_selected_cardinality(selected_indices, expected_selected_k)
             code_metrics = CodeEvaluator(timeout_s=current_config.code_timeout_s).evaluate(
@@ -310,6 +362,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "expected_selected_k": expected_selected_k,
                 "selected_indices": selected_indices,
                 "source_candidate_count": max((len(row.get("generations", [])) for row in rows), default=0),
+                "group_size": group_size if metric in {"group_int", "group_random"} else 1,
             }
             if save_raw:
                 save_data["results"] = selected_rows
