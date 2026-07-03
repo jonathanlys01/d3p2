@@ -5,6 +5,8 @@ JSON files, so this helper selects candidates and recomputes aggregate code
 metrics without rerunning benchmark tests.
 
 Supported selectors:
+- acc: top-k by stored benchmark pass/fail labels (oracle).
+- ppl: top-k by external LM perplexity (lower is better).
 - int: top-k by LLaDA internal confidence scores.
 - random: deterministic random k candidates per task.
 - all: use all candidates in the source file.
@@ -113,12 +115,13 @@ def _select_indices(
     k = min(subsample_k, candidate_count)
     if metric == "random":
         return sorted(rng.sample(range(candidate_count), k))
-    if metric == "int":
+    if metric in {"acc", "int", "ppl"}:
         if scores is None:
-            raise ValueError("internal scores are required for int selection")
+            raise ValueError(f"scores are required for {metric} selection")
         if len(scores) != candidate_count:
-            raise ValueError(f"Expected {candidate_count} internal scores, got {len(scores)}")
-        return sorted(sorted(range(candidate_count), key=lambda idx: scores[idx], reverse=True)[:k])
+            raise ValueError(f"Expected {candidate_count} selection scores, got {len(scores)}")
+        reverse = metric != "ppl"
+        return sorted(sorted(range(candidate_count), key=lambda idx: scores[idx], reverse=reverse)[:k])
 
     raise ValueError(f"Unsupported code selection metric: {metric}")
 
@@ -128,7 +131,7 @@ def _selected_code_results(  # noqa: PLR0913
     rows: list[dict[str, Any]],
     metric: str,
     subsample_k: int,
-    internal_scores: list[list[float]] | None,
+    selection_scores: list[list[float]] | None,
     random_seed: int,
 ) -> tuple[list[dict[str, Any]], list[list[int]]]:
     selected_rows: list[dict[str, Any]] = []
@@ -145,7 +148,7 @@ def _selected_code_results(  # noqa: PLR0913
                 f"Code result row {row_idx} has {len(generations)} generations but {len(validations)} validations",
             )
 
-        scores = internal_scores[row_idx] if internal_scores is not None else None
+        scores = selection_scores[row_idx] if selection_scores is not None else None
         indices = _select_indices(
             metric=metric,
             candidate_count=len(generations),
@@ -167,18 +170,55 @@ def _selected_code_results(  # noqa: PLR0913
     return selected_rows, selected_indices
 
 
+def _accuracy_scores(rows: list[dict[str, Any]]) -> list[list[float]]:
+    scores: list[list[float]] = []
+    for row_idx, row in enumerate(rows):
+        validations = row.get("validation")
+        if not isinstance(validations, list):
+            raise ValueError(f"Code result row {row_idx} is missing validation list")
+        scores.append([float(CodeValidationResult(**validation).passed) for validation in validations])
+    return scores
+
+
+def _ppl_scores(evaluator: Any, rows: list[dict[str, Any]]) -> list[list[float]]:
+    texts: list[list[str]] = []
+    for row_idx, row in enumerate(rows):
+        generations = row.get("generations")
+        if not isinstance(generations, list):
+            raise ValueError(f"Code result row {row_idx} is missing generations list")
+        texts.append([str(generation) for generation in generations])
+    scores, reverse = evaluator.score_baseline_candidates(texts, "ppl")
+    if reverse:
+        raise RuntimeError("PPL selection should sort lower scores first.")
+    return scores
+
+
 def _validation_groups(rows: list[dict[str, Any]]) -> list[list[CodeValidationResult]]:
     return [[CodeValidationResult(**validation) for validation in row["validation"]] for row in rows]
+
+
+def _validate_selected_cardinality(selected_indices: list[list[int]], expected_selected_k: int | None) -> None:
+    if expected_selected_k is None:
+        return
+    for row_idx, indices in enumerate(selected_indices):
+        if len(indices) != expected_selected_k:
+            raise ValueError(
+                f"Code result row {row_idx} selected {len(indices)} candidates, "
+                f"expected {expected_selected_k}.",
+            )
 
 
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
     config = Config()
     save_raw = _env_flag("OVERSAMPLE_CODE_BASELINE_SAVE_RAW", default=False)
     method_filter = os.getenv("OVERSAMPLE_CODE_BASELINE_METHOD", "baseline")
-    requested_metrics = _env_list("OVERSAMPLE_CODE_BASELINE_METRICS", "int,random,all")
+    requested_metrics = _env_list("OVERSAMPLE_CODE_BASELINE_METRICS", "acc,ppl,int,random")
+    expected_selected_k_env = os.getenv("OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K")
+    expected_selected_k = int(expected_selected_k_env) if expected_selected_k_env is not None else None
     path = os.path.abspath(os.path.expanduser(os.getenv("OVERSAMPLE_CODE_BASELINE_PATH", config.results_dir)))
     output_dir, files = _resolve_input_files(path)
     subsample_k = config.subsample_k
+    ppl_evaluators: dict[tuple[int, str, str], Any] = {}
 
     if "all" not in requested_metrics and subsample_k <= 0:
         raise ValueError("subsample_k must be positive unless only the all selector is requested")
@@ -205,9 +245,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             continue
 
         scores = _internal_scores(data, len(rows))
-        available_metrics = ["random", "all"]
+        available_metrics = ["acc", "ppl", "random", "all"]
         if scores is not None:
-            available_metrics.insert(0, "int")
+            available_metrics.insert(2, "int")
 
         metrics_to_run = [metric for metric in requested_metrics if metric in available_metrics]
         skipped_metrics = [metric for metric in requested_metrics if metric not in available_metrics]
@@ -224,13 +264,37 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         for metric in metrics_to_run:
             print(f"File: {rel_file} | Selector: {metric}")
+            selection_scores = None
+            if metric == "acc":
+                selection_scores = _accuracy_scores(rows)
+            elif metric == "int":
+                selection_scores = scores
+            elif metric == "ppl":
+                from d5p4.eval_core import Evaluator
+
+                evaluator_key = (
+                    current_config.eval_batch_size,
+                    current_config.ppl_model_id,
+                    current_config.cos_model_id,
+                )
+                selection_evaluator = ppl_evaluators.get(evaluator_key)
+                if selection_evaluator is None:
+                    selection_evaluator = Evaluator(
+                        batch_size=current_config.eval_batch_size,
+                        ppl_model_id=current_config.ppl_model_id,
+                        cos_model_id=current_config.cos_model_id,
+                    )
+                    ppl_evaluators[evaluator_key] = selection_evaluator
+                selection_scores = _ppl_scores(selection_evaluator, rows)
+
             selected_rows, selected_indices = _selected_code_results(
                 rows=rows,
                 metric=metric,
                 subsample_k=subsample_k,
-                internal_scores=scores if metric == "int" else None,
+                selection_scores=selection_scores,
                 random_seed=_stable_variant_seed(current_config.seed, f"{output_stem}-{metric}"),
             )
+            _validate_selected_cardinality(selected_indices, expected_selected_k)
             code_metrics = CodeEvaluator(timeout_s=current_config.code_timeout_s).evaluate(
                 _validation_groups(selected_rows),
             )
@@ -243,12 +307,16 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "source_file": rel_file,
                 "selection_metric": metric,
                 "subsample_k": len(selected_indices[0]) if selected_indices else 0,
+                "expected_selected_k": expected_selected_k,
                 "selected_indices": selected_indices,
+                "source_candidate_count": max((len(row.get("generations", [])) for row in rows), default=0),
             }
             if save_raw:
                 save_data["results"] = selected_rows
                 save_data["raw_results"] = rows
-                if metric == "int" and scores is not None:
+                if selection_scores is not None:
+                    save_data["selection_scores"] = selection_scores
+                if scores is not None:
                     save_data["raw_internal_scores"] = scores
 
             out_name = f"{output_stem}-code-bon-{metric}.json"

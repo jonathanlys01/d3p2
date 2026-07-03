@@ -26,6 +26,8 @@ METADATA_KEYS = (
     "source_file",
     "selection_metric",
     "subsample_k",
+    "expected_selected_k",
+    "source_candidate_count",
     "transversal",
     "group_size",
     "overall_accuracy",
@@ -73,7 +75,11 @@ def main() -> None:
     parser.add_argument("--input", type=Path, required=True, help="Evaluator-produced JSON to compact.")
     parser.add_argument("--output", type=Path, required=True, help="Compact metrics JSON destination.")
     parser.add_argument("--source-path", required=True, help="Original source result path.")
-    parser.add_argument("--source-relative-path", default=None, help="Original source path relative to the results root.")
+    parser.add_argument(
+        "--source-relative-path",
+        default=None,
+        help="Original source path relative to the results root.",
+    )
     args = parser.parse_args()
 
     data = _load_json(args.input)

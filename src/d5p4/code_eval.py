@@ -214,7 +214,7 @@ class CodeEvaluator:
 
         group_size = max(len(group) for group in validation_groups)
         if k_values is None:
-            k_values = [1, 2, 4, 8, 16]
+            k_values = [1, 2, 3, 4, 8, 16]
 
         effective_ks: list[int] = []
         seen: set[int] = set()

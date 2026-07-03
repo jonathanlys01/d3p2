@@ -29,7 +29,7 @@ def test_code_internal_score_selection_reuses_stored_validation_rows():
         rows=rows,
         metric="int",
         subsample_k=2,
-        internal_scores=[[0.1, 0.9, 0.4]],
+        selection_scores=[[0.1, 0.9, 0.4]],
         random_seed=0,
     )
 
@@ -56,8 +56,30 @@ def test_code_random_selection_is_deterministic():
         rows=rows,
         metric="random",
         subsample_k=2,
-        internal_scores=None,
+        selection_scores=None,
         random_seed=123,
     )
 
     assert indices == [expected]
+
+
+def test_code_oracle_accuracy_selection_reuses_stored_validation_rows():
+    rows = [
+        {
+            "generations": ["bad", "good", "also_good"],
+            "validation": [_validation(False), _validation(True), _validation(True)],
+        },
+    ]
+
+    selected, indices = _selected_code_results(
+        rows=rows,
+        metric="acc",
+        subsample_k=2,
+        selection_scores=[[0.0, 1.0, 1.0]],
+        random_seed=0,
+    )
+
+    assert indices == [[1, 2]]
+    assert selected[0]["generations"] == ["good", "also_good"]
+    assert selected[0]["scores"] == [1, 1]
+    assert selected[0]["accuracy"] == 1.0

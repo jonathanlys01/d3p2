@@ -34,6 +34,7 @@ LLADA_INTERNAL_SCORE_METADATA = {
     "scope": "generated_tokens",
     "higher_is_better": True,
 }
+CODE_COMPARISON_K_VALUES = [1, 2, 3]
 
 
 def _text_samples_from_results(results: list[dict[str, Any]]) -> list[list[str]]:
@@ -252,7 +253,7 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} tasks with >=1 pass)")
 
-    code_metrics = evaluator.evaluate(validation_groups) if results else {}
+    code_metrics = evaluator.evaluate(validation_groups, k_values=CODE_COMPARISON_K_VALUES) if results else {}
     code_metrics_summary = code_metrics.get("code_metrics_summary")
     if code_metrics_summary:
         print(f"code metrics: {code_metrics_summary}")

@@ -109,6 +109,28 @@ class TestCodeEval(unittest.TestCase):
         self.assertEqual(metrics["test_success_rate"], 0.5)
         self.assertEqual(metrics["pass@2"], 1.0)
 
+    def test_evaluate_default_k_values_include_three(self):
+        evaluator = CodeEvaluator(timeout_s=2.0)
+        passing = evaluator.validate(
+            "def add(a, b):\n    return a + b",
+            prompt="Write a function to add two numbers.",
+            tests=["assert add(1, 2) == 3"],
+            entry_point="",
+            dataset="mbpp",
+        )
+        failing = evaluator.validate(
+            "def add(a, b):\n    return a - b",
+            prompt="Write a function to add two numbers.",
+            tests=["assert add(1, 2) == 3"],
+            entry_point="",
+            dataset="mbpp",
+        )
+
+        metrics = evaluator.evaluate([[passing, failing, failing]])
+
+        self.assertIn("pass@3", metrics)
+        self.assertNotIn("pass@4", metrics)
+
 
 if __name__ == "__main__":
     unittest.main()
