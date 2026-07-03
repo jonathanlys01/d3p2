@@ -122,6 +122,13 @@ def _cfg_arg(key: str, value: object) -> str:
     return f"{key}={value_str}"
 
 
+def _path_cfg_arg(key: str, value: str) -> str:
+    """Build an OmegaConf string override for a filesystem path."""
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"Unsafe path override value for {key}: {value!r}")
+    return f"{key}={value}"
+
+
 def _src_root() -> Path:
     return Path(__file__).resolve().parents[1] / "src" / "d5p4"
 
@@ -373,6 +380,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
         action="store_true",
         help="Only print resume DB progress for the sweep configs; do not run generation.",
     )
+    parser.add_argument(
+        "--results_dir",
+        default=None,
+        help="Directory where llada_code.py should write result JSONs.",
+    )
+    parser.add_argument(
+        "--resume_db_dir",
+        default=None,
+        help="Directory containing resume SQLite DBs. Use this when results_dir differs from the generation run.",
+    )
     parser.add_argument("--dry_run", action="store_true", help="Only print the commands, don't run them")
     args = parser.parse_args()
 
@@ -447,6 +464,12 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         "resume_runs=True",
                         _cfg_arg("method", method),
                     ]
+                    if args.results_dir is not None:
+                        overrides["results_dir"] = args.results_dir
+                        cmd_args.append(_path_cfg_arg("results_dir", args.results_dir))
+                    if args.resume_db_dir is not None:
+                        overrides["resume_db_dir"] = args.resume_db_dir
+                        cmd_args.append(_path_cfg_arg("resume_db_dir", args.resume_db_dir))
 
                     # Add method-specific parameters
                     if method == "baseline":
