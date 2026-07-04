@@ -19,7 +19,7 @@
 import math
 import warnings
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -808,6 +808,85 @@ class JinaBertPreTrainedModel(PreTrainedModel):
     _no_split_modules = ["JinaBertLayer"]
     all_tied_weights_keys = dict()
 
+    def _get_default_return_dict(self) -> bool:
+        if hasattr(self.config, "return_dict"):
+            return bool(self.config.return_dict)
+        return bool(getattr(self.config, "use_return_dict", True))
+
+    def get_extended_attention_mask(
+        self,
+        attention_mask: torch.Tensor,
+        input_shape: Tuple[int, ...],
+        dtype: Optional[torch.dtype] = None,
+    ) -> torch.Tensor:
+        if dtype is None:
+            dtype = self.dtype
+
+        if attention_mask.dim() == 3:
+            extended_attention_mask = attention_mask[:, None, :, :]
+        elif attention_mask.dim() == 2:
+            if getattr(self.config, "is_decoder", False):
+                batch_size, seq_length = input_shape
+                seq_ids = torch.arange(seq_length, device=attention_mask.device)
+                causal_mask = seq_ids[None, None, :].repeat(batch_size, seq_length, 1) <= seq_ids[None, :, None]
+                causal_mask = causal_mask.to(attention_mask.dtype)
+                if causal_mask.shape[1] < attention_mask.shape[1]:
+                    prefix_seq_len = attention_mask.shape[1] - causal_mask.shape[1]
+                    causal_mask = torch.cat(
+                        [
+                            torch.ones(
+                                (batch_size, seq_length, prefix_seq_len),
+                                device=attention_mask.device,
+                                dtype=causal_mask.dtype,
+                            ),
+                            causal_mask,
+                        ],
+                        dim=-1,
+                    )
+                extended_attention_mask = causal_mask[:, None, :, :] * attention_mask[:, None, None, :]
+            else:
+                extended_attention_mask = attention_mask[:, None, None, :]
+        else:
+            raise ValueError(
+                f"Wrong shape for input_ids (shape {input_shape}) or attention_mask (shape {attention_mask.shape})",
+            )
+
+        extended_attention_mask = extended_attention_mask.to(dtype=dtype)
+        return (1.0 - extended_attention_mask) * torch.finfo(dtype).min
+
+    def invert_attention_mask(self, encoder_attention_mask: torch.Tensor) -> torch.Tensor:
+        if encoder_attention_mask.dim() == 3:
+            encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
+        elif encoder_attention_mask.dim() == 2:
+            encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+        else:
+            raise ValueError(f"Wrong shape for encoder_attention_mask (shape {encoder_attention_mask.shape})")
+
+        encoder_extended_attention_mask = encoder_extended_attention_mask.to(dtype=self.dtype)
+        return (1.0 - encoder_extended_attention_mask) * torch.finfo(self.dtype).min
+
+    def get_head_mask(
+        self,
+        head_mask: Optional[torch.Tensor],
+        num_hidden_layers: int,
+        is_attention_chunked: bool = False,
+    ) -> Any:
+        if head_mask is None:
+            return [None] * num_hidden_layers
+
+        if head_mask.dim() == 1:
+            head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+        elif head_mask.dim() == 2:
+            head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+        if head_mask.dim() != 5:
+            raise ValueError(f"head_mask should have dimension 1 or 2, but has dimension {head_mask.dim()}")
+
+        head_mask = head_mask.to(dtype=self.dtype)
+        if is_attention_chunked:
+            head_mask = head_mask.unsqueeze(-1)
+        return head_mask
+
     def _init_weights(self, module):
         """Initialize the weights"""
         if isinstance(module, nn.Linear):
@@ -1162,7 +1241,7 @@ class JinaBertModel(JinaBertPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         if self.config.is_decoder:
             use_cache = use_cache if use_cache is not None else self.config.use_cache
@@ -1314,7 +1393,7 @@ class JinaBertForPreTraining(JinaBertPreTrainedModel):
 
         Returns:
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         outputs = self.bert(
             input_ids,
@@ -1423,7 +1502,7 @@ class JinaBertLMHeadModel(JinaBertPreTrainedModel):
             If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
             `past_key_values`).
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
         if labels is not None:
             use_cache = False
 
@@ -1556,7 +1635,7 @@ class JinaBertForMaskedLM(JinaBertPreTrainedModel):
             loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
         """
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         outputs = self.bert(
             input_ids,
@@ -1663,7 +1742,7 @@ class JinaBertForNextSentencePrediction(JinaBertPreTrainedModel):
             )
             labels = kwargs.pop("next_sentence_label")
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         outputs = self.bert(
             input_ids,
@@ -1748,7 +1827,7 @@ class JinaBertForSequenceClassification(JinaBertPreTrainedModel):
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         outputs = self.bert(
             input_ids,
@@ -1847,7 +1926,7 @@ class JinaBertForMultipleChoice(JinaBertPreTrainedModel):
             num_choices-1]` where `num_choices` is the size of the second dimension of the input tensors. (See
             `input_ids` above)
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
         num_choices = input_ids.shape[1] if input_ids is not None else inputs_embeds.shape[1]
 
         input_ids = input_ids.view(-1, input_ids.size(-1)) if input_ids is not None else None
@@ -1942,7 +2021,7 @@ class JinaBertForTokenClassification(JinaBertPreTrainedModel):
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         outputs = self.bert(
             input_ids,
@@ -2030,7 +2109,7 @@ class JinaBertForQuestionAnswering(JinaBertPreTrainedModel):
             Positions are clamped to the length of the sequence (`sequence_length`). Position outside of the sequence
             are not taken into account for computing the loss.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self._get_default_return_dict()
 
         outputs = self.bert(
             input_ids,
