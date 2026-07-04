@@ -14,6 +14,7 @@ set -euo pipefail
 #   CODE_BASELINE_METHOD=baseline              # source method to post-process
 #   CODE_SUBSAMPLE_METHODS=greedy_map,diverse_beam,greedy_beam
 #   CODE_SUBSAMPLE_METRIC=group_int            # group_int or group_random representative per method group
+#   CODE_GENERATION_METRICS=true               # include PPL/semantic/F1/length metrics
 #   PPL_MODEL_ID=gpt2                          # external LM for PPL selection
 #   CONFIRM=false                              # skip pause after printing preflight
 #
@@ -23,7 +24,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 SRC_ROOT="${ROOT}/src/d5p4"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '4,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
@@ -46,6 +47,7 @@ CODE_METRICS="${CODE_METRICS:-acc,ppl,int,random}"
 CODE_BASELINE_METHOD="${CODE_BASELINE_METHOD:-${CODE_METHOD:-baseline}}"
 CODE_SUBSAMPLE_METHODS="${CODE_SUBSAMPLE_METHODS:-greedy_map,diverse_beam,greedy_beam}"
 CODE_SUBSAMPLE_METRIC="${CODE_SUBSAMPLE_METRIC:-group_int}"
+CODE_GENERATION_METRICS="${CODE_GENERATION_METRICS:-true}"
 PPL_MODEL_ID="${PPL_MODEL_ID:-/Brain/public/models/meta-llama/Meta-Llama-3-8B/}"
 
 mkdir -p "${EVAL_OUTPUT_ROOT}"
@@ -94,6 +96,7 @@ echo "Code baseline k: ${CODE_BASELINE_K}"
 echo "Code baseline method: ${CODE_BASELINE_METHOD}"
 echo "Code subsample methods: ${CODE_SUBSAMPLE_METHODS}"
 echo "Code subsample metric: ${CODE_SUBSAMPLE_METRIC}"
+echo "Code generation metrics: ${CODE_GENERATION_METRICS}"
 echo "PPL model: ${PPL_MODEL_ID}"
 echo
 echo "Candidate source JSON files:"
@@ -109,6 +112,7 @@ OVERSAMPLE_CODE_BASELINE_SAVE_RAW="false" \
 OVERSAMPLE_CODE_BASELINE_METHOD="${CODE_BASELINE_METHOD}" \
 OVERSAMPLE_CODE_BASELINE_METRICS="${CODE_METRICS}" \
 OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K="${CODE_BASELINE_K}" \
+OVERSAMPLE_CODE_BASELINE_GENERATION_METRICS="${CODE_GENERATION_METRICS}" \
 uv run python -m d5p4._oversample_code_baseline \
   config="${SRC_ROOT}/_default.yaml" \
   cache_dir="${ROOT}/.cache" \
@@ -126,6 +130,7 @@ for method in "${subsample_methods[@]}"; do
   OVERSAMPLE_CODE_BASELINE_METHOD="${method}" \
   OVERSAMPLE_CODE_BASELINE_METRICS="${CODE_SUBSAMPLE_METRIC}" \
   OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K="${CODE_BASELINE_K}" \
+  OVERSAMPLE_CODE_BASELINE_GENERATION_METRICS="${CODE_GENERATION_METRICS}" \
   uv run python -m d5p4._oversample_code_baseline \
     config="${SRC_ROOT}/_default.yaml" \
     cache_dir="${ROOT}/.cache" \

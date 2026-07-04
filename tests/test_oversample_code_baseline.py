@@ -1,13 +1,22 @@
 import random
 
-from d5p4._oversample_code_baseline import _selected_code_results, _validation_groups
+import pandas as pd
+
+from d5p4._oversample_code_baseline import (
+    _code_length_metrics,
+    _merge_metrics,
+    _reference_groups,
+    _selected_code_results,
+    _validation_groups,
+)
 from d5p4.code_eval import CodeEvaluator
+from d5p4.config import Config
 
 
-def _validation(passed: bool) -> dict:
+def _validation(passed: bool, extracted_code: str = "") -> dict:
     return {
-        "extracted_code": "",
-        "full_code": "",
+        "extracted_code": extracted_code,
+        "full_code": extracted_code,
         "parse_ok": True,
         "passed": passed,
         "status": "passed" if passed else "failed",
@@ -142,3 +151,64 @@ def test_code_group_random_selection_picks_one_representative_per_group():
 
     assert indices == expected
     assert len(selected[0]["generations"]) == 2
+
+
+def test_code_length_metrics_use_extracted_code():
+    rows = [
+        {
+            "validation": [
+                _validation(True, "def f():\n    return 1\n"),
+                _validation(False, ""),
+            ],
+        },
+    ]
+
+    metrics = _code_length_metrics(rows)
+
+    assert metrics["code_char_length_count"] == 2
+    assert metrics["code_line_length_max"] == 2
+    assert metrics["code_nonempty_line_length_max"] == 2
+
+
+def test_merge_metrics_preserves_generation_and_code_k():
+    metrics = _merge_metrics(
+        generation_metrics={"k": 3.0, "perplexity": 10.0},
+        length_metrics={"code_char_length": 12.0},
+        code_metrics={"k": 3.0, "accuracy": 0.5},
+    )
+
+    assert metrics["generation_k"] == 3.0
+    assert metrics["code_k"] == 3.0
+    assert metrics["perplexity"] == 10.0
+    assert metrics["accuracy"] == 0.5
+    assert metrics["code_char_length"] == 12.0
+
+
+def test_reference_groups_use_top_level_payload_references():
+    cfg = Config(disable_sys_args=True, code_dataset="humaneval")
+    rows = [{"task_id": "b"}, {"task_id": "a"}]
+    data = {"references": [["ref b"], ["ref a"]]}
+
+    references = _reference_groups(rows, current_config=cfg, data=data)
+
+    assert references == [["ref b"], ["ref a"]]
+
+
+def test_reference_groups_load_dataset_references_by_task_id(monkeypatch):
+    cfg = Config(disable_sys_args=True, code_dataset="humaneval", seed=123)
+    rows = [{"task_id": "b"}, {"task_id": "a"}]
+
+    def fake_get_code_dataset(config):
+        assert config.seed == 123
+        return pd.DataFrame(
+            [
+                {"task_id": "a", "reference_code": "ref a"},
+                {"task_id": "b", "reference_code": "ref b"},
+            ],
+        )
+
+    monkeypatch.setattr("d5p4._oversample_code_baseline.get_code_dataset", fake_get_code_dataset)
+
+    references = _reference_groups(rows, current_config=cfg, data={})
+
+    assert references == [["ref b"], ["ref a"]]

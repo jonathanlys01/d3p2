@@ -24,6 +24,8 @@ from typing import Any
 
 from d5p4.code_eval import CodeEvaluator, CodeValidationResult, validation_results_to_json
 from d5p4.config import CODE_DATASET_CHOICES, Config
+from d5p4.data.code_ds import get_code_dataset
+from d5p4.eval_utils import compute_statistics
 
 
 GENERATED_MARKERS = ("-bon-", "-math-bon-", "-code-bon-", "-metrics")
@@ -251,6 +253,137 @@ def _validation_groups(rows: list[dict[str, Any]]) -> list[list[CodeValidationRe
     return [[CodeValidationResult(**validation) for validation in row["validation"]] for row in rows]
 
 
+def _text_groups(rows: list[dict[str, Any]]) -> list[list[str]]:
+    groups: list[list[str]] = []
+    for row_idx, row in enumerate(rows):
+        generations = row.get("generations")
+        if not isinstance(generations, list):
+            raise ValueError(f"Code result row {row_idx} is missing generations list")
+        groups.append([str(generation) for generation in generations])
+    return groups
+
+
+def _references_from_rows(rows: list[dict[str, Any]]) -> list[list[str]] | None:
+    references: list[list[str]] = []
+    for row in rows:
+        reference = row.get("reference_code")
+        if not isinstance(reference, str) or not reference:
+            return None
+        references.append([reference])
+    return references
+
+
+def _references_from_payload(data: dict[str, Any], expected_groups: int) -> list[list[str]] | None:
+    references = data.get("references")
+    if not isinstance(references, list):
+        return None
+    if len(references) != expected_groups:
+        print(
+            "Warning: Top-level reference count does not match code result rows "
+            f"({len(references)} refs vs {expected_groups} rows); trying dataset references.",
+        )
+        return None
+
+    groups: list[list[str]] = []
+    for group in references:
+        if isinstance(group, list):
+            groups.append([str(reference) for reference in group if str(reference)])
+        elif isinstance(group, str) and group:
+            groups.append([group])
+        else:
+            groups.append([])
+    return groups if any(groups) else None
+
+
+def _load_code_references(current_config: Config, rows: list[dict[str, Any]]) -> list[list[str]] | None:
+    if not current_config.code_dataset:
+        return None
+
+    try:
+        dataset = get_code_dataset(current_config)
+        limit = current_config.code_dataset_len if current_config.code_dataset_len > 0 else len(dataset)
+        dataset_rows: list[Any] = list(dataset.itertuples())[:limit]
+    except Exception as e:
+        print(f"Warning: Could not load references for {current_config.code_dataset}: {e}")
+        return None
+
+    by_task_id = {str(row.task_id): str(row.reference_code) for row in dataset_rows}
+    row_task_ids = [row.get("task_id") for row in rows]
+    if row_task_ids and all(task_id is not None and str(task_id) in by_task_id for task_id in row_task_ids):
+        print(
+            f"Loaded {len(row_task_ids)} code references for {current_config.code_dataset} "
+            f"by task_id using seed={current_config.seed}",
+        )
+        return [[by_task_id[str(task_id)]] for task_id in row_task_ids]
+
+    if len(dataset_rows) != len(rows):
+        print(
+            "Warning: Dataset reference count does not match code result rows "
+            f"({len(dataset_rows)} refs vs {len(rows)} rows); skipping reference-based metrics.",
+        )
+        return None
+
+    print(
+        f"Loaded {len(dataset_rows)} code references for {current_config.code_dataset} "
+        f"by shuffled order using seed={current_config.seed}",
+    )
+    return [[str(row.reference_code)] for row in dataset_rows]
+
+
+def _reference_groups(
+    rows: list[dict[str, Any]],
+    *,
+    current_config: Config,
+    data: dict[str, Any],
+) -> list[list[str]] | None:
+    return (
+        _references_from_rows(rows)
+        or _references_from_payload(data, len(rows))
+        or _load_code_references(current_config, rows)
+    )
+
+
+def _code_length_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
+    char_lengths: list[float] = []
+    line_lengths: list[float] = []
+    nonempty_line_lengths: list[float] = []
+
+    for row in rows:
+        for validation in row.get("validation", []):
+            result = CodeValidationResult(**validation)
+            code = result.extracted_code
+            char_lengths.append(float(len(code)))
+            lines = code.splitlines()
+            line_lengths.append(float(len(lines)))
+            nonempty_line_lengths.append(float(sum(1 for line in lines if line.strip())))
+
+    return (
+        compute_statistics(char_lengths, "code_char_length")
+        | compute_statistics(line_lengths, "code_line_length")
+        | compute_statistics(nonempty_line_lengths, "code_nonempty_line_length")
+    )
+
+
+def _merge_metrics(
+    *,
+    code_metrics: dict[str, float | str],
+    generation_metrics: dict[str, float | str],
+    length_metrics: dict[str, float],
+) -> dict[str, float | str]:
+    metrics = dict(generation_metrics)
+    if "k" in metrics:
+        metrics["generation_k"] = metrics.pop("k")
+
+    metrics.update(length_metrics)
+
+    for key, value in code_metrics.items():
+        output_key = "code_k" if key == "k" else key
+        if output_key in metrics:
+            output_key = f"code_{key}"
+        metrics[output_key] = value
+    return metrics
+
+
 def _validate_selected_cardinality(selected_indices: list[list[int]], expected_selected_k: int | None) -> None:
     if expected_selected_k is None:
         return
@@ -267,6 +400,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     save_raw = _env_flag("OVERSAMPLE_CODE_BASELINE_SAVE_RAW", default=False)
     method_filter = os.getenv("OVERSAMPLE_CODE_BASELINE_METHOD", "baseline")
     requested_metrics = _env_list("OVERSAMPLE_CODE_BASELINE_METRICS", "acc,ppl,int,random")
+    include_generation_metrics = _env_flag("OVERSAMPLE_CODE_BASELINE_GENERATION_METRICS", default=True)
     group_size_override = os.getenv("OVERSAMPLE_CODE_BASELINE_GROUP_SIZE")
     expected_selected_k_env = os.getenv("OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K")
     expected_selected_k = int(expected_selected_k_env) if expected_selected_k_env is not None else None
@@ -274,6 +408,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     output_dir, files = _resolve_input_files(path)
     subsample_k = config.subsample_k
     ppl_models: dict[str, Any] = {}
+    generation_evaluators: dict[tuple[int, str, str], Any] = {}
 
     if "all" not in requested_metrics and subsample_k <= 0:
         raise ValueError("subsample_k must be positive unless only the all selector is requested")
@@ -350,11 +485,40 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             code_metrics = CodeEvaluator(timeout_s=current_config.code_timeout_s).evaluate(
                 _validation_groups(selected_rows),
             )
+            generation_metrics: dict[str, float | str] = {}
+            if include_generation_metrics:
+                from d5p4.eval_core import Evaluator
+
+                evaluator_key = (
+                    current_config.eval_batch_size,
+                    current_config.ppl_model_id,
+                    current_config.cos_model_id,
+                )
+                generation_evaluator = generation_evaluators.get(evaluator_key)
+                if generation_evaluator is None:
+                    generation_evaluator = Evaluator(
+                        batch_size=current_config.eval_batch_size,
+                        ppl_model_id=current_config.ppl_model_id,
+                        cos_model_id=current_config.cos_model_id,
+                    )
+                    generation_evaluators[evaluator_key] = generation_evaluator
+                generation_metrics = generation_evaluator.evaluate(
+                    _text_groups(selected_rows),
+                    references=_reference_groups(selected_rows, current_config=current_config, data=data),
+                )
+            length_metrics = _code_length_metrics(selected_rows)
+            metrics = _merge_metrics(
+                code_metrics=code_metrics,
+                generation_metrics=generation_metrics,
+                length_metrics=length_metrics,
+            )
 
             save_data: dict[str, Any] = {
                 "config": data.get("config", {}),
-                "metrics": code_metrics,
+                "metrics": metrics,
                 "code_metrics": code_metrics,
+                "generation_metrics": generation_metrics,
+                "length_metrics": length_metrics,
                 "experiment_id": data.get("experiment_id", ""),
                 "source_file": rel_file,
                 "selection_metric": metric,
@@ -377,7 +541,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 json.dump(save_data, f_out, indent=4)
 
             print("-" * 80)
-            for key, value in code_metrics.items():
+            for key, value in metrics.items():
                 print(f"{metric}_{key}: {value}")
             print("-" * 80)
 
