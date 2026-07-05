@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Orchestrates the LLaDA paper code generation sweep over 48 configurations:
+Orchestrates the LLaDA paper code generation sweep over 72 configurations:
   - 2 Datasets (HumanEval, MBPP)
-  - 2 Remasking Methods (low_confidence, random)
+  - 3 Remasking Configs (seltemp, confidence, seltemp_zero)
   - 4 Sampling Methods (independent/baseline, greedy_map, diverse_beam, greedy_beam)
   - 3 Seeds (0, 1, 2)
 
@@ -74,6 +74,14 @@ class SweepEntry:
     overrides: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RemaskingConfig:
+    tag: str
+    remasking: str
+    cat_temperature: float
+    selection_temperature: float
+
+
 PROGRESS_MATCH_KEYS = (
     "model",
     "code_dataset",
@@ -81,6 +89,8 @@ PROGRESS_MATCH_KEYS = (
     "code_n_shots",
     "seed",
     "remasking",
+    "cat_temperature",
+    "selection_temperature",
     "logits_eos_inf",
     "cfg_scale",
     "llada_steps",
@@ -90,7 +100,9 @@ PROGRESS_MATCH_KEYS = (
     "method",
     "n_groups",
     "group_size",
+    "subsample_start",
     "subsample_end",
+    "_kernel_method",
     "_w_interaction",
     "_diversity_alpha",
 )
@@ -393,11 +405,36 @@ def main():  # noqa: C901, PLR0912, PLR0915
         default=None,
         help="Directory containing resume SQLite DBs. Use this when results_dir differs from the generation run.",
     )
+    parser.add_argument(
+        "--cache_dir",
+        default=None,
+        help="Cache directory passed to Hugging Face datasets/models.",
+    )
+
     parser.add_argument("--dry_run", action="store_true", help="Only print the commands, don't run them")
     args = parser.parse_args()
 
     datasets = ["humaneval", "mbpp"]
-    remasking_methods = ["low_confidence", "random"]
+    remasking_configs = [
+        RemaskingConfig(
+            tag="seltemp",
+            remasking="selection_temperature",
+            cat_temperature=1.0,
+            selection_temperature=0.1,
+        ),
+        RemaskingConfig(
+            tag="confidence",
+            remasking="low_confidence",
+            cat_temperature=1.0,
+            selection_temperature=0.1,
+        ),
+        RemaskingConfig(
+            tag="seltemp_zero",
+            remasking="selection_temperature",
+            cat_temperature=0.0,
+            selection_temperature=0.1,
+        ),
+    ]
     seeds = [0, 1, 2]
 
     # Define sampling methods
@@ -412,18 +449,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
             if dataset == "humaneval":
                 gen_len = 512
                 n_shots = 0
-                subsample_end = 256
             else:
                 gen_len = 256
                 n_shots = 4
-                subsample_end = 128
 
-            for remasking in remasking_methods:
+            for remasking_cfg in remasking_configs:
                 for method in methods:
                     # Keep this stable across skip_eval=true/false so the eval pass
                     # reuses DBs created by generation-only runs.
                     comment = (
-                        f"llada_sweep_dataset-{dataset}_remasking-{remasking}_"
+                        f"llada_sweep_dataset-{dataset}_remasking-{remasking_cfg.tag}_"
                         f"seed-{seed}_method-{method}_skip_eval-true"
                     )
                     overrides: dict[str, Any] = {
@@ -432,13 +467,18 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         "code_dataset": dataset,
                         "code_n_shots": n_shots,
                         "seed": seed,
-                        "remasking": remasking,
+                        "remasking": remasking_cfg.remasking,
+                        "cat_temperature": remasking_cfg.cat_temperature,
+                        "selection_temperature": remasking_cfg.selection_temperature,
                         "logits_eos_inf": False,
-                        "cfg_scale": 1.0,
+                        "cfg_scale": 2.5,
                         "llada_steps": gen_len,
                         "gen_length": gen_len,
                         "block_length": gen_len,
                         "confidence_eos_eot_inf": True,
+                        "subsample_start": 0,
+                        "subsample_end": gen_len,
+                        "_kernel_method": "additive",
                         "skip_eval": args.skip_eval,
                         "resume_db_keep_completed": args.resume_db_keep_completed,
                         "resume_runs": True,
@@ -455,13 +495,18 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         _cfg_arg("code_dataset", dataset),
                         _cfg_arg("code_n_shots", n_shots),
                         _cfg_arg("seed", seed),
-                        _cfg_arg("remasking", remasking),
+                        _cfg_arg("remasking", remasking_cfg.remasking),
+                        _cfg_arg("cat_temperature", remasking_cfg.cat_temperature),
+                        _cfg_arg("selection_temperature", remasking_cfg.selection_temperature),
                         "logits_eos_inf=False",
-                        "cfg_scale=1.0",
+                        "cfg_scale=2.5",
                         _cfg_arg("llada_steps", gen_len),
                         _cfg_arg("gen_length", gen_len),
                         _cfg_arg("block_length", gen_len),
                         "confidence_eos_eot_inf=True",
+                        "subsample_start=0",
+                        _cfg_arg("subsample_end", gen_len),
+                        "_kernel_method=additive",
                         _cfg_arg("skip_eval", args.skip_eval),
                         _cfg_arg("resume_db_keep_completed", args.resume_db_keep_completed),
                         "resume_runs=True",
@@ -473,6 +518,10 @@ def main():  # noqa: C901, PLR0912, PLR0915
                     if args.resume_db_dir is not None:
                         overrides["resume_db_dir"] = args.resume_db_dir
                         cmd_args.append(_path_cfg_arg("resume_db_dir", args.resume_db_dir))
+                    if args.cache_dir is not None:
+                        overrides["cache_dir"] = args.cache_dir
+                        cmd_args.append(_path_cfg_arg("cache_dir", args.cache_dir))
+
 
                     # Add method-specific parameters
                     if method == "baseline":
@@ -488,16 +537,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             {
                                 "n_groups": 3,
                                 "group_size": 3,
-                                "subsample_end": subsample_end,
-                                "_w_interaction": 10.0,
+                                "_w_interaction": 20.0,
                             },
                         )
                         cmd_args.extend(
                             [
                                 "n_groups=3",
                                 "group_size=3",
-                                _cfg_arg("subsample_end", subsample_end),
-                                "_w_interaction=10.0",
+                                "_w_interaction=20.0",
                             ],
                         )
                     elif method == "diverse_beam":
@@ -505,25 +552,22 @@ def main():  # noqa: C901, PLR0912, PLR0915
                             {
                                 "n_groups": 3,
                                 "group_size": 3,
-                                "subsample_end": subsample_end,
-                                "_diversity_alpha": 20.0,
+                                "_diversity_alpha": 12.0,
                             },
                         )
                         cmd_args.extend(
                             [
                                 "n_groups=3",
                                 "group_size=3",
-                                _cfg_arg("subsample_end", subsample_end),
-                                "_diversity_alpha=20.0",
+                                "_diversity_alpha=12.0",
                             ],
                         )
                     elif method == "greedy_beam":
-                        overrides.update({"n_groups": 3, "group_size": 3, "subsample_end": subsample_end})
+                        overrides.update({"n_groups": 3, "group_size": 3})
                         cmd_args.extend(
                             [
                                 "n_groups=3",
                                 "group_size=3",
-                                _cfg_arg("subsample_end", subsample_end),
                             ],
                         )
 
