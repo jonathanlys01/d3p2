@@ -34,12 +34,14 @@ def _build_test_sampler(config: Config) -> LLADASampler:
         del prompt
         return PROMPT_TOKENS.clone()
 
-    def _forward_model(self, x: torch.Tensor):
+    def _forward_model(self, x: torch.Tensor, *, output_hidden_states: bool = True, logits_slice: slice | None = None):
         self.forward_calls += 1
         logits = torch.zeros((x.shape[0], x.shape[1], VOCAB_SIZE), dtype=torch.float32)
         logits[:, :, 0] = 3.0
         logits[:, :, 1] = 1.0
-        embeddings = [torch.zeros((x.shape[0], x.shape[1], 1), dtype=torch.float32)]
+        if logits_slice is not None:
+            logits = logits[:, logits_slice]
+        embeddings = [torch.zeros((x.shape[0], x.shape[1], 1), dtype=torch.float32)] if output_hidden_states else None
         return logits, embeddings
 
     sampler._preprocess_prompt = MethodType(_preprocess_prompt, sampler)

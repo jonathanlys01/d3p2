@@ -39,6 +39,8 @@ def _sample_per_group(
 class GreedyBeamSearch(BaseSelector):
     """Greedy beam search selector, quality-only (no diversity penalty)."""
 
+    needs_embeddings = False
+
     def _transversal(self, cache: Cache) -> torch.Tensor | None:
         """Transversal selection: one sample per group."""
         if (scores := self.compute_scores(cache)) is None:

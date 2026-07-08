@@ -9,6 +9,8 @@ from d5p4.subsample.base import BaseSelector
 class BaselineSelection(BaseSelector):
     """Baseline selector: identity selection returning first n_groups indices."""
 
+    needs_embeddings = False
+
     def __init__(self, config: Config):
         super().__init__(config)
         assert config.group_size == 1

@@ -10,6 +10,8 @@ from d5p4.subsample.base import BaseSelector
 class RandomSelection(BaseSelector):
     """Random selector: uniform random selection without quality/diversity consideration."""
 
+    needs_embeddings = False
+
     def _transversal(self, cache: Cache) -> torch.Tensor | None:  # noqa: ARG002
         """Randomly select one item per group."""
         if self.distributed_utils and self.distributed_utils.rank != 0:

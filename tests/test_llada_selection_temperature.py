@@ -62,19 +62,21 @@ def _build_test_sampler(sampler_cls: type[nn.Module], config: Config, logits: to
     sampler.selector = SimpleNamespace(distributed_utils=None)
     sampler.distributed_utils = None
     sampler.enable_profiling_scopes = False
+    sampler.cuda_timer = diffusion_llada_profile_module.CUDAScopeTimer()
     sampler.first_demasked_position = None
 
     def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
         return PROMPT_TOKENS.clone()
 
-    def _forward_model(self, x: torch.Tensor):
+    def _forward_model(self, x: torch.Tensor, *, output_hidden_states: bool = True, logits_slice: slice | None = None):
         if self.first_demasked_position is None:
             gen_tokens = x[0, PROMPT_TOKENS.shape[1] :]
             demasked = torch.nonzero(gen_tokens != self.mask_index, as_tuple=False).squeeze(-1)
             if demasked.numel() == 1:
                 self.first_demasked_position = int(demasked.item())
-        embeddings = [torch.zeros((x.shape[0], x.shape[1], 1), dtype=torch.float32)]
-        return logits.clone(), embeddings
+        out_logits = logits.clone() if logits_slice is None else logits[:, logits_slice].clone()
+        embeddings = [torch.zeros((x.shape[0], x.shape[1], 1), dtype=torch.float32)] if output_hidden_states else None
+        return out_logits, embeddings
 
     sampler._preprocess_prompt = MethodType(_preprocess_prompt, sampler)
     sampler._forward_model = MethodType(_forward_model, sampler)

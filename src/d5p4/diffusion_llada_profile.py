@@ -11,13 +11,16 @@ This keeps the production sampler untouched and exposes profiler scopes around:
 
 import math
 from contextlib import nullcontext
+from typing import cast
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.profiler import record_function
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from d5p4.config import Cache, Config
+from d5p4.diffusion_llada import topk_row_transfer_mask
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from d5p4.subsample import get_subsample_selector
 from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
@@ -118,7 +121,8 @@ class LLADAProfilerSampler(nn.Module):
         self.config: Config = config
         self.tokenizer = get_tokenizer(config, "llada")
 
-        model_config: LLaDAConfig = self.model.config
+        model_config = self.model.config
+        assert isinstance(model_config, LLaDAConfig)
         self.mask_index = model_config.mask_token_id
         sequence_length = config.sequence_length
         assert sequence_length <= model_config.max_sequence_length, "Requested sequence length exceeds model's maximum."
@@ -154,7 +158,13 @@ class LLADAProfilerSampler(nn.Module):
             return nullcontext()
         return record_function(name)
 
-    def _forward_model(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _forward_model(
+        self,
+        x: torch.Tensor,
+        *,
+        output_hidden_states: bool = True,
+        logits_slice: slice | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...] | None]:
         with (
             self._scope("llada.model_forward"),
             torch.amp.autocast(  # type: ignore
@@ -162,10 +172,22 @@ class LLADAProfilerSampler(nn.Module):
                 dtype=torch.bfloat16,
             ),
         ):
-            out = self.model.forward(x, return_dict=True, output_hidden_states=True)
+            input_ids = cast(torch.LongTensor, x)
+            out = self.model.forward(
+                input_ids,
+                return_dict=True,
+                output_hidden_states=output_hidden_states,
+                last_hidden_state_only=True,
+                logits_slice=logits_slice,
+            )
+            assert isinstance(out, CausalLMOutputWithPast) and out.logits is not None
+            assert not output_hidden_states or out.hidden_states is not None
             logits = out.logits
             embeddings = out.hidden_states
         return logits, embeddings
+
+    def _selector_needs_embeddings(self) -> bool:
+        return getattr(self.selector, "needs_embeddings", True)
 
     def _get_block_transfer_tokens(self, mask_index, steps):
         mask_num = mask_index.sum(dim=1, keepdim=True)
@@ -218,10 +240,36 @@ class LLADAProfilerSampler(nn.Module):
             x0_ = torch.argmax(logits, dim=-1)
             x0 = torch.repeat_interleave(x0_, repeats=expand, dim=0)
         else:
-            logits = logits.to(torch.float64) / temperature
-            probs = F.softmax(logits, dim=-1)
+            # Not in-place: `logits.float()` is a no-op on fp32 inputs, so div_ would mutate the caller's tensor.
+            probs = F.softmax(logits.float() / temperature, dim=-1)
             x0 = sample_categorical(probs, expand=expand)
         return x0
+
+    def _get_token_confidence(
+        self,
+        logits: torch.Tensor,
+        x0: torch.Tensor,
+        is_log_probs: bool = False,
+    ) -> torch.Tensor:
+        vocab_size = logits.size(-1)
+        if self.config.confidence_eos_eot_inf:
+            if vocab_size > 126348:
+                logits[:, :, 126348] = -torch.inf
+            if vocab_size > 126081:
+                logits[:, :, 126081] = -torch.inf
+
+        if self.config.remasking in {"low_confidence", "selection_temperature"}:
+            if is_log_probs:
+                x0_p = torch.gather(logits, dim=-1, index=torch.unsqueeze(x0, -1)).squeeze(-1).exp()
+            else:
+                p = F.softmax(logits, dim=-1)
+                x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)
+        elif self.config.remasking == "random":
+            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+        else:
+            raise ValueError(f"Invalid remasking method: {self.config.remasking}")
+
+        return x0_p
 
     def _get_confidence(
         self,
@@ -231,18 +279,9 @@ class LLADAProfilerSampler(nn.Module):
         prompt_len: int,
         is_log_probs: bool = False,
     ) -> torch.Tensor:
-        if self.config.confidence_eos_eot_inf:
-            logits[:, :, 126348] = -torch.inf
-            logits[:, :, 126081] = -torch.inf
-
-        if self.config.remasking in {"low_confidence", "selection_temperature"}:
-            p = torch.exp(logits) if is_log_probs else F.softmax(logits, dim=-1)
-            x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)
-        elif self.config.remasking == "random":
-            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-        else:
-            raise ValueError(f"Invalid remasking method: {self.config.remasking}")
-
+        """Full-sequence-width confidence. Unused by the production loop (which works on block slices
+        via `_get_token_confidence`); kept as the pre-optimization reference for equivalence tests."""
+        x0_p = self._get_token_confidence(logits, x0, is_log_probs=is_log_probs)
         x0_p[:, prompt_len + (num_block + 1) * self.config.block_length :] = -torch.inf
         return x0_p
 
@@ -252,20 +291,21 @@ class LLADAProfilerSampler(nn.Module):
             steps = self.config.llada_steps // num_blocks
             batch_size = self.config.batch_size
             assert self.config.cfg_scale >= 0, f"cfg_scale must be non-negative, got {self.config.cfg_scale}"
+            need_embeddings = self._selector_needs_embeddings()
 
             with self._scope("llada.prompt_preprocess"):
                 prompt_tokens = self._preprocess_prompt(prompt)
 
             prompt_len = prompt_tokens.shape[1]
-            prompt_tokens = prompt_tokens.repeat(batch_size, 1)
 
             with self._scope("llada.init_generation"):
                 x = torch.full(
                     (batch_size, prompt_len + self.config.gen_length),
                     self.mask_index,
                     dtype=torch.long,
-                ).to(self.device)
-                x[:, :prompt_len] = prompt_tokens.clone()
+                    device=self.device,
+                )
+                x[:, :prompt_len] = prompt_tokens
 
             prompt_index = x != self.mask_index
 
@@ -287,7 +327,11 @@ class LLADAProfilerSampler(nn.Module):
                 step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
                 for step in step_iter:
                     with self._scope("llada.diffusion_step"):
-                        mask_index = x == self.mask_index
+                        block_mask_index = x[:, start:end] == self.mask_index
+
+                        # Vocab projection only for the current block (the transformer still attends
+                        # over the full sequence).
+                        logits_slice = slice(start, end)
 
                         apply_cfg = (
                             self.config.cfg_scale != 1.0
@@ -300,27 +344,45 @@ class LLADAProfilerSampler(nn.Module):
                                 un_x[prompt_index] = self.mask_index
                                 x_ = torch.cat([x, un_x], dim=0)
 
-                                logits_all, out_all = self._forward_model(x_)
-                                embeddings_all = out_all[-1]
+                                logits_all, out_all = self._forward_model(
+                                    x_,
+                                    output_hidden_states=need_embeddings,
+                                    logits_slice=logits_slice,
+                                )
 
                                 cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
-                                embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)
-
                                 logits = uncond_logits + self.config.cfg_scale * (cond_logits - uncond_logits)
+                                embeddings = None
+                                if out_all is not None:
+                                    embeddings_all = out_all[-1]
+                                    embeddings, _ = torch.chunk(embeddings_all, 2, dim=0)
+                                    del embeddings_all
+                                del cond_logits, logits_all, out_all, un_x, uncond_logits, x_
                         else:
                             with self._scope("llada.forward_pass"), self.cuda_timer.scope("llada.forward_pass"):
-                                logits, out = self._forward_model(x)
-                                embeddings = out[-1]
+                                logits, out = self._forward_model(
+                                    x,
+                                    output_hidden_states=need_embeddings,
+                                    logits_slice=logits_slice,
+                                )
+                                embeddings = out[-1] if out is not None else None
+                                del out
 
-                        if self.config.logits_eos_inf:
+                        if self.config.logits_eos_inf and logits.size(-1) > 126081:
                             logits[:, :, 126081] = -torch.inf
 
                         with self._scope("llada.log_softmax"), self.cuda_timer.scope("llada.log_softmax"):
-                            log_p_x0 = F.log_softmax(logits, dim=-1)
+                            block_log_p_x0 = F.log_softmax(logits, dim=-1)
+                        del logits
 
+                        if embeddings is not None:
+                            cache_embeddings = embeddings[:, start:end].contiguous()
+                            del embeddings
+                        else:
+                            cache_embeddings = None
                         cache = Cache(
-                            log_p_x0=log_p_x0[:, start:end],
-                            embeddings=embeddings[:, start:end],
+                            log_p_x0=block_log_p_x0,
+                            embeddings=cache_embeddings,
                             x=x[:, start:end],
                         )
                         with self._scope("llada.selection.slice"), self.cuda_timer.scope("llada.selection.slice"):
@@ -329,14 +391,14 @@ class LLADAProfilerSampler(nn.Module):
                         assert slice_idx is not None
 
                         with self._scope("llada.selection.index"):
-                            logits_to_sample = torch.index_select(log_p_x0, 0, slice_idx)
+                            logits_to_sample = torch.index_select(block_log_p_x0, 0, slice_idx)
 
                         if subsample_step:
                             with self._scope("llada.selection.expand"), self.cuda_timer.scope("llada.selection.expand"):
                                 expanded_idx = slice_idx.repeat_interleave(self.config.group_size)
                                 x = torch.index_select(x, 0, expanded_idx)
-                                log_p_x0 = torch.index_select(log_p_x0, 0, expanded_idx)
-                                mask_index = torch.index_select(mask_index, 0, expanded_idx)
+                                block_log_p_x0 = torch.index_select(block_log_p_x0, 0, expanded_idx)
+                                block_mask_index = torch.index_select(block_mask_index, 0, expanded_idx)
                                 num_transfer_tokens = torch.index_select(num_transfer_tokens, 0, expanded_idx)
                                 prompt_index = torch.index_select(prompt_index, 0, expanded_idx)
 
@@ -351,20 +413,27 @@ class LLADAProfilerSampler(nn.Module):
                             self._scope("llada.selection.confidence"),
                             self.cuda_timer.scope("llada.selection.confidence"),
                         ):
-                            x0_p = self._get_confidence(log_p_x0, x0, num_block, prompt_len, is_log_probs=True)
+                            if self.config.remasking == "random":
+                                # Full-width draw sliced to the block: keeps the RNG stream identical
+                                # to the pre-optimization sampler (which drew over the whole sequence).
+                                x0_p = torch.rand((x0.shape[0], x.shape[1]), device=x0.device)[:, start:end]
+                            else:
+                                x0_p = self._get_token_confidence(block_log_p_x0, x0, is_log_probs=True)
 
                         with self._scope("llada.selection.mask"), self.cuda_timer.scope("llada.selection.mask"):
-                            x0 = torch.where(mask_index, x0, x)
-                            confidence = torch.where(mask_index, x0_p, -torch.inf)
+                            x0 = torch.where(block_mask_index, x0, x[:, start:end])
+                            confidence = torch.where(block_mask_index, x0_p, -torch.inf)
 
                         with self._scope("llada.selection.transfer"), self.cuda_timer.scope("llada.selection.transfer"):
-                            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                            for j in range(x.shape[0]):
-                                k = int(num_transfer_tokens[j, step].item())
-                                if k <= 0:
-                                    continue
+                            if self.config.remasking == "selection_temperature":
+                                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                                # Single host sync for the whole batch instead of one .item() per row.
+                                ks = num_transfer_tokens[:, step].tolist()
+                                for j in range(x.shape[0]):
+                                    k = int(ks[j])
+                                    if k <= 0:
+                                        continue
 
-                                if self.config.remasking == "selection_temperature":
                                     valid_mask = torch.isfinite(confidence[j])
                                     valid_indices = torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
 
@@ -381,13 +450,14 @@ class LLADAProfilerSampler(nn.Module):
                                             probs = F.softmax(top_vals / sel_temp, dim=-1)
                                             sampled_rel = torch.multinomial(probs, num_samples=k, replacement=False)
                                             select_index = top_pos[sampled_rel]
-                                else:
-                                    _, select_index = torch.topk(confidence[j], k=k)
 
-                                transfer_index[j, select_index] = True
+                                    transfer_index[j, select_index] = True
+                            else:
+                                transfer_index = topk_row_transfer_mask(confidence, num_transfer_tokens[:, step])
 
                         with self._scope("llada.state_update"), self.cuda_timer.scope("llada.state_update"):
-                            x[transfer_index] = x0[transfer_index]
+                            x_block = x[:, start:end]
+                            x_block[transfer_index] = x0[transfer_index]
 
             if self.distributed_utils:
                 with self._scope("llada.distributed_gather"):

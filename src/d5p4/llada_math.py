@@ -42,8 +42,9 @@ def _references_from_results(results: list[dict]) -> list[list[str]]:
     return [[row["answer_str"] if row["answer_str"] else row["gold_answer"]] for row in results]
 
 
-def _decode_generations(model: LLADASampler, prompt: str, raw_samples) -> list[str]:
-    prompt_len = model._preprocess_prompt(prompt).shape[1]
+def _decode_generations(model: LLADASampler, prompt: str, raw_samples, prompt_len: int | None = None) -> list[str]:
+    if prompt_len is None:
+        prompt_len = model._preprocess_prompt(prompt).shape[1]
     generations = []
     for sample in raw_samples:
         completion_tokens = sample[prompt_len:]
@@ -169,7 +170,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 assert generation is not None
                 raw_samples = generation["tokens"]
                 scores = generation["internal_scores"] or []
-                decoded = generation["decoded"] or _decode_generations(model, prompt, raw_samples)
+                decoded = generation["decoded"] or _decode_generations(
+                    model,
+                    prompt,
+                    raw_samples,
+                    generation["prompt_len"],
+                )
                 result = generation["result"]
                 if result is None and not config.skip_eval:
                     result = score_generations(i, prompt, decoded)
@@ -181,7 +187,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
                 if not master:
                     continue
-                prompt_len = model._preprocess_prompt(prompt).shape[1]
+                prompt_len = raw_samples.shape[1] - config.gen_length
                 scores = (
                     [float(score) for score in internal_scores.detach().cpu().tolist()]
                     if torch.is_tensor(internal_scores)
@@ -194,7 +200,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         prompt_len=prompt_len,
                         internal_scores=scores,
                     )
-                decoded = _decode_generations(model, prompt, raw_samples)
+                decoded = _decode_generations(model, prompt, raw_samples, prompt_len)
                 result = None if config.skip_eval else score_generations(i, prompt, decoded)
                 if store is not None:
                     store.record_decoded(item_index=i, decoded=decoded, result=result)
@@ -207,8 +213,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     score_values = result["scores"]
                     acc = result["accuracy"]
                     print(
-                        f"  → accuracy for this question: {acc:.2%}  "
-                        f"({sum(score_values)}/{len(score_values)} correct)",
+                        f"  → accuracy for this question: {acc:.2%}  ({sum(score_values)}/{len(score_values)} correct)",
                         progress=True,
                     )
     finally:

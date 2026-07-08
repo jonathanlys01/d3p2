@@ -294,6 +294,13 @@ class Config:
 
 @dataclass
 class Cache:
+    """Per-step state handed to subsample selectors.
+
+    All tensors are sliced to the current block: shapes are [B, block_length(, ...)].
+    `log_p_x0` may be a non-contiguous view; `embeddings` is None when the selector
+    declares `needs_embeddings = False` (see BaseSelector).
+    """
+
     x: Optional["torch.Tensor"] = None
     log_p_x0: Optional["torch.Tensor"] = None
     embeddings: Optional["torch.Tensor"] = None

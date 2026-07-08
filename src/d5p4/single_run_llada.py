@@ -89,8 +89,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
     if use_internal_representatives and master:
         print("Using final-step internal scores to select one evaluation representative per group.")
 
-    def decode_generations(prompt: str, tokens) -> list[str]:
-        prompt_len = model._preprocess_prompt(prompt).shape[1]
+    def decode_generations(prompt: str, tokens, prompt_len: int | None = None) -> list[str]:
+        if prompt_len is None:
+            prompt_len = model._preprocess_prompt(prompt).shape[1]
         generations = []
         for sample in tokens:
             completion_tokens = sample[prompt_len:]
@@ -121,7 +122,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                 assert generation is not None
                 raw_samples = generation["tokens"]
                 scores = generation["internal_scores"]
-                decoded = generation["decoded"] or decode_generations(prompt, raw_samples)
+                decoded = generation["decoded"] or decode_generations(prompt, raw_samples, generation["prompt_len"])
                 selected = generation["selected_indices"]
                 eval_decoded = generation["eval_decoded"]
                 if use_internal_representatives and (eval_decoded is None or selected is None):
@@ -142,7 +143,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                 raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
                 if not master:
                     continue
-                prompt_len = model._preprocess_prompt(prompt).shape[1]
+                prompt_len = raw_samples.shape[1] - config.gen_length
                 scores = (
                     [float(score) for score in internal_scores.detach().cpu().tolist()]
                     if torch.is_tensor(internal_scores)
@@ -155,7 +156,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         prompt_len=prompt_len,
                         internal_scores=scores,
                     )
-                decoded = decode_generations(prompt, raw_samples)
+                decoded = decode_generations(prompt, raw_samples, prompt_len)
                 eval_decoded = None
                 selected = None
                 if use_internal_representatives:
@@ -199,6 +200,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
             cos_model_id=config.cos_model_id,
         )
         metric_texts = eval_texts if use_internal_representatives else texts
+        assert isinstance(metric_texts, list)
         metrics = evaluator.evaluate(metric_texts, references=references_all)
         assert metrics["metrics_summary"] is not None
         print(f"Evaluation complete: {metrics['metrics_summary']}")

@@ -45,9 +45,10 @@ def _references_from_results(results: list[dict[str, Any]]) -> list[list[str]]:
     return [[row["reference_code"]] for row in results]
 
 
-def _decode_generations(model: LLADASampler, prompt: str, raw_samples: Any) -> list[str]:
-    prompt_tokens = model._preprocess_prompt(prompt)
-    prompt_len = prompt_tokens.shape[1]
+def _decode_generations(model: LLADASampler, prompt: str, raw_samples: Any, prompt_len: int | None = None) -> list[str]:
+    if prompt_len is None:
+        prompt_tokens = model._preprocess_prompt(prompt)
+        prompt_len = prompt_tokens.shape[1]
     generations: list[str] = []
     for sample in raw_samples:
         completion_tokens = sample[prompt_len:]
@@ -191,7 +192,12 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
                 assert generation is not None
                 raw_samples = generation["tokens"]
                 scores = generation["internal_scores"] or []
-                decoded = generation["decoded"] or _decode_generations(model, prompt, raw_samples)
+                decoded = generation["decoded"] or _decode_generations(
+                    model,
+                    prompt,
+                    raw_samples,
+                    generation["prompt_len"],
+                )
                 result = generation["result"]
                 validations = None
                 if result is None and not config.skip_eval:
@@ -206,7 +212,7 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
                 raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
                 if not master:
                     continue
-                prompt_len = model._preprocess_prompt(prompt).shape[1]
+                prompt_len = raw_samples.shape[1] - config.gen_length
                 scores = (
                     [float(score) for score in internal_scores.detach().cpu().tolist()]
                     if torch.is_tensor(internal_scores)
@@ -219,7 +225,7 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
                         prompt_len=prompt_len,
                         internal_scores=scores,
                     )
-                decoded = _decode_generations(model, prompt, raw_samples)
+                decoded = _decode_generations(model, prompt, raw_samples, prompt_len)
                 result = None
                 validations = None
                 if not config.skip_eval:

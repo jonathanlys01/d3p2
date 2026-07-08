@@ -11,6 +11,11 @@ from d5p4.utils import DistributedUtils, print
 class BaseSelector(nn.Module):
     """Abstract base class for all subset selectors."""
 
+    # Whether this selector reads `cache.embeddings`. The sampler skips materializing hidden states
+    # when False. Defaults to True (safe: a selector that forgets to opt out only wastes memory,
+    # while a wrong False would crash on `assert cache.embeddings is not None`).
+    needs_embeddings: bool = True
+
     def __init__(self, config: Config):
         super().__init__()
         self.config = config

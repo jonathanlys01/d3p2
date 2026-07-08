@@ -1236,6 +1236,8 @@ class LLaDAModel(nn.Module):
         use_cache: bool = False,
         last_logits_only: bool = False,
         output_hidden_states: Optional[bool] = None,
+        last_hidden_state_only: bool = False,
+        logits_slice: Optional[slice] = None,
     ) -> LLaDAOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -1266,6 +1268,12 @@ class LLaDAModel(nn.Module):
         :param use_cache: If `True`, return key and value tensors for each block.
         :param last_logits_only: If `True`, only compute the logits for the last token of each sequence.
             This can speed up decoding when you only care about the next token.
+        :param last_hidden_state_only: If `True` (and `output_hidden_states`), `hidden_states` contains only
+            the final post-layernorm hidden state instead of every layer's output. This avoids holding
+            `n_layers` extra `(batch_size, seq_len, d_model)` tensors at peak memory.
+        :param logits_slice: If given, the vocab projection is applied only to `x[:, logits_slice]`, so
+            `logits` has shape `(batch_size, len(slice), vocab_size)`. The transformer still attends over
+            the full sequence; only the (dominant) logits tensor shrinks.
         """
         # Add Basic MDM Model config check
         assert not self.config.alibi, "Alibi length extrapolation is not supported for MDM."
@@ -1356,7 +1364,7 @@ class LLaDAModel(nn.Module):
         # Apply blocks one-by-one.
         if self.config.block_group_size == 1:
             for block_idx, block in enumerate(self.transformer.blocks):
-                if output_hidden_states:
+                if output_hidden_states and not last_hidden_state_only:
                     # add hidden states
                     all_hidden_states.append(x)
 
@@ -1392,7 +1400,7 @@ class LLaDAModel(nn.Module):
                     attn_key_values.append(cache)
         else:
             for group_idx, block_group in enumerate(self.transformer.block_groups):
-                if output_hidden_states:
+                if output_hidden_states and not last_hidden_state_only:
                     # add hidden states
                     all_hidden_states.append(x)
 
@@ -1425,11 +1433,12 @@ class LLaDAModel(nn.Module):
             all_hidden_states.append(x)
 
         # Get logits.
-        # shape: (batch_size, seq_len or 1, vocab_size)
+        # shape: (batch_size, seq_len or 1 or len(logits_slice), vocab_size)
+        logits_input = x if logits_slice is None else x[:, logits_slice]
         if self.config.weight_tying:
-            logits = F.linear(x, self.transformer.wte.weight, None)  # type: ignore
+            logits = F.linear(logits_input, self.transformer.wte.weight, None)  # type: ignore
         else:
-            logits = self.transformer.ff_out(x)  # type: ignore
+            logits = self.transformer.ff_out(logits_input)  # type: ignore
         if self.config.scale_logits:
             logits.mul_(1 / math.sqrt(self.config.d_model))
 
@@ -1487,6 +1496,8 @@ class LLaDAModelLM(PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[Cache] = None,  # This is a hack mitigation of an issue in transformers `4.39.x`
+        last_hidden_state_only: bool = False,
+        logits_slice: Optional[slice] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if use_cache is None:
             use_cache = self.config.use_cache
@@ -1505,6 +1516,8 @@ class LLaDAModelLM(PreTrainedModel):
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_hidden_states=output_hidden_states,
+            last_hidden_state_only=last_hidden_state_only,
+            logits_slice=logits_slice,
         )
 
         logits = outputs.logits

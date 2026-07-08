@@ -90,6 +90,9 @@ fixable = ["ALL"]
 "src/d5p4/jina_ref/*" = ["ALL"]
 "src/d5p4/esmc_ref/*" = ["ALL"]
 
+# testing code
+"tests/*" = ["ALL"]
+
 [tool.ruff.lint.isort]
 lines-after-imports = 2
 known-third-party = ["idr_torch"]
@@ -124,5 +127,6 @@ untyped-import = false
 
 [tool.pytest.ini_options]
 markers = [
+    "cuda: tests that require a CUDA device",
     "slow: real-model smoke tests that may download large checkpoints",
 ]
