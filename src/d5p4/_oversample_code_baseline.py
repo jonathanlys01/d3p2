@@ -25,6 +25,7 @@ from typing import Any
 from d5p4.code_eval import CodeEvaluator, CodeValidationResult, validation_results_to_json
 from d5p4.config import CODE_DATASET_CHOICES, Config
 from d5p4.data.code_ds import get_code_dataset
+from d5p4.eval_core import Evaluator, _build_perplexity_model
 from d5p4.eval_utils import compute_statistics
 
 
@@ -94,9 +95,7 @@ def _is_code_result(data: dict[str, Any]) -> bool:
         return True
     results = data.get("results")
     return (
-        isinstance(results, list)
-        and bool(results)
-        and all(isinstance(row.get("validation"), list) for row in results)
+        isinstance(results, list) and bool(results) and all(isinstance(row.get("validation"), list) for row in results)
     )
 
 
@@ -390,8 +389,7 @@ def _validate_selected_cardinality(selected_indices: list[list[int]], expected_s
     for row_idx, indices in enumerate(selected_indices):
         if len(indices) != expected_selected_k:
             raise ValueError(
-                f"Code result row {row_idx} selected {len(indices)} candidates, "
-                f"expected {expected_selected_k}.",
+                f"Code result row {row_idx} selected {len(indices)} candidates, expected {expected_selected_k}.",
             )
 
 
@@ -465,8 +463,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             elif metric in {"int", "group_int"}:
                 selection_scores = scores
             elif metric == "ppl":
-                from d5p4.eval_core import _build_perplexity_model
-
                 ppl_model = ppl_models.get(current_config.ppl_model_id)
                 if ppl_model is None:
                     ppl_model = _build_perplexity_model(current_config.ppl_model_id)
@@ -487,8 +483,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             )
             generation_metrics: dict[str, float | str] = {}
             if include_generation_metrics:
-                from d5p4.eval_core import Evaluator
-
                 evaluator_key = (
                     current_config.eval_batch_size,
                     current_config.ppl_model_id,

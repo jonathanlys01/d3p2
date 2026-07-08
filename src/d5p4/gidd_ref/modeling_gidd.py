@@ -21,6 +21,7 @@ class AttentionLayerOutput:
     attentions: tp.Optional[torch.Tensor] = None
     past_key_values: tp.Optional[tp.List[tp.Tuple[torch.Tensor, torch.Tensor]]] = None
 
+
 @dataclass
 class DecoderLayerOutput:
     hidden_states: torch.Tensor
@@ -29,10 +30,7 @@ class DecoderLayerOutput:
 
 
 def promote_dtype(args: tuple, *, dtype: torch.dtype | None = None) -> tuple:
-    return tuple(
-        torch.as_tensor(x, dtype=dtype) if x is not None else None
-        for x in args
-    )
+    return tuple(torch.as_tensor(x, dtype=dtype) if x is not None else None for x in args)
 
 
 def config_dtype(config, default: torch.dtype = torch.float32) -> torch.dtype:
@@ -62,9 +60,11 @@ class ScaledLinear(nn.Module):
             scale = out_features**-0.5
 
         if scale != 1.0:
+
             def _scale_operator(x):
                 return x * scale
         else:
+
             def _scale_operator(x):
                 return x
 
@@ -134,6 +134,7 @@ def _apply_rotary_emb(
     else:
         return torch.stack((o1, o2), dim=-1).reshape(x.shape)
 
+
 def apply_basic_rope(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -158,6 +159,7 @@ def apply_basic_rope(
         key = _apply_rotary_emb(key, cos, sin, is_neox_style)
         return query.to(dtype), key.to(dtype), cos, sin
 
+
 def compute_basic_frequencies(
     base: int,
     rotary_dim: int,
@@ -174,6 +176,7 @@ def compute_basic_frequencies(
     )
     freqs = torch.cat([freqs.cos(), freqs.sin()], dim=-1)
     return freqs
+
 
 class RotaryEmbedding(nn.Module):
     def __init__(
@@ -240,8 +243,9 @@ class GiddRMSNorm(nn.Module):
         variance = variance.mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.epsilon)
 
-        hidden_states = ((1 + self.weight) * hidden_states)
+        hidden_states = (1 + self.weight) * hidden_states
         return hidden_states.to(dtype)
+
 
 ALL_LAYERNORM_LAYERS.append(GiddRMSNorm)
 
@@ -440,7 +444,7 @@ class GiddAttention(nn.Module):
         if attention_mask is not None:
             if attention_mask.dtype != torch.bool:
                 warnings.warn("attention_mask should be a boolean array", stacklevel=1)
-                attention_mask = (attention_mask == 1)
+                attention_mask = attention_mask == 1
 
         batch_size = query.shape[0]
 
@@ -615,7 +619,7 @@ class GiddLayer(nn.Module):
             attentions=attn_outputs.attentions,
             past_key_values=attn_outputs.past_key_values,
         )
-    
+
 
 class GiddPreTrainedModel(PreTrainedModel):
     config_class = GiddConfig
@@ -725,7 +729,7 @@ class GiddModel(GiddPreTrainedModel):
             )
         else:
             if attention_mask.dtype != torch.bool:
-                attention_mask = (attention_mask == 1)
+                attention_mask = attention_mask == 1
 
         if position_ids is None:
             position_ids = torch.arange(
@@ -825,23 +829,21 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
             attentions=outputs.attentions,
             past_key_values=outputs.past_key_values,
         )
-    
+
     def _sample_prior(self, shape: tuple[int, ...], device: torch.device, mask_token_id: int = 3) -> torch.Tensor:
-        p_unif = torch.sigmoid(
-            torch.ones(shape, device=device) * self.config.min_log_snr + self.config.noise_type
-        )
+        p_unif = torch.sigmoid(torch.ones(shape, device=device) * self.config.min_log_snr + self.config.noise_type)
         r = torch.rand(shape, device=device)
         unif = torch.randint(0, self.config.vocab_size, shape, device=device)
         samples = torch.where(r < p_unif, unif, mask_token_id)
         return samples
-    
+
     def _probs_with_topk_topp(self, logits, temperature: float, top_p: float | None, top_k: int | None):
         if temperature == 0.0:
             probs = torch.zeros_like(logits)
             indices = torch.argmax(logits, dim=-1, keepdim=True)
             probs.scatter_(-1, indices, 1.0)
             return probs
-        
+
         x = logits / temperature
 
         if top_k is not None and 0 < top_k < x.size(-1):
@@ -863,7 +865,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
         probs = torch.softmax(x, dim=-1)
 
         return probs
-    
+
     def _pi_lambda(self, log_snr, mask_token_id=3):
         unif_vec = torch.ones((self.config.vocab_size,), device=log_snr.device) / (self.config.vocab_size - 1)
         unif_vec[mask_token_id] = 0.0
@@ -871,7 +873,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
         pi = alpha * unif_vec
         pi[..., mask_token_id] = 1.0 - alpha
         return pi
-    
+
     def _sample_ancestral(
         self,
         z: torch.Tensor,
@@ -935,7 +937,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
         batch_indices = torch.arange(z.shape[0], device=z.device).unsqueeze(-1)
         z_next[batch_indices, next_poss] = next_tokens[batch_indices, next_poss]
         return z_next
-    
+
     @torch.no_grad()
     def generate(
         self,
@@ -1003,7 +1005,9 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
             batch_size = inputs.shape[0]
             prompt_length = inputs.shape[1]
             if eos_token_id in inputs:
-                warnings.warn("Input prompt contains eos_token_id. Generation may stop earlier than expected.", stacklevel=1)
+                warnings.warn(
+                    "Input prompt contains eos_token_id. Generation may stop earlier than expected.", stacklevel=1
+                )
             input_ids = inputs.to(self.device)
 
         total_length = self.config.max_position_embeddings
@@ -1040,13 +1044,16 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
 
         if show_progress:
             import tqdm.auto as tqdm
+
             est_num_blocks = (max_length + block_length - 1) // block_length
             est_num_steps = est_num_blocks * steps
             pbar = tqdm.tqdm(total=est_num_steps)
             update_pbar = lambda n: pbar.update(n)
+
             def stop_pbar():
                 pbar.total = pbar.n
                 pbar.refresh()
+
             close_pbar = lambda: pbar.close()
         else:
             update_pbar = lambda n: None
@@ -1058,7 +1065,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
             while True:
                 current_window_start = prompt_length + num_blocks * block_length
                 current_window_end = current_window_start + block_length
-                attn_mask = (noise_mask[..., :, None] >= noise_mask[..., None, :])
+                attn_mask = noise_mask[..., :, None] >= noise_mask[..., None, :]
 
                 keep_logits = False
                 past_key_values = None
@@ -1091,7 +1098,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
                         active_logits[..., mask_token_id] = float("-inf")
                         min_eos_idx = max(0, min_length + prompt_length - current_window_start)
                         active_logits[:, :min_eos_idx, eos_token_id] = float("-inf")
-                    
+
                     z_t = x[:, current_window_start:current_window_end]
                     if sampling_method == "ancestral":
                         x_hat = self._probs_with_topk_topp(
@@ -1136,7 +1143,7 @@ class GiddForDiffusionLM(GiddPreTrainedModel, GenerationMixin):
         finally:
             close_pbar()
 
-        generated_answer = x[:, :max_length + prompt_length]
+        generated_answer = x[:, : max_length + prompt_length]
 
         eos_idx = (generated_answer == eos_token_id).int().argmax(dim=-1)
         for i, idx in enumerate(eos_idx):

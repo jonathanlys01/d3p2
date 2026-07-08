@@ -591,10 +591,13 @@ class JinaBertEncoder(nn.Module):
         relative_position = torch.abs(memory_position - context_position)
         # [n_heads, max_token_length, max_token_length]
         relative_position = relative_position.unsqueeze(0).expand(n_heads, -1, -1)
-        slopes = torch.tensor(
-            _get_alibi_head_slopes(n_heads),
-            device=relative_position.device,
-        ) * -1
+        slopes = (
+            torch.tensor(
+                _get_alibi_head_slopes(n_heads),
+                device=relative_position.device,
+            )
+            * -1
+        )
         alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
         # [1, n_heads, max_token_length, max_token_length]
         alibi = alibi.unsqueeze(0)

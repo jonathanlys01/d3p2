@@ -798,7 +798,7 @@ class Evaluator:
         except ValueError as exc:
             raise ValueError(f"Invalid generation result file {file_path}: {exc}") from exc
 
-        metrics = data.get("metrics", None)
+        metrics = data.get("metrics")
         if not self.force and metrics is not None:
             return
 

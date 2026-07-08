@@ -522,7 +522,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         overrides["cache_dir"] = args.cache_dir
                         cmd_args.append(_path_cfg_arg("cache_dir", args.cache_dir))
 
-
                     # Add method-specific parameters
                     if method == "baseline":
                         overrides.update({"n_groups": 9, "group_size": 1})

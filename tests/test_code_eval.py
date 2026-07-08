@@ -57,7 +57,7 @@ class TestCodeEval(unittest.TestCase):
 
     def test_humaneval_validation_uses_prompt_and_entry_point(self):
         evaluator = CodeEvaluator(timeout_s=2.0)
-        prompt = "def add(a, b):\n    \"\"\"Add two numbers.\"\"\"\n"
+        prompt = 'def add(a, b):\n    """Add two numbers."""\n'
 
         result = evaluator.validate(
             "    return a + b",

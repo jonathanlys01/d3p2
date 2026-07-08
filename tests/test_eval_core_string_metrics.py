@@ -154,11 +154,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         seq_probs_1 = np.array([2 / 3, 1 / 3], dtype=float)
         seq_probs_2 = np.array([1 / 3, 1 / 3, 1 / 3], dtype=float)
         expected_sequence_entropy = float(
-            (
-                -(seq_probs_1 * np.log(seq_probs_1)).sum()
-                + -(seq_probs_2 * np.log(seq_probs_2)).sum()
-            )
-            / 2,
+            (-(seq_probs_1 * np.log(seq_probs_1)).sum() + -(seq_probs_2 * np.log(seq_probs_2)).sum()) / 2,
         )
 
         corpus_probs = np.array([3 / 6, 2 / 6, 1 / 6], dtype=float)

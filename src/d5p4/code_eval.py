@@ -76,12 +76,7 @@ def _format_tests(tests: list[str], entry_point: str) -> str:
 
 
 def _build_execution_script(full_code: str, tests: list[str], entry_point: str) -> str:
-    return (
-        "import faulthandler\n"
-        "faulthandler.enable()\n\n"
-        f"{full_code}\n\n"
-        f"{_format_tests(tests, entry_point)}"
-    )
+    return f"import faulthandler\nfaulthandler.enable()\n\n{full_code}\n\n{_format_tests(tests, entry_point)}"
 
 
 def _run_script(script: str, timeout_s: float) -> tuple[str, str, str]:

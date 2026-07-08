@@ -65,9 +65,7 @@ class GiddConfig(PretrainedConfig):
         self.attention_bias = attention_bias
         self.mlp_bias = mlp_bias
         self.rope_scaling = rope_scaling
-        self.head_dim = (
-            head_dim if head_dim is not None else hidden_size // num_attention_heads
-        )
+        self.head_dim = head_dim if head_dim is not None else hidden_size // num_attention_heads
         self.tie_word_embeddings = tie_word_embeddings
         self.attn_performer = attn_performer
         self.noise_type = noise_type

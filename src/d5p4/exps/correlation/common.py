@@ -146,10 +146,7 @@ def compute_H_from_residual_cosine_matrix(
     P1 = (ones @ ones.T) / k
     Pperp = identity - P1
 
-    B_inv_half = (
-        P1 / math.sqrt(1 + (k - 1) * rho)
-        + Pperp / math.sqrt(1 - rho)
-    )
+    B_inv_half = P1 / math.sqrt(1 + (k - 1) * rho) + Pperp / math.sqrt(1 - rho)
 
     H = (1 - rho) * (B_inv_half @ C_tilde @ B_inv_half)
     H = 0.5 * (H + H.T)
