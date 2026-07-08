@@ -42,6 +42,24 @@ def topk_row_transfer_mask(confidence: torch.Tensor, counts: torch.Tensor) -> to
     return mask
 
 
+def cfg_combine_logits(cond_logits: torch.Tensor, uncond_logits: torch.Tensor, cfg_scale: float) -> torch.Tensor:
+    """Classifier-free guidance combination that preserves impossible-token masks.
+
+    The usual `uncond + scale * (cond - uncond)` form produces NaNs when both
+    branches contain the same infinity, e.g. `-inf - -inf`. That can happen with
+    constrained logits. Treat indeterminate infinities conservatively as masked.
+    """
+    if cfg_scale == 0.0:
+        return uncond_logits
+    if cfg_scale == 1.0:
+        return cond_logits
+
+    logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
+    same_pos_inf = torch.isposinf(cond_logits) & torch.isposinf(uncond_logits)
+    logits = torch.where(same_pos_inf, torch.inf, logits)
+    return torch.nan_to_num(logits, nan=-torch.inf)
+
+
 class LLADASampler(nn.Module):
     """Discrete Diffusion Model base class. (LLaDA version)"""
 
@@ -293,7 +311,7 @@ class LLADASampler(nn.Module):
                         )
 
                         cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
-                        logits = uncond_logits + self.config.cfg_scale * (cond_logits - uncond_logits)
+                        logits = cfg_combine_logits(cond_logits, uncond_logits, self.config.cfg_scale)
                         embeddings = None
                         if out_all is not None:
                             embeddings_all = out_all[-1]

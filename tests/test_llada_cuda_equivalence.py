@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from d5p4.config import Cache, Config
-from d5p4.diffusion_llada import LLADASampler
+from d5p4.diffusion_llada import LLADASampler, cfg_combine_logits
 
 
 MASK_INDEX = 99
@@ -155,7 +155,7 @@ def _sample_full_materialized_reference(  # noqa: PLR0915
                     x_ = torch.cat([x, un_x], dim=0)
                     logits_all, _ = sampler._forward_model(x_, output_hidden_states=False)
                     cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
-                    logits = uncond_logits + sampler.config.cfg_scale * (cond_logits - uncond_logits)
+                    logits = cfg_combine_logits(cond_logits, uncond_logits, sampler.config.cfg_scale)
                 else:
                     logits, _ = sampler._forward_model(x, output_hidden_states=False)
 
