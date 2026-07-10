@@ -410,6 +410,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
         default=None,
         help="Cache directory passed to Hugging Face datasets/models.",
     )
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=[0, 1, 2],
+        metavar="SEED",
+        help="Sweep seeds to run (default: 0 1 2). For an early evaluation pass, use: --seeds 0",
+    )
 
     parser.add_argument("--dry_run", action="store_true", help="Only print the commands, don't run them")
     args = parser.parse_args()
@@ -435,7 +443,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
             selection_temperature=0.1,
         ),
     ]
-    seeds = [0, 1, 2]
+    seeds = args.seeds
 
     # Define sampling methods
     # Each method has unique parameters depending on the dataset
