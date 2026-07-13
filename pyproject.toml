@@ -120,6 +120,7 @@ project-excludes = [
     "src/d5p4/esmc_ref",
     "src/d5p4/mauve",
     "tests",
+    "LLaDA-8B-Instruct-D5P4",
 ] # external sources
 
 [tool.pyrefly.errors]
