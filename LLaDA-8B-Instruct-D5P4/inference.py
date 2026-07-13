@@ -3,57 +3,59 @@
 from __future__ import annotations
 
 import argparse
-import inspect
-from collections.abc import Iterator
-from contextlib import contextmanager
+from typing import Any
 
 import numpy as np
 import torch
 from config import D5P4Config
 from sampler import generate_d5p4
-from transformers import AutoModel, AutoTokenizer, PreTrainedModel
+from transformers import AutoConfig, AutoTokenizer
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 
 DEFAULT_MODEL_ID = "jonathanlys01/LLaDA-8B-Instruct-D5P4"
 DEFAULTS = D5P4Config()
 
 
-@contextmanager
-def legacy_llada_loading_compatibility() -> Iterator[None]:
-    """Adapt the legacy remote LLaDA class to the Transformers 5 loading API."""
-    original_finalize = PreTrainedModel._finalize_model_loading
+def _compatible_llada_class(legacy_model_class: type) -> type:
+    """Adapt the upstream LLaDA class to the Transformers 5 model API."""
 
-    def finalize_model_loading(model, load_config, loading_info):
-        if type(model).__name__ != "LLaDAModelLM":
-            return original_finalize(model, load_config, loading_info)
+    class CompatibleLLaDAModel(legacy_model_class):
+        all_tied_weights_keys: dict[str, str] = {}
 
-        if not hasattr(model, "all_tied_weights_keys"):
-            model.all_tied_weights_keys = {}
+        def tie_weights(self, *args: Any, **kwargs: Any) -> None:  # noqa: ARG002
+            legacy_model_class.tie_weights(self)
 
-        legacy_tie_weights = model.tie_weights
-        try:
-            inspect.signature(legacy_tie_weights).bind(
-                missing_keys=loading_info.missing_keys,
-                recompute_mapping=False,
-            )
-        except TypeError:
+    CompatibleLLaDAModel.__name__ = legacy_model_class.__name__
+    CompatibleLLaDAModel.__qualname__ = legacy_model_class.__qualname__
+    return CompatibleLLaDAModel
 
-            def compatible_tie_weights(*_args, **_kwargs):
-                return legacy_tie_weights()
 
-            model.tie_weights = compatible_tie_weights
-            try:
-                return original_finalize(model, load_config, loading_info)
-            finally:
-                del model.tie_weights
+def load_llada_model(model_id: str, device: torch.device):
+    """Load unchanged LLaDA weights with a Transformers 5-compatible model class."""
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    config.use_cache = False
+    class_reference = getattr(config, "auto_map", {}).get("AutoModel")
+    if class_reference is None:
+        raise RuntimeError(f"{model_id!r} does not expose an AutoModel remote class")
 
-        return original_finalize(model, load_config, loading_info)
-
-    PreTrainedModel._finalize_model_loading = staticmethod(finalize_model_loading)
-    try:
-        yield
-    finally:
-        PreTrainedModel._finalize_model_loading = staticmethod(original_finalize)
+    revision = getattr(config, "_commit_hash", None)
+    legacy_model_class = get_class_from_dynamic_module(
+        class_reference,
+        model_id,
+        revision=revision,
+    )
+    model_class = _compatible_llada_class(legacy_model_class)
+    return (
+        model_class.from_pretrained(
+            model_id,
+            config=config,
+            revision=revision,
+            dtype=torch.bfloat16,
+        )
+        .to(device)
+        .eval()
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,16 +101,7 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
-    with legacy_llada_loading_compatibility():
-        model = (
-            AutoModel.from_pretrained(
-                args.model_id,
-                trust_remote_code=True,
-                dtype=torch.bfloat16,
-            )
-            .to(device)
-            .eval()
-        )
+    model = load_llada_model(args.model_id, device)
 
     messages = [{"role": "user", "content": args.prompt}]
     formatted_prompt = tokenizer.apply_chat_template(

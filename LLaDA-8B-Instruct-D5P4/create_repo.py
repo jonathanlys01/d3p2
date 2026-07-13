@@ -20,6 +20,7 @@ CUSTOM_FILES = (
     "inference.py",
     "sampler.py",
     "create_repo.py",
+    "requirements.txt",
 )
 SHA_PLACEHOLDER = "{{UPSTREAM_COMMIT_SHA}}"
 SHARD_PATTERN = re.compile(r"model-\d{5}-of-00006\.safetensors")

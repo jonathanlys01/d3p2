@@ -25,7 +25,17 @@ This repository is a snapshot, not a live pointer to the upstream repository.
 Later upstream updates are not applied automatically. Loading the model requires
 `trust_remote_code=True`.
 
-Install `torch`, `transformers`, `numpy`, `dppy`, and `huggingface_hub>=1.17`, then run:
+The loader adapts the upstream LLaDA model class to Transformers 5.12 without
+changing checkpoint keys. Install the standalone dependencies before running
+inference:
+
+```bash
+python -m venv .venv-llada
+source .venv-llada/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Then run:
 
 ```bash
 python inference.py \
