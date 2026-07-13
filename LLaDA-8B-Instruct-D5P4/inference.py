@@ -8,11 +8,17 @@ import numpy as np
 import torch
 from config import D5P4Config
 from sampler import generate_d5p4
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, PreTrainedModel
 
 
 DEFAULT_MODEL_ID = "jonathanlys01/LLaDA-8B-Instruct-D5P4"
 DEFAULTS = D5P4Config()
+
+
+def ensure_legacy_llada_compatibility() -> None:
+    """Supply the tied-weight metadata expected by recent Transformers releases."""
+    if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
+        PreTrainedModel.all_tied_weights_keys = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,11 +57,12 @@ def main() -> None:
             torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ensure_legacy_llada_compatibility()
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     model = AutoModel.from_pretrained(
         args.model_id,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     ).to(device).eval()
 
     messages = [{"role": "user", "content": args.prompt}]
