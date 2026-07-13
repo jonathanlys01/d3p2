@@ -61,6 +61,7 @@ def _model_forward(  # noqa: PLR0913 - keeps model-call state explicit
             model_input,
             attention_mask=model_attention_mask,
             output_hidden_states=True,
+            last_hidden_state_only=True,
             return_dict=True,
         )
         conditional_logits, unconditional_logits = output.logits.chunk(2, dim=0)
@@ -71,6 +72,7 @@ def _model_forward(  # noqa: PLR0913 - keeps model-call state explicit
             x,
             attention_mask=attention_mask,
             output_hidden_states=True,
+            last_hidden_state_only=True,
             return_dict=True,
         )
         logits = output.logits

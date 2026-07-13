@@ -50,13 +50,13 @@ def main() -> None:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.seed)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     model = AutoModel.from_pretrained(
         args.model_id,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
-    ).eval()
+    ).to(device).eval()
 
     messages = [{"role": "user", "content": args.prompt}]
     formatted_prompt = tokenizer.apply_chat_template(

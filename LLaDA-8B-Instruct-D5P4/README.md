@@ -43,6 +43,22 @@ python inference.py \
 
 The command prints one completion for every particle in the final population.
 
+If the original model was already cached with `hf download`, the standalone
+sampler can load those unchanged weights by using the original model ID. Set
+`HF_HUB_OFFLINE=1` to prevent any network access:
+
+```bash
+HF_HUB_OFFLINE=1 python inference.py \
+  --model-id GSAI-ML/LLaDA-8B-Instruct \
+  --prompt "Write a Python implementation of binary search." \
+  --steps 128 \
+  --gen-length 128 \
+  --block-length 32 \
+  --seed 42
+```
+
+An explicit local snapshot directory can also be passed to `--model-id`.
+
 The underlying model remains loadable directly:
 
 ```python
