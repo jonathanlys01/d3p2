@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import inspect
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -15,10 +18,42 @@ DEFAULT_MODEL_ID = "jonathanlys01/LLaDA-8B-Instruct-D5P4"
 DEFAULTS = D5P4Config()
 
 
-def ensure_legacy_llada_compatibility() -> None:
-    """Supply the tied-weight metadata expected by recent Transformers releases."""
-    if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
-        PreTrainedModel.all_tied_weights_keys = {}
+@contextmanager
+def legacy_llada_loading_compatibility() -> Iterator[None]:
+    """Adapt the legacy remote LLaDA class to the Transformers 5 loading API."""
+    original_finalize = PreTrainedModel._finalize_model_loading
+
+    def finalize_model_loading(model, load_config, loading_info):
+        if type(model).__name__ != "LLaDAModelLM":
+            return original_finalize(model, load_config, loading_info)
+
+        if not hasattr(model, "all_tied_weights_keys"):
+            model.all_tied_weights_keys = {}
+
+        legacy_tie_weights = model.tie_weights
+        try:
+            inspect.signature(legacy_tie_weights).bind(
+                missing_keys=loading_info.missing_keys,
+                recompute_mapping=False,
+            )
+        except TypeError:
+
+            def compatible_tie_weights(*_args, **_kwargs):
+                return legacy_tie_weights()
+
+            model.tie_weights = compatible_tie_weights
+            try:
+                return original_finalize(model, load_config, loading_info)
+            finally:
+                del model.tie_weights
+
+        return original_finalize(model, load_config, loading_info)
+
+    PreTrainedModel._finalize_model_loading = staticmethod(finalize_model_loading)
+    try:
+        yield
+    finally:
+        PreTrainedModel._finalize_model_loading = staticmethod(original_finalize)
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,17 +98,17 @@ def main() -> None:
             torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ensure_legacy_llada_compatibility()
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
-    model = (
-        AutoModel.from_pretrained(
-            args.model_id,
-            trust_remote_code=True,
-            dtype=torch.bfloat16,
+    with legacy_llada_loading_compatibility():
+        model = (
+            AutoModel.from_pretrained(
+                args.model_id,
+                trust_remote_code=True,
+                dtype=torch.bfloat16,
+            )
+            .to(device)
+            .eval()
         )
-        .to(device)
-        .eval()
-    )
 
     messages = [{"role": "user", "content": args.prompt}]
     formatted_prompt = tokenizer.apply_chat_template(
