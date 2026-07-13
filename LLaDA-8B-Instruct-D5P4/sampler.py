@@ -46,6 +46,39 @@ def compute_confidence(
     raise ValueError(f"Unsupported remasking strategy: {remasking!r}")
 
 
+def _forward_with_last_hidden_state(
+    model,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+):
+    """Run legacy or current LLaDA while retaining only its final hidden state."""
+    final_hidden_state: torch.Tensor | None = None
+
+    def capture_final_hidden_state(_module, _inputs, output: torch.Tensor) -> None:
+        nonlocal final_hidden_state
+        final_hidden_state = output
+
+    try:
+        final_norm = model.model.transformer.ln_f
+    except AttributeError as error:
+        raise RuntimeError("Could not locate the LLaDA final layer norm") from error
+
+    handle = final_norm.register_forward_hook(capture_final_hidden_state)
+    try:
+        output = model(
+            input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+    finally:
+        handle.remove()
+
+    if final_hidden_state is None:
+        raise RuntimeError("LLaDA did not execute its final layer norm")
+    return output, final_hidden_state
+
+
 def _model_forward(  # noqa: PLR0913 - keeps model-call state explicit
     model,
     x: torch.Tensor,
@@ -60,26 +93,21 @@ def _model_forward(  # noqa: PLR0913 - keeps model-call state explicit
         unconditional_x[conditioned_prompt_positions] = mask_id
         model_input = torch.cat((x, unconditional_x), dim=0)
         model_attention_mask = None if attention_mask is None else torch.cat((attention_mask, attention_mask), dim=0)
-        output = model(
+        output, all_hidden_states = _forward_with_last_hidden_state(
+            model,
             model_input,
-            attention_mask=model_attention_mask,
-            output_hidden_states=True,
-            last_hidden_state_only=True,
-            return_dict=True,
+            model_attention_mask,
         )
         conditional_logits, unconditional_logits = output.logits.chunk(2, dim=0)
         logits = unconditional_logits + (cfg_scale + 1.0) * (conditional_logits - unconditional_logits)
-        hidden_states = output.hidden_states[-1].chunk(2, dim=0)[0]
+        hidden_states = all_hidden_states.chunk(2, dim=0)[0]
     else:
-        output = model(
+        output, hidden_states = _forward_with_last_hidden_state(
+            model,
             x,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            last_hidden_state_only=True,
-            return_dict=True,
+            attention_mask,
         )
         logits = output.logits
-        hidden_states = output.hidden_states[-1]
     return logits, hidden_states
 
 
