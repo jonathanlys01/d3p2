@@ -46,12 +46,16 @@ python inference.py \
   --block-length 32 \
   --n-groups 2 \
   --group-size 2 \
-  --kernel-type cosine \
+  --w-interaction 0.0 \
   --temperature 1.0 \
   --seed 42
 ```
 
 The command prints one completion for every particle in the final population.
+The DPP kernel matches the main repository's additive parametrization:
+`K = w_interaction * cosine_similarity + diag(normalized_negative_entropy)`.
+Set `--w-interaction -1` for pure cosine diversity, `0` for quality only, or a
+positive value to include both.
 
 If the original model was already cached with `hf download`, the standalone
 sampler can load those unchanged weights by using the original model ID. Set

@@ -22,11 +22,7 @@ class D5P4Config:
     resample_start: int = 0
     resample_end: int | None = None
 
-    kernel_type: str = "cosine"
-    kernel_method: str = "multiplicative"
-    quality_weight: float = 0.0
-    rbf_gamma: float = 1.0
-    score_method: str = "entropy"
+    w_interaction: float = 0.0
 
     @property
     def batch_size(self) -> int:
@@ -58,16 +54,8 @@ class D5P4Config:
             raise ValueError("resample_start must be non-negative")
         if self.resample_end is not None and self.resample_end < self.resample_start:
             raise ValueError("resample_end must be greater than or equal to resample_start")
-        if self.kernel_type not in {"cosine", "rbf"}:
-            raise ValueError("kernel_type must be 'cosine' or 'rbf'")
-        if self.kernel_method not in {"multiplicative", "additive"}:
-            raise ValueError("kernel_method must be 'multiplicative' or 'additive'")
-        if self.quality_weight < 0:
-            raise ValueError("quality_weight must be non-negative")
-        if self.rbf_gamma <= 0:
-            raise ValueError("rbf_gamma must be positive")
-        if self.score_method not in {"entropy", "mean_token_confidence"}:
-            raise ValueError("score_method must be 'entropy' or 'mean_token_confidence'")
+        if self.w_interaction < -1:
+            raise ValueError("w_interaction must be at least -1")
 
     def should_resample(self, step_in_block: int) -> bool:
         end = self.steps_per_block - 1 if self.resample_end is None else self.resample_end

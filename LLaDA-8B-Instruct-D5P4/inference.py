@@ -73,15 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=DEFAULTS.group_size)
     parser.add_argument("--resample-start", type=int, default=DEFAULTS.resample_start)
     parser.add_argument("--resample-end", type=int, default=DEFAULTS.resample_end)
-    parser.add_argument("--kernel-type", choices=("cosine", "rbf"), default=DEFAULTS.kernel_type)
-    parser.add_argument("--kernel-method", choices=("multiplicative", "additive"), default=DEFAULTS.kernel_method)
-    parser.add_argument("--quality-weight", type=float, default=DEFAULTS.quality_weight)
-    parser.add_argument("--rbf-gamma", type=float, default=DEFAULTS.rbf_gamma)
-    parser.add_argument(
-        "--score-method",
-        choices=("entropy", "mean_token_confidence"),
-        default=DEFAULTS.score_method,
-    )
+    parser.add_argument("--w-interaction", type=float, default=DEFAULTS.w_interaction)
     parser.add_argument(
         "--no-progress",
         action="store_false",
@@ -127,11 +119,7 @@ def main() -> None:
         group_size=args.group_size,
         resample_start=args.resample_start,
         resample_end=args.resample_end,
-        kernel_type=args.kernel_type,
-        kernel_method=args.kernel_method,
-        quality_weight=args.quality_weight,
-        rbf_gamma=args.rbf_gamma,
-        score_method=args.score_method,
+        w_interaction=args.w_interaction,
     )
     output_ids = generate_d5p4(
         model,
