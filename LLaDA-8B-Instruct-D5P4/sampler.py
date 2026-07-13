@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+import time
+
 import torch
 import torch.nn.functional as F
 from config import D5P4Config
@@ -84,6 +87,57 @@ def _sample_tokens(logits: torch.Tensor, temperature: float) -> torch.Tensor:
     return add_gumbel_noise(logits, temperature).argmax(dim=-1)
 
 
+class SimpleProgressBar:
+    """A minimal, zero-dependency progress bar that prints to stderr."""
+
+    def __init__(self, total: int, desc: str = "", disable: bool = False) -> None:
+        self.total = total
+        self.desc = desc
+        self.disable = disable
+        self.n = 0
+        self.start_time = time.time()
+
+    def __enter__(self) -> SimpleProgressBar:
+        self.update(0)
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object) -> None:
+        self.close()
+
+    def update(self, amount: int = 1) -> None:
+        if self.disable or self.total <= 0:
+            return
+        self.n = min(self.n + amount, self.total)
+        elapsed = time.time() - self.start_time
+        pct = (self.n / self.total) * 100
+
+        # Calculate ETA
+        if self.n > 0:
+            eta = (elapsed / self.n) * (self.total - self.n)
+            eta_str = f"{int(eta)}s" if eta >= 1 else "0s"
+        else:
+            eta_str = "?"
+
+        elapsed_str = f"{int(elapsed)}s"
+
+        # Build simple visual bar (e.g. [#####.....])
+        bar_length = 20
+        filled = int(round(bar_length * self.n / self.total))
+        bar = "#" * filled + "." * (bar_length - filled)
+
+        prefix = f"{self.desc}: " if self.desc else ""
+        sys.stderr.write(
+            f"\r{prefix}[{bar}] {self.n}/{self.total} ({pct:.1f}%) | {elapsed_str}<{eta_str}",
+        )
+        sys.stderr.flush()
+
+    def close(self) -> None:
+        if self.disable:
+            return
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+
 @torch.inference_mode()
 def generate_d5p4(  # noqa: C901, PLR0915 - mirrors the denoising/resampling loop
     model,
@@ -91,6 +145,7 @@ def generate_d5p4(  # noqa: C901, PLR0915 - mirrors the denoising/resampling loo
     attention_mask: torch.Tensor | None = None,
     *,
     config: D5P4Config | None = None,
+    show_progress: bool = True,
 ) -> torch.Tensor:
     """Generate with single-process DPP selection and particle resampling at each step."""
     config = D5P4Config() if config is None else config
@@ -132,52 +187,54 @@ def generate_d5p4(  # noqa: C901, PLR0915 - mirrors the denoising/resampling loo
         conditioned_prompt_positions.zero_()
         conditioned_prompt_positions[:, :prompt_length] = repeated_mask.bool()
 
-    for block in range(config.num_blocks):
-        block_start = prompt_length + block * config.block_length
-        block_end = block_start + config.block_length
-        transfer_counts = get_num_transfer_tokens(
-            x[:, block_start:block_end] == config.mask_id,
-            config.steps_per_block,
-        )
-
-        for step in range(config.steps_per_block):
-            logits, hidden_states = _model_forward(
-                model,
-                x,
-                model_attention_mask,
-                config.cfg_scale,
-                conditioned_prompt_positions,
-                config.mask_id,
+    with SimpleProgressBar(total=config.steps, desc="Denoising", disable=not show_progress) as pbar:
+        for block in range(config.num_blocks):
+            block_start = prompt_length + block * config.block_length
+            block_end = block_start + config.block_length
+            transfer_counts = get_num_transfer_tokens(
+                x[:, block_start:block_end] == config.mask_id,
+                config.steps_per_block,
             )
-            block_logits = logits[:, block_start:block_end]
-            block_log_probs = F.log_softmax(block_logits, dim=-1)
-            block_embeddings = hidden_states[:, block_start:block_end]
 
-            if config.should_resample(step):
-                selected = select_dpp(
-                    build_dpp_kernel(block_embeddings, block_log_probs, config),
-                    config.n_groups,
+            for step in range(config.steps_per_block):
+                logits, hidden_states = _model_forward(
+                    model,
+                    x,
+                    model_attention_mask,
+                    config.cfg_scale,
+                    conditioned_prompt_positions,
+                    config.mask_id,
                 )
-                parents = selected.repeat_interleave(config.group_size)
-                # Every particle shares the prompt, attention mask, and per-step transfer
-                # counts (each block starts fully masked), so only per-particle state moves.
-                x = x.index_select(0, parents)
-                block_logits = block_logits.index_select(0, parents)
+                block_logits = logits[:, block_start:block_end]
+                block_log_probs = F.log_softmax(block_logits, dim=-1)
+                block_embeddings = hidden_states[:, block_start:block_end]
 
-            block_x = x[:, block_start:block_end]
-            block_mask = block_x == config.mask_id
-            proposed = _sample_tokens(block_logits, config.temperature)
-            confidence = compute_confidence(block_logits, proposed, config.remasking)
-            proposed = torch.where(block_mask, proposed, block_x)
-            confidence = torch.where(block_mask, confidence, -torch.inf)
+                if config.should_resample(step):
+                    selected = select_dpp(
+                        build_dpp_kernel(block_embeddings, block_log_probs, config),
+                        config.n_groups,
+                    )
+                    parents = selected.repeat_interleave(config.group_size)
+                    # Every particle shares the prompt, attention mask, and per-step transfer
+                    # counts (each block starts fully masked), so only per-particle state moves.
+                    x = x.index_select(0, parents)
+                    block_logits = block_logits.index_select(0, parents)
 
-            transfer = torch.zeros_like(block_mask)
-            for row in range(config.batch_size):
-                count = int(transfer_counts[row, step].item())
-                if count:
-                    chosen = torch.topk(confidence[row], k=count).indices
-                    transfer[row, chosen] = True
-            block_x[transfer] = proposed[transfer]
+                block_x = x[:, block_start:block_end]
+                block_mask = block_x == config.mask_id
+                proposed = _sample_tokens(block_logits, config.temperature)
+                confidence = compute_confidence(block_logits, proposed, config.remasking)
+                proposed = torch.where(block_mask, proposed, block_x)
+                confidence = torch.where(block_mask, confidence, -torch.inf)
+
+                transfer = torch.zeros_like(block_mask)
+                for row in range(config.batch_size):
+                    count = int(transfer_counts[row, step].item())
+                    if count:
+                        chosen = torch.topk(confidence[row], k=count).indices
+                        transfer[row, chosen] = True
+                block_x[transfer] = proposed[transfer]
+                pbar.update(1)
 
     if not torch.equal(x[:, :prompt_length], original_prompts):
         raise RuntimeError("D5P4 sampler modified prompt tokens")

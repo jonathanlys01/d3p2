@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
         choices=("entropy", "mean_token_confidence"),
         default=DEFAULTS.score_method,
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_false",
+        dest="show_progress",
+        help="Disable the progress bar.",
+    )
     return parser.parse_args()
 
 
@@ -59,11 +65,15 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ensure_legacy_llada_compatibility()
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        args.model_id,
-        trust_remote_code=True,
-        dtype=torch.bfloat16,
-    ).to(device).eval()
+    model = (
+        AutoModel.from_pretrained(
+            args.model_id,
+            trust_remote_code=True,
+            dtype=torch.bfloat16,
+        )
+        .to(device)
+        .eval()
+    )
 
     messages = [{"role": "user", "content": args.prompt}]
     formatted_prompt = tokenizer.apply_chat_template(
@@ -100,6 +110,7 @@ def main() -> None:
         encoded.input_ids,
         encoded.attention_mask,
         config=config,
+        show_progress=args.show_progress,
     )
     prompt_length = encoded.input_ids.shape[1]
     completion_ids = output_ids[:, prompt_length:]
