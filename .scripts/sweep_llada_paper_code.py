@@ -414,9 +414,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
         "--seeds",
         nargs="+",
         type=int,
-        default=[0, 1, 2],
+        default=[0, 1, 2, 3, 4, 5],
         metavar="SEED",
-        help="Sweep seeds to run (default: 0 1 2). For an early evaluation pass, use: --seeds 0",
+        help="Sweep seeds to run (default: 0 1 2 3 4 5). For an early evaluation pass, use: --seeds 0",
     )
 
     parser.add_argument("--dry_run", action="store_true", help="Only print the commands, don't run them")
