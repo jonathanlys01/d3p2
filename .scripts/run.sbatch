@@ -40,9 +40,23 @@ srun python .scripts/sweep_llada_paper_code.py --progress_only
 now=$(date +%s)
 
 # Actual run
-# python .scripts/sweep_llada_paper_code.py --skip_eval=true
+DERISK=false
+for arg in "$@"; do
+  case "$arg" in
+    --derisk|derisk)
+      DERISK=true
+      ;;
+  esac
+done
+
+if [ "$DERISK" = "true" ]; then
+  echo "Derisk mode: skipping actual run."
+else
+  python .scripts/sweep_llada_paper_code.py --skip_eval=true
+fi
 
 renow=$(date +%s)
+elapsed=$((renow - now))
 
 # log time
-echo $(( (renow - now) / 60 ))
+echo "Elapsed time: $((elapsed / 60))m $((elapsed % 60))s"
