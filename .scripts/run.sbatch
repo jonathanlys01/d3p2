@@ -9,8 +9,8 @@
 
 
 # /Brain
-buv="/Brain/private/{$USER}/.local/bin/uv"
-export HF_HOME="/Brain/private/{$USER}/.cache/huggingface"
+buv="/Brain/private/j21lys/.local/bin/uv"
+export HF_HOME="/Brain/private/j21lys/.cache/huggingface"
 
 # /SCRATCH
 export SROOT=/SCRATCH/${USER}/
@@ -34,8 +34,8 @@ source "$UV_PROJECT_ENVIRONMENT/bin/activate"
 
 # Checks
 echo Run start
-nvidia-smi
-python .scripts/sweep_llada_paper_code.py --progress_only
+srun nvidia-smi
+srun python .scripts/sweep_llada_paper_code.py --progress_only
 now=$(date +%s)
 
 # Actual run
