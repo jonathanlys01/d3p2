@@ -2,6 +2,7 @@
 
 #SBATCH --job-name=d5p4-code
 #SBATCH --partition=Mee_Global_GPU
+#SBATCH --account=mee
 #SBATCH --qos mee_short
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
