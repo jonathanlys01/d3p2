@@ -18,12 +18,18 @@ export SROOT=/SCRATCH/${USER}
 # project specific
 export UV_PROJECT_ENVIRONMENT="${SROOT}/d3p2/.venv"
 # shared across projects
+export HOME="/Brain/private/j21lys"
 export UV_PYTHON_INSTALL_DIR="${SROOT}/python"
 export TORCHINDUCTOR_CACHE_DIR="${SROOT}/torchinductor"
 export TRITON_CACHE_DIR="${SROOT}/triton"
 
+# GCC invokes the assembler through PATH. Put node-local system tools before
+# inherited entries that may live on the unavailable home mount.
+export PATH="/usr/bin:/bin:${PATH:-}"
+
 # locals
 export OMP_NUM_THREADS=1
+export NO_COLOR=1
 
 # load env
 $buv sync -n # no cache dir
