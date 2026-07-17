@@ -7,13 +7,14 @@
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
+hostname
 
 # /Brain
 buv="/Brain/private/j21lys/.local/bin/uv"
 export HF_HOME="/Brain/private/j21lys/.cache/huggingface"
 
 # /SCRATCH
-export SROOT=/SCRATCH/${USER}/
+export SROOT=/SCRATCH/${USER}
 # project specific
 export UV_PROJECT_ENVIRONMENT="${SROOT}/d3p2/.venv"
 # shared across projects
