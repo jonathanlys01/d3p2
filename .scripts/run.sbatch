@@ -41,8 +41,8 @@ source "$UV_PROJECT_ENVIRONMENT/bin/activate"
 
 # Checks
 echo Run start
-srun nvidia-smi
-srun python .scripts/sweep_llada_paper_code.py --progress_only
+nvidia-smi
+python .scripts/sweep_llada_paper_code.py --progress_only
 now=$(date +%s)
 
 # Actual run
@@ -58,7 +58,7 @@ done
 if [ "$DERISK" = "true" ]; then
   echo "Derisk mode: skipping actual run."
 else
-  python .scripts/sweep_llada_paper_code.py --skip_eval=true
+  python .scripts/sweep_llada_paper_code.py --skip_eval=true --nproc=1
 fi
 
 renow=$(date +%s)
