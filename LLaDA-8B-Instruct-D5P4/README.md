@@ -15,11 +15,13 @@ This repository is derived from `GSAI-ML/LLaDA-8B-Instruct` at commit
 single-process D5P4 sampler and CLI were added. Weight files were copied with Hugging Face
 server-side copy operations, without downloading and re-uploading the checkpoint.
 
-The sampler maintains a population of `n_groups * group_size` sequences. During
-denoising it builds a quality/diversity DPP kernel from current-block hidden
-states and token probabilities, selects `n_groups` parents with an exact k-DPP,
-and expands every parent back to `group_size` descendants before sampling the
-next tokens. It contains no distributed runtime or experiment/evaluation code.
+The sampler maintains a population of `n_groups * group_size` sequences,
+partitioned into `n_groups` contiguous groups. During denoising it builds a
+quality/diversity DPP kernel from current-block hidden states and token
+probabilities, samples an exact DPP transversal containing one parent from each
+partition, and expands every parent back to `group_size` descendants before
+sampling the next tokens. Partitioning is always enabled. It contains no
+distributed runtime or experiment/evaluation code.
 
 This repository is a snapshot, not a live pointer to the upstream repository.
 Later upstream updates are not applied automatically. Loading the model requires

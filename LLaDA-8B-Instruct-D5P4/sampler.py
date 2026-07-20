@@ -8,7 +8,7 @@ import time
 import torch
 import torch.nn.functional as F
 from config import D5P4Config
-from dpp import build_dpp_kernel, select_dpp
+from dpp import build_dpp_kernel, select_partitioned_dpp
 
 
 def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -238,9 +238,10 @@ def generate_d5p4(  # noqa: C901, PLR0915 - mirrors the denoising/resampling loo
                 block_embeddings = hidden_states[:, block_start:block_end]
 
                 if config.should_resample(step):
-                    selected = select_dpp(
+                    selected = select_partitioned_dpp(
                         build_dpp_kernel(block_embeddings, block_log_probs, config),
                         config.n_groups,
+                        config.group_size,
                     )
                     parents = selected.repeat_interleave(config.group_size)
                     # Every particle shares the prompt, attention mask, and per-step transfer
