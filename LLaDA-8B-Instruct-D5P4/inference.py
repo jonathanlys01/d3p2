@@ -71,6 +71,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--n-groups", type=int, default=DEFAULTS.n_groups)
     parser.add_argument("--group-size", type=int, default=DEFAULTS.group_size)
+    parser.add_argument(
+        "--no-resampling",
+        action="store_true",
+        help="Disable DPP resampling; use n_groups as the batch size, ignoring group_size.",
+    )
     parser.add_argument("--resample-start", type=int, default=DEFAULTS.resample_start)
     parser.add_argument("--resample-end", type=int, default=DEFAULTS.resample_end)
     parser.add_argument("--w-interaction", type=float, default=DEFAULTS.w_interaction)
@@ -116,7 +121,8 @@ def main() -> None:
         cfg_scale=args.cfg_scale,
         remasking=args.remasking,
         n_groups=args.n_groups,
-        group_size=args.group_size,
+        group_size=1 if args.no_resampling else args.group_size,
+        resampling=not args.no_resampling,
         resample_start=args.resample_start,
         resample_end=args.resample_end,
         w_interaction=args.w_interaction,

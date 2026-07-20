@@ -19,6 +19,7 @@ class D5P4Config:
 
     n_groups: int = 2
     group_size: int = 2
+    resampling: bool = True
     resample_start: int = 0
     resample_end: int | None = None
 
@@ -58,5 +59,7 @@ class D5P4Config:
             raise ValueError("w_interaction must be at least -1")
 
     def should_resample(self, step_in_block: int) -> bool:
+        if not self.resampling:
+            return False
         end = self.steps_per_block - 1 if self.resample_end is None else self.resample_end
         return self.resample_start <= step_in_block <= end

@@ -59,6 +59,20 @@ The DPP kernel matches the main repository's additive parametrization:
 Set `--w-interaction -1` for pure cosine diversity, `0` for quality only, or a
 positive value to include both.
 
+For a baseline batch of independent generations with no DPP selection, use
+`--no-resampling`. In this mode, `n_groups` is the batch size and `group_size`
+is ignored:
+
+```bash
+python inference.py \
+  --model-id jonathanlys01/LLaDA-8B-Instruct-D5P4 \
+  --prompt "Write a Python implementation of binary search." \
+  --n-groups 4 \
+  --no-resampling \
+  --temperature 1.0 \
+  --seed 42
+```
+
 If the original model was already cached with `hf download`, the standalone
 sampler can load those unchanged weights by using the original model ID. Set
 `HF_HUB_OFFLINE=1` to prevent any network access:
