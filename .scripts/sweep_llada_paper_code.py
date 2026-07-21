@@ -66,6 +66,7 @@ from d5p4.resume_db import default_resume_dir, force_completed_resume_from_env
 
 
 _SAFE_OVERRIDE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+DEFAULT_N_SEEDS = 7
 
 
 @dataclass
@@ -414,9 +415,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
         "--seeds",
         nargs="+",
         type=int,
-        default=[0, 1, 2, 3, 4, 5],
+        default=list(range(DEFAULT_N_SEEDS)),
         metavar="SEED",
-        help="Sweep seeds to run (default: 0 1 2 3 4 5). For an early evaluation pass, use: --seeds 0",
+        help=f"Sweep seeds to run (default: {DEFAULT_N_SEEDS} seeds). For an early evaluation pass, use: --seeds 0",
     )
 
     parser.add_argument("--dry_run", action="store_true", help="Only print the commands, don't run them")
