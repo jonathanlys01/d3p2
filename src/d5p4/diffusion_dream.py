@@ -154,20 +154,29 @@ class DreamSampler(nn.Module):
         return logits, embeddings
 
     def _effective_log_probs(self, logits: torch.Tensor) -> torch.Tensor:
-        logits = logits.clone()
-        logits[..., self.mask_index] = torch.finfo(logits.dtype).min
+        # Compute the categorical distribution in fp32. The bf16 forward can
+        # emit non-finite logits, and a softmax over the full vocabulary loses
+        # too much precision in bf16 to sample reliably. nan_to_num guarantees
+        # multinomial never sees inf/nan even if the model misbehaves.
+        orig_dtype = logits.dtype
+        logits = logits.float()
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
+        if self.config.cat_temperature > 0.0:
+            logits = logits / self.config.cat_temperature
+        # Apply the -inf sentinels AFTER temperature scaling. Scaling them
+        # would overflow finfo.min to -inf, which then poisons log_softmax.
+        neg_inf = torch.finfo(logits.dtype).min
+        logits[..., self.mask_index] = neg_inf
         # Dream denoises a fixed-width suffix rather than stopping
         # autoregressively. Sampling a stop marker into suffix position zero
         # therefore creates an apparently empty completion even when later
         # positions contain a valid answer.
         for stop_id in self._stop_token_ids():
             if 0 <= stop_id < logits.size(-1):
-                logits[:, 0, stop_id] = torch.finfo(logits.dtype).min
-        if self.config.cat_temperature > 0.0:
-            logits = logits / self.config.cat_temperature
+                logits[:, 0, stop_id] = neg_inf
         logits = _top_p_logits(logits, self.config.dream_top_p)
         logits = _top_k_logits(logits, self.config.dream_top_k)
-        return F.log_softmax(logits, dim=-1)
+        return F.log_softmax(logits, dim=-1).to(orig_dtype)
 
     def _sample_tokens(self, log_probs: torch.Tensor, expand: int) -> tuple[torch.Tensor, torch.Tensor]:
         probs = log_probs.exp()
