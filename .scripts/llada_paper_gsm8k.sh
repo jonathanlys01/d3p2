@@ -33,5 +33,5 @@ exec "$LLADA_PYTHON_BIN" llada_math.py \
   llada_steps=512 \
   gen_length=512 \
   block_length=512 \
-  comment="LLaDA paper GSM8K: Instruct, 4-shot, conditional-only, deterministic" \
+  comment="'LLaDA paper GSM8K: Instruct, 4-shot, conditional-only, deterministic'" \
   "$@"
