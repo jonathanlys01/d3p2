@@ -95,6 +95,19 @@ with torch.no_grad():
         top = le[0].float().topk(10)
         print("   top-10:", [(tok.decode([i.item()]), round(v.item(), 2)) for v, i in zip(top.values, top.indices)])
 
+print("\n=== replicate the REAL sampler forward: prompt + mask suffix, via _forward_model ===")
+# _forward_model applies autocast(bfloat16) and feeds a mask-heavy input,
+# unlike the clean-prompt probes above. This is the operation that crashed.
+with torch.no_grad():
+    x = torch.full((1, ids.shape[1] + cfg.gen_length), m.mask_index, dtype=torch.long, device=m.device)
+    x[:, : ids.shape[1]] = ids
+    logits_real, _ = m._forward_model(x, need_embeddings=False)
+    print("real-path (bf16 + autocast + mask suffix) finite:", torch.isfinite(logits_real).all().item())
+    # Same input, but bypass autocast to isolate autocast vs mask-input as the trigger.
+    with torch.amp.autocast(device_type=m.device, enabled=False):
+        out_noac = m.model.forward(x, attention_mask="full", return_dict=True, num_logits_to_keep=cfg.gen_length + 1)
+        print("mask suffix, NO autocast, bf16 weights finite:", torch.isfinite(out_noac.logits).all().item())
+
 print("\n=== fp32 forward (is it a bf16 problem?) ===")
 with torch.no_grad():
     m32 = m.model.float()
