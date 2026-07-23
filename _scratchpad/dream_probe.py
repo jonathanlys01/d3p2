@@ -36,6 +36,16 @@ print(f"model_path: {cfg.dream_model_path}")
 print(f"tokenizer : {cfg.dream_tokenizer}")
 print(f"cache_dir : {cfg.cache_dir}")
 
+if torch.cuda.is_available():
+    print("\n=== GPU / stack ===")
+    print("device :", torch.cuda.get_device_name())
+    print("torch  :", torch.__version__, "| cuda", torch.version.cuda)
+    a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+    print("bf16 matmul sanity finite:", torch.isfinite(a @ b).all().item())
+    a32 = a.float()
+    print("fp32 matmul sanity finite:", torch.isfinite(a32 @ a32).all().item())
+
 m = DreamSampler(cfg)
 tok = m.tokenizer
 
