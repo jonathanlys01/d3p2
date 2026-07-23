@@ -407,6 +407,13 @@ def main():  # noqa: C901, PLR0912, PLR0915
         help="Directory containing resume SQLite DBs. Use this when results_dir differs from the generation run.",
     )
     parser.add_argument(
+        "--legacy_config",
+        type=str,
+        default="false",
+        choices=["true", "false"],
+        help="Use the pre-Dream resume-config hash for existing databases (default: false).",
+    )
+    parser.add_argument(
         "--cache_dir",
         default=None,
         help="Cache directory passed to Hugging Face datasets/models.",
@@ -490,6 +497,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         "_kernel_method": "additive",
                         "skip_eval": args.skip_eval,
                         "resume_db_keep_completed": args.resume_db_keep_completed,
+                        "legacy_config": args.legacy_config,
                         "resume_runs": True,
                         "method": method,
                         "comment": comment,
@@ -518,6 +526,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                         "_kernel_method=additive",
                         _cfg_arg("skip_eval", args.skip_eval),
                         _cfg_arg("resume_db_keep_completed", args.resume_db_keep_completed),
+                        _cfg_arg("legacy_config", args.legacy_config),
                         "resume_runs=True",
                         _cfg_arg("method", method),
                     ]

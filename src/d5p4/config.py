@@ -192,6 +192,8 @@ class Config:
     resume_db_dir: str | None = None
     resume_db_timeout_s: float = 60.0
     resume_db_keep_completed: bool = False
+    # Reuse resume databases created before Dream was added to Config.
+    legacy_config: bool = False
 
     # optuna
     n_trials: int = 100  # number of Optuna trials for hyperparameter sweeps

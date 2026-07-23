@@ -38,6 +38,21 @@ HASH_EXCLUDED_CONFIG_KEYS = {
     "resume_db_timeout_s",
     "resume_db_keep_completed",
     "skip_eval",
+    "legacy_config",
+}
+
+# These fields were introduced by the Dream implementation.  They must be
+# omitted in legacy mode so the resulting hash matches databases created by
+# the pre-Dream Config schema exactly.
+DREAM_CONFIG_KEYS = {
+    "dream_model_path",
+    "dream_tokenizer",
+    "dream_steps",
+    "dream_eps",
+    "dream_alg",
+    "dream_alg_temp",
+    "dream_top_p",
+    "dream_top_k",
 }
 
 
@@ -108,7 +123,11 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
 
 
 def semantic_config_dict(config: Any) -> dict[str, Any]:
-    return {key: value for key, value in _config_to_dict(config).items() if key not in HASH_EXCLUDED_CONFIG_KEYS}
+    config_dict = _config_to_dict(config)
+    excluded_keys = HASH_EXCLUDED_CONFIG_KEYS
+    if config_dict.get("legacy_config", False):
+        excluded_keys = excluded_keys | DREAM_CONFIG_KEYS
+    return {key: value for key, value in config_dict.items() if key not in excluded_keys}
 
 
 def manifest_hash(items: Iterable[dict[str, Any]]) -> str:

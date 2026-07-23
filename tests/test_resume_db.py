@@ -1,5 +1,6 @@
 import os
 import tempfile
+from dataclasses import asdict
 
 import pytest
 import torch
@@ -13,6 +14,8 @@ from d5p4.resume_db import (
     manifest_hash,
     prepare_resumable_run,
     semantic_config_dict,
+    DREAM_CONFIG_KEYS,
+    HASH_EXCLUDED_CONFIG_KEYS,
 )
 
 
@@ -60,6 +63,39 @@ def test_experiment_hash_uses_workflow_config_and_manifest_only():
         work_hash,
     )
     assert experiment_hash("other", cfg_a, work_hash) != experiment_hash("prompt_generation:llada", cfg_a, work_hash)
+
+
+def test_legacy_config_hash_matches_pre_dream_schema():
+    cfg = _cfg(
+        "tmpdir",
+        legacy_config=True,
+        dream_model_path="/new/dream/model",
+        dream_tokenizer="/new/dream/tokenizer",
+        dream_steps=999,
+    )
+    expected = {
+        key: value
+        for key, value in asdict(cfg).items()
+        if key not in HASH_EXCLUDED_CONFIG_KEYS and key not in DREAM_CONFIG_KEYS
+    }
+
+    assert semantic_config_dict(cfg) == expected
+
+
+def test_legacy_config_ignores_dream_changes_but_normal_hash_does_not():
+    items = make_work_items(1, prefix="prompt", prompts=["hello"])
+    work_hash = manifest_hash(items)
+    legacy_a = _cfg("tmpdir", legacy_config=True, dream_steps=256)
+    legacy_b = _cfg("tmpdir", legacy_config=True, dream_steps=512)
+    current_a = _cfg("tmpdir", legacy_config=False, dream_steps=256)
+    current_b = _cfg("tmpdir", legacy_config=False, dream_steps=512)
+
+    assert experiment_hash("prompt_generation:llada", legacy_a, work_hash) == experiment_hash(
+        "prompt_generation:llada", legacy_b, work_hash,
+    )
+    assert experiment_hash("prompt_generation:llada", current_a, work_hash) != experiment_hash(
+        "prompt_generation:llada", current_b, work_hash,
+    )
 
 
 def test_store_roundtrips_tokens_and_decoded_payload():
