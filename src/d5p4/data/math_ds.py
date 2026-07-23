@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 import pandas as pd
 from datasets import load_dataset
@@ -47,6 +48,11 @@ def _format_gsm8k_query(question: str) -> str:
     return f"Question: {question}\nAnswer:"
 
 
+def _format_dream_gsm8k_query(question: str) -> str:
+    """Match the zero-shot Dream-Instruct lm-evaluation-harness prompt."""
+    return f"Q: {question}\n\nA:"
+
+
 def gsm8k(cfg: Config) -> pd.DataFrame:
     """Load the GSM8K test split as a DataFrame.
 
@@ -59,12 +65,14 @@ def gsm8k(cfg: Config) -> pd.DataFrame:
     answer_number : str
         The numeric answer extracted from ``answer_str`` (commas removed).
     """
-    dataset = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["test"]
+    dataset: Any = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["test"]
     dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
 
     few_shot_prefix = ""
+    if cfg.model == "dream" and cfg.qa_n_shots != 0:
+        raise ValueError("Dream GSM8K uses the official zero-shot instruct profile; set qa_n_shots=0.")
     if cfg.qa_n_shots > 0:
-        train_dataset = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["train"]
+        train_dataset: Any = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["train"]
         train_dataset = train_dataset.shuffle(seed=cfg.seed)  # type: ignore
         few_shot_examples: list[dict] = [train_dataset[idx] for idx in range(cfg.qa_n_shots)]  # type: ignore
         few_shot_prefix = _format_gsm8k_few_shot_prefix(few_shot_examples)
@@ -77,7 +85,9 @@ def gsm8k(cfg: Config) -> pd.DataFrame:
         q = item["question"]
         raw_answer = item["answer"]
 
-        if cfg.qa_n_shots > 0:
+        if cfg.model == "dream":
+            questions.append(_format_dream_gsm8k_query(q))
+        elif cfg.qa_n_shots > 0:
             questions.append(f"{few_shot_prefix}{_format_gsm8k_query(q)}")
         else:
             questions.append(_format_gsm8k_query(q))

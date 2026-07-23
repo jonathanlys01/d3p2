@@ -191,12 +191,21 @@ def get_tokenizer(config: Config, model: str):
     Get the tokenizer from the config.
     """
 
-    assert model in ["mdlm", "llada", "udlm", "gidd"], f"Unknown model type: {model}"
+    assert model in ["mdlm", "llada", "dream", "udlm", "gidd"], f"Unknown model type: {model}"
 
     if model == "llada":
         path = config.llada_tokenizer
         return transformers.AutoTokenizer.from_pretrained(
             config.llada_model_path,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            local_files_only=os.path.isdir(path),
+        )
+
+    if model == "dream":
+        path = config.dream_tokenizer
+        return transformers.AutoTokenizer.from_pretrained(
+            path,
             cache_dir=config.cache_dir,
             trust_remote_code=True,
             local_files_only=os.path.isdir(path),
@@ -310,6 +319,8 @@ class DistributedUtils:
             seq_len = self.cfg.sequence_length
         elif self.cfg.model == "llada":
             seq_len = self.cfg.block_length
+        elif self.cfg.model == "dream":
+            seq_len = self.cfg.gen_length
         elif self.cfg.model in {"udlm", "gidd"}:
             seq_len = self.cfg.sequence_length
         elif self.cfg.model == "ar":

@@ -16,6 +16,7 @@ AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "rand
 SEQUENCE_LENGTH = 1_024
 HIDDEN_SIZE_MDLM = 768
 HIDDEN_SIZE_LLADA = 4_096
+HIDDEN_SIZE_DREAM = 3_584
 HIDDEN_SIZE_AR = 4_096
 HIDDEN_SIZE_UDLM = 768
 HIDDEN_SIZE_GIDD = 4_096
@@ -24,6 +25,7 @@ CACHE_DIR = "./.cache"
 MODEL_EMBEDDING_DIMS = {
     "mdlm": HIDDEN_SIZE_MDLM,
     "llada": HIDDEN_SIZE_LLADA,
+    "dream": HIDDEN_SIZE_DREAM,
     "udlm": HIDDEN_SIZE_UDLM,
     "gidd": HIDDEN_SIZE_GIDD,
     "ar": HIDDEN_SIZE_AR,
@@ -41,6 +43,7 @@ SCORE_METHOD_CHOICES = {
 }
 GIDD_SCHEDULE_CHOICES = {"uniform", "hybrid"}
 REMASKING_CHOICES = {"low_confidence", "selection_temperature", "random"}
+DREAM_ALG_CHOICES = {"origin", "maskgit_plus", "topk_margin", "entropy"}
 EVAL_SELECTION_METRIC_CHOICES = {"ppl", "f1", "int"}
 CODE_DATASET_CHOICES = {"humaneval", "mbpp"}
 
@@ -70,7 +73,7 @@ class Config:
 
     sequence_length: int = SEQUENCE_LENGTH
     embedding_dim: int = 0  # to be set in __post_init__
-    model: str = "mdlm"  # "mdlm", "llada", "udlm", "gidd", "ar"
+    model: str = "mdlm"  # "mdlm", "llada", "dream", "udlm", "gidd", "ar"
 
     seed: int = 0
     n_runs: int = 16
@@ -93,6 +96,16 @@ class Config:
     confidence_eos_eot_inf: bool = True
     guidance_start: int = 0  # step at which to start applying CFG (0-indexed)
     guidance_end: int = -1  # step at which to stop applying CFG (-1 means steps)
+
+    # Dream
+    dream_model_path: str = "Dream-org/Dream-v0-Instruct-7B"
+    dream_tokenizer: str = "Dream-org/Dream-v0-Instruct-7B"
+    dream_steps: int = 256
+    dream_eps: float = 1e-3
+    dream_alg: str = "entropy"
+    dream_alg_temp: float | None = 0.0
+    dream_top_p: float | None = 0.9
+    dream_top_k: int | None = None
 
     # Autoregressive
     ar_model_path: str = "meta-llama/Meta-Llama-3-8B"
@@ -262,6 +275,8 @@ class Config:
 
         if self.model == "llada":
             self._validate_llada()
+        elif self.model == "dream":
+            self._validate_dream()
 
     def _validate_llada(self):
         assert self.remasking in REMASKING_CHOICES, f"Remasking method {self.remasking} not recognized."
@@ -287,6 +302,20 @@ class Config:
         assert self.guidance_end <= self.llada_steps, (
             f"guidance_end ({self.guidance_end}) must be <= llada_steps ({self.llada_steps})"
         )
+
+    def _validate_dream(self):
+        assert self.dream_steps > 0, "dream_steps must be positive"
+        assert 0.0 < self.dream_eps < 1.0, "dream_eps must be in (0, 1)"
+        assert self.dream_alg in DREAM_ALG_CHOICES, (
+            f"dream_alg must be one of {sorted(DREAM_ALG_CHOICES)}, got {self.dream_alg!r}"
+        )
+        assert self.cat_temperature >= 0.0, "cat_temperature must be non-negative"
+        if self.dream_alg_temp is not None:
+            assert self.dream_alg_temp >= 0.0, "dream_alg_temp must be non-negative"
+        if self.dream_top_p is not None:
+            assert 0.0 < self.dream_top_p <= 1.0, "dream_top_p must be in (0, 1]"
+        if self.dream_top_k is not None:
+            assert self.dream_top_k > 0, "dream_top_k must be positive"
 
     def __str__(self) -> str:
         return OmegaConf.to_yaml(OmegaConf.structured(self))
