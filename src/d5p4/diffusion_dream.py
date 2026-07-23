@@ -55,7 +55,7 @@ class DreamSampler(nn.Module):
         super().__init__()
         configure_runtime(config)
 
-        model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype="auto")
+        model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype="bfloat16")
         self.model = DreamModel.from_pretrained(**model_args)
         self.selector = get_subsample_selector(config)
         self.config = config
@@ -240,17 +240,13 @@ class DreamSampler(nn.Module):
 
                 subsample_step = self.config.subsample_start <= step <= self.config.subsample_end
                 slice_idx = (
-                    self.selector.subsample(cache)
-                    if subsample_step
-                    else torch.arange(x.size(0), device=x.device)
+                    self.selector.subsample(cache) if subsample_step else torch.arange(x.size(0), device=x.device)
                 )
                 assert slice_idx is not None
 
                 selected_log_probs = torch.index_select(log_probs, 0, slice_idx)
                 selected_score_log_probs = (
-                    torch.index_select(score_log_probs, 0, slice_idx)
-                    if score_log_probs is not None
-                    else None
+                    torch.index_select(score_log_probs, 0, slice_idx) if score_log_probs is not None else None
                 )
                 expand = self.config.group_size if subsample_step else 1
                 parent_idx = slice_idx.repeat_interleave(expand)
