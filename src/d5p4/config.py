@@ -106,9 +106,7 @@ class Config:
     dream_alg_temp: float | None = 0.0
     dream_top_p: float | None = 0.9
     dream_top_k: int | None = None
-    # Dream (Qwen-based) has massive mid-network activations (~600) that
-    # overflow/underflow in bf16 and produce nan logits. Run it in fp32.
-    dream_dtype: str = "float32"
+    dream_dtype: str = "bfloat16"
 
     # Autoregressive
     ar_model_path: str = "meta-llama/Meta-Llama-3-8B"

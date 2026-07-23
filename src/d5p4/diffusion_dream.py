@@ -136,8 +136,7 @@ class DreamSampler(nn.Module):
         with torch.amp.autocast(
             device_type=self.device,
             dtype=self.torch_dtype,
-            # Autocast to a lower precision only makes sense for 16-bit dtypes.
-            # Dream needs fp32 for numerical stability, so keep it disabled then.
+            # Autocasting to a lower precision only makes sense for 16-bit dtypes.
             enabled=self.device == "cuda" and self.torch_dtype != torch.float32,
         ):
             out = self.model.forward(
@@ -150,6 +149,16 @@ class DreamSampler(nn.Module):
             )
             assert isinstance(out, MaskedLMOutput) and out.logits is not None
             logits = out.logits[:, :-1]
+            # A healthy forward is always finite here (verified for bf16 and
+            # fp32). Non-finite logits from finite weights/inputs indicate a
+            # GPU/driver fault, not a modelling issue — fail loudly so the run
+            # can be requeued on a good device instead of emitting garbage.
+            if not torch.isfinite(logits).all():
+                raise RuntimeError(
+                    "Dream forward produced non-finite logits. Weights and inputs are finite, "
+                    "so this is almost certainly a hardware/stack fault (flaky GPU, or an "
+                    "unstable torch/CUDA build). Retry on a different node/GPU.",
+                )
             embeddings = None
             if need_embeddings:
                 assert out.hidden_states is not None
@@ -157,13 +166,11 @@ class DreamSampler(nn.Module):
         return logits, embeddings
 
     def _effective_log_probs(self, logits: torch.Tensor) -> torch.Tensor:
-        # Compute the categorical distribution in fp32. The bf16 forward can
-        # emit non-finite logits, and a softmax over the full vocabulary loses
-        # too much precision in bf16 to sample reliably. nan_to_num guarantees
-        # multinomial never sees inf/nan even if the model misbehaves.
+        # Compute the categorical distribution in fp32: a softmax over the full
+        # ~152k vocabulary loses too much precision in bf16 to sample reliably.
+        # (Non-finite logits are already rejected in _forward_model.)
         orig_dtype = logits.dtype
         logits = logits.float()
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
         if self.config.cat_temperature > 0.0:
             logits = logits / self.config.cat_temperature
         # Apply the -inf sentinels AFTER temperature scaling. Scaling them
