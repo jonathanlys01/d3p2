@@ -55,7 +55,8 @@ class DreamSampler(nn.Module):
         super().__init__()
         configure_runtime(config)
 
-        model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype="bfloat16")
+        self.torch_dtype = getattr(torch, config.dream_dtype)
+        model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype=config.dream_dtype)
         self.model = DreamModel.from_pretrained(**model_args)
         self.selector = get_subsample_selector(config)
         self.config = config
@@ -134,8 +135,10 @@ class DreamSampler(nn.Module):
         assert x.size(1) >= suffix_width, "Dream requires at least one prompt token."
         with torch.amp.autocast(
             device_type=self.device,
-            dtype=torch.bfloat16,
-            enabled=self.device == "cuda",
+            dtype=self.torch_dtype,
+            # Autocast to a lower precision only makes sense for 16-bit dtypes.
+            # Dream needs fp32 for numerical stability, so keep it disabled then.
+            enabled=self.device == "cuda" and self.torch_dtype != torch.float32,
         ):
             out = self.model.forward(
                 cast(torch.LongTensor, x),

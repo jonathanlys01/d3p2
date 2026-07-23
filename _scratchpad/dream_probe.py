@@ -30,6 +30,7 @@ cfg = Config(
     dream_model_path=merged.dream_model_path,
     dream_tokenizer=merged.dream_tokenizer,
     cache_dir=merged.cache_dir,
+    dream_dtype="bfloat16",  # probe the bf16 failure explicitly
 )
 print(f"model_path: {cfg.dream_model_path}")
 print(f"tokenizer : {cfg.dream_tokenizer}")
@@ -73,6 +74,26 @@ with torch.no_grad():
         if not finite:
             print(f"   -> first non-finite hidden state at {label}")
             break
+
+print("\n=== bf16 full forward via SDPA (the default path) ===")
+with torch.no_grad():
+    out_sdpa = m.model.forward(ids, attention_mask="full", return_dict=True, num_logits_to_keep=1)
+    ls = out_sdpa.logits[:, -1]
+    print("bf16+sdpa finite:", torch.isfinite(ls).all().item())
+
+print("\n=== bf16 forward via EAGER attention (fp32 softmax) ===")
+# DreamSdpaAttention falls back to the eager path when output_attentions=True.
+# Eager expects a tensor/None mask, not the "full" string, so pass None
+# (no padding -> full bidirectional attention either way).
+with torch.no_grad():
+    out_eager = m.model.forward(
+        ids, attention_mask=None, output_attentions=True, return_dict=True, num_logits_to_keep=1,
+    )
+    le = out_eager.logits[:, -1]
+    print("bf16+eager finite:", torch.isfinite(le).all().item())
+    if torch.isfinite(le).all():
+        top = le[0].float().topk(10)
+        print("   top-10:", [(tok.decode([i.item()]), round(v.item(), 2)) for v, i in zip(top.values, top.indices)])
 
 print("\n=== fp32 forward (is it a bf16 problem?) ===")
 with torch.no_grad():
