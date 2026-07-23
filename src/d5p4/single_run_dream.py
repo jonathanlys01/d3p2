@@ -23,6 +23,8 @@ DREAM_INTERNAL_SCORE_METADATA = {
     "higher_is_better": True,
 }
 
+DREAM_WORKFLOW_VERSION = 2
+
 
 def _stop_token_ids(tokenizer: Any) -> set[int]:
     stop_ids: set[int] = set()
@@ -53,9 +55,19 @@ def _decode_generations(
     generations = []
     for sample in raw_samples:
         completion = sample[prompt_len:].tolist()
-        stop_positions = [idx for idx, token_id in enumerate(completion) if token_id in stop_ids]
-        if stop_positions:
-            completion = completion[: stop_positions[0]]
+        # A diffusion suffix can contain a leading stop marker while later
+        # positions still contain useful text. Only accept a stop once the
+        # preceding suffix decodes to non-empty content.
+        for idx, token_id in enumerate(completion):
+            if token_id not in stop_ids:
+                continue
+            prefix = cast(
+                str,
+                model.tokenizer.decode(completion[:idx], skip_special_tokens=True),
+            )
+            if prefix.strip():
+                completion = completion[:idx]
+                break
         decoded = cast(str, model.tokenizer.decode(completion, skip_special_tokens=True))
         generations.append(decoded.strip())
     return generations
@@ -75,7 +87,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
         prompts = [row.question for row in rows]  # type: ignore[union-attr]
         references_all = [row.correct_answers for row in rows]  # type: ignore[union-attr]
 
-    workflow_id = "prompt_generation:dream"
+    workflow_id = f"prompt_generation:dream:v{DREAM_WORKFLOW_VERSION}"
     preflight = prepare_resumable_run(
         config=config,
         workflow_id=workflow_id,

@@ -92,6 +92,22 @@ class DreamSampler(nn.Module):
     def _selector_needs_embeddings(self) -> bool:
         return getattr(self.selector, "needs_embeddings", True)
 
+    def _stop_token_ids(self) -> set[int]:
+        stop_ids: set[int] = set()
+        eos = getattr(self.tokenizer, "eos_token_id", None)
+        if isinstance(eos, int):
+            stop_ids.add(eos)
+        elif eos is not None:
+            stop_ids.update(int(token_id) for token_id in eos)
+
+        convert = getattr(self.tokenizer, "convert_tokens_to_ids", None)
+        if callable(convert):
+            end_turn = convert("<|im_end|>")
+            unk = getattr(self.tokenizer, "unk_token_id", None)
+            if isinstance(end_turn, int) and end_turn >= 0 and end_turn != unk:
+                stop_ids.add(end_turn)
+        return stop_ids
+
     def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
         messages = [{"role": "user", "content": prompt}]
         prompt_str = cast(
@@ -140,6 +156,13 @@ class DreamSampler(nn.Module):
     def _effective_log_probs(self, logits: torch.Tensor) -> torch.Tensor:
         logits = logits.clone()
         logits[..., self.mask_index] = torch.finfo(logits.dtype).min
+        # Dream denoises a fixed-width suffix rather than stopping
+        # autoregressively. Sampling a stop marker into suffix position zero
+        # therefore creates an apparently empty completion even when later
+        # positions contain a valid answer.
+        for stop_id in self._stop_token_ids():
+            if 0 <= stop_id < logits.size(-1):
+                logits[:, 0, stop_id] = torch.finfo(logits.dtype).min
         if self.config.cat_temperature > 0.0:
             logits = logits / self.config.cat_temperature
         logits = _top_p_logits(logits, self.config.dream_top_p)

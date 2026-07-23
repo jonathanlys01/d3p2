@@ -22,7 +22,7 @@ class _Tokenizer:
 
     def decode(self, token_ids, skip_special_tokens=True):
         assert skip_special_tokens
-        return "".join(chr(token_id) for token_id in token_ids)
+        return "".join(chr(token_id) for token_id in token_ids if token_id not in {7, 8})
 
 
 class _FakeSampler:
@@ -59,6 +59,14 @@ def test_dream_resume_decode_uses_stored_prompt_length():
         raw_samples,
         prompt_len=3,
     )
+
+    assert decoded == ["42"]
+
+
+def test_dream_decode_keeps_content_after_leading_stop_markers():
+    raw_samples = torch.tensor([[1, 2, 7, 8, ord("4"), ord("2"), 8]])
+
+    decoded = _decode_generations(cast(DreamSampler, _FakeSampler()), "question", raw_samples)
 
     assert decoded == ["42"]
 

@@ -11,7 +11,11 @@ from d5p4.diffusion_dream import DreamSampler
 from d5p4.eval_core import MathEvaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import prepare_resumable_run, release_resumable_run, sync_resume_item
-from d5p4.single_run_dream import DREAM_INTERNAL_SCORE_METADATA, _decode_generations
+from d5p4.single_run_dream import (
+    DREAM_INTERNAL_SCORE_METADATA,
+    DREAM_WORKFLOW_VERSION,
+    _decode_generations,
+)
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -82,7 +86,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         for idx, (gold, answer_str) in enumerate(zip(answer_numbers, answer_strings, strict=True))
     ]
     string_references = [[answer_str] for answer_str in answer_strings]
-    workflow_id = "math_generation:dream"
+    workflow_id = f"math_generation:dream:v{DREAM_WORKFLOW_VERSION}"
     preflight = prepare_resumable_run(
         config=config,
         workflow_id=workflow_id,
