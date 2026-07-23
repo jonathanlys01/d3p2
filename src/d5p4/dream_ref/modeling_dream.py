@@ -578,6 +578,26 @@ class DreamPreTrainedModel(PreTrainedModel):
         weights_only: bool = True,
         **kwargs,
     ):
+        if config is None:
+            config = DreamConfig.from_pretrained(
+                pretrained_model_name_or_path,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                local_files_only=local_files_only,
+                token=token,
+                revision=revision,
+                **kwargs,
+            )
+        elif isinstance(config, (str, os.PathLike)):
+            config = DreamConfig.from_pretrained(
+                config,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                local_files_only=local_files_only,
+                token=token,
+                revision=revision,
+                **kwargs,
+            )
         _model = super().from_pretrained(
             pretrained_model_name_or_path,
             *model_args,
