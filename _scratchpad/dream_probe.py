@@ -53,12 +53,35 @@ ids = m._preprocess_prompt(prompt)
 print("prompt shape     :", tuple(ids.shape))
 print("prompt string    :\n", repr(tok.decode(ids[0], skip_special_tokens=False)))
 
-print("\n=== single forward pass (predict first answer token after prompt) ===")
+print("\n=== weight finiteness ===")
+bad_params = [n for n, p in m.model.named_parameters() if not torch.isfinite(p).all()]
+print("non-finite params:", bad_params[:20] if bad_params else "none (all finite)")
+print("param dtype sample:", next(m.model.parameters()).dtype)
+
+print("\n=== localize first non-finite hidden state (bf16 forward) ===")
 with torch.no_grad():
-    out = m.model.forward(ids, attention_mask="full", return_dict=True, num_logits_to_keep=1)
-    logits = out.logits[:, -1]
-    print("finite:", torch.isfinite(logits).all().item(), "min:", logits.min().item(), "max:", logits.max().item())
-    top = logits[0].float().topk(15)
-    print("top-15 next token:")
-    for v, i in zip(top.values, top.indices):
-        print(f"   {round(v.item(), 2):>8}  {i.item():>7}  {tok.decode([i.item()])!r}")
+    base_out = m.model.model(
+        input_ids=ids, attention_mask="full", output_hidden_states=True, return_dict=True,
+    )
+    hs = base_out.hidden_states
+    print(f"num hidden states (embed + {len(hs) - 1} layers): {len(hs)}")
+    for idx, h in enumerate(hs):
+        finite = torch.isfinite(h).all().item()
+        label = "embed" if idx == 0 else f"layer {idx}"
+        amax = h.float().abs().amax().item()
+        print(f"   {label:>9}: finite={finite}  max|abs|={amax:.3e}")
+        if not finite:
+            print(f"   -> first non-finite hidden state at {label}")
+            break
+
+print("\n=== fp32 forward (is it a bf16 problem?) ===")
+with torch.no_grad():
+    m32 = m.model.float()
+    out32 = m32.forward(ids, attention_mask="full", return_dict=True, num_logits_to_keep=1)
+    logits32 = out32.logits[:, -1]
+    print("fp32 finite:", torch.isfinite(logits32).all().item())
+    if torch.isfinite(logits32).all():
+        top = logits32[0].topk(15)
+        print("fp32 top-15 next token:")
+        for v, i in zip(top.values, top.indices):
+            print(f"   {round(v.item(), 2):>8}  {i.item():>7}  {tok.decode([i.item()])!r}")
