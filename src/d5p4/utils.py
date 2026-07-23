@@ -14,6 +14,7 @@ from idr_torch import IdrTorchWarning
 from tqdm import tqdm as tqdm_
 
 from d5p4.config import Config
+from d5p4.dream_ref.configuration_dream import DreamConfig
 
 
 T = TypeVar("T")
@@ -44,6 +45,7 @@ def configure_runtime(cfg: Config):
     MINIMAL_LOG = cfg.minimal_log
     QUIET = cfg.quiet
     STANDALONE_JOB = cfg.standalone_job
+    warnings.filterwarnings("ignore", message=".*rope_config_validation.*", category=FutureWarning)
 
 
 def is_standalone_job(cfg: Config | None = None) -> bool:
@@ -204,8 +206,14 @@ def get_tokenizer(config: Config, model: str):
 
     if model == "dream":
         path = config.dream_tokenizer
+        dream_config = DreamConfig.from_pretrained(
+            path,
+            cache_dir=config.cache_dir,
+            local_files_only=os.path.isdir(path),
+        )
         return transformers.AutoTokenizer.from_pretrained(
             path,
+            config=dream_config,
             cache_dir=config.cache_dir,
             trust_remote_code=True,
             local_files_only=os.path.isdir(path),
