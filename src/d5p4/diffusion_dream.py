@@ -226,6 +226,15 @@ class DreamSampler(nn.Module):
             for step in tqdm(range(self.config.dream_steps), desc="Dream steps", disable=disable):
                 logits, embeddings = self._forward_model(x, need_embeddings=need_embeddings)
                 log_probs = self._effective_log_probs(logits)
+                # Sampling may apply top-p/top-k filtering, but sequence scores
+                # must use the model's raw final-step distribution. A token
+                # committed at an earlier step can be outside the final
+                # filtered support and would otherwise receive -inf.
+                score_log_probs = (
+                    F.log_softmax(logits.float(), dim=-1)
+                    if return_internal_scores and step == self.config.dream_steps - 1
+                    else None
+                )
                 generation = x[:, prompt_len:]
                 cache = Cache(log_p_x0=log_probs, embeddings=embeddings, x=generation)
 
@@ -238,10 +247,19 @@ class DreamSampler(nn.Module):
                 assert slice_idx is not None
 
                 selected_log_probs = torch.index_select(log_probs, 0, slice_idx)
+                selected_score_log_probs = (
+                    torch.index_select(score_log_probs, 0, slice_idx)
+                    if score_log_probs is not None
+                    else None
+                )
                 expand = self.config.group_size if subsample_step else 1
                 parent_idx = slice_idx.repeat_interleave(expand)
                 x = torch.index_select(x, 0, parent_idx)
-                expanded_log_probs = selected_log_probs.repeat_interleave(expand, dim=0)
+                expanded_score_log_probs = (
+                    selected_score_log_probs.repeat_interleave(expand, dim=0)
+                    if selected_score_log_probs is not None
+                    else None
+                )
                 sampled, confidence = self._sample_tokens(selected_log_probs, expand)
 
                 generation = x[:, prompt_len:]
@@ -267,7 +285,8 @@ class DreamSampler(nn.Module):
                 generation[transfer] = sampled[transfer]
 
                 if step == self.config.dream_steps - 1 and return_internal_scores:
-                    final_internal_scores = self._score_sequences(expanded_log_probs, generation)
+                    assert expanded_score_log_probs is not None
+                    final_internal_scores = self._score_sequences(expanded_score_log_probs, generation)
 
             assert not torch.any(x[:, prompt_len:] == self.mask_index), "Dream sampling left mask tokens in the output."
 

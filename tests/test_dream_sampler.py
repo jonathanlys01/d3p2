@@ -182,6 +182,17 @@ def test_dream_temperature_and_top_p_filtering():
     torch.testing.assert_close(log_probs[0, 0, 1] - log_probs[0, 0, 3], torch.tensor(2.0))
 
 
+def test_dream_internal_scores_use_raw_logits_after_top_p_filtering():
+    sampler = _build_sampler(_config(dream_top_p=0.9, dream_top_k=1, cat_temperature=0.5))
+
+    _, scores = sampler.sample("question", return_internal_scores=True)
+
+    # The final-step top-k distribution can assign -inf to tokens committed
+    # earlier; reported scores must remain finite raw model log-probabilities.
+    assert torch.all(torch.isfinite(scores))
+    assert torch.all(scores > -100)
+
+
 def test_dream_d5p4_selection_expands_each_selected_parent():
     config = _config(
         dream_steps=2,
