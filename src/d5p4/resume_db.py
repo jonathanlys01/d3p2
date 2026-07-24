@@ -53,7 +53,6 @@ DREAM_CONFIG_KEYS = {
     "dream_alg_temp",
     "dream_top_p",
     "dream_top_k",
-    "dream_dtype",
 }
 
 

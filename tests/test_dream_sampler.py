@@ -91,7 +91,6 @@ def _build_sampler(config: Config) -> DreamSampler:
     nn.Module.__init__(sampler)
     sampler.config = config
     sampler.device = "cpu"
-    sampler.torch_dtype = torch.float32
     sampler.mask_index = 9
     sampler.max_position_embeddings = 64
     sampler.model = _ToyDreamModel()

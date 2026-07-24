@@ -55,8 +55,7 @@ class DreamSampler(nn.Module):
         super().__init__()
         configure_runtime(config)
 
-        self.torch_dtype = getattr(torch, config.dream_dtype)
-        model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype=config.dream_dtype)
+        model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype="bfloat16")
         self.model = DreamModel.from_pretrained(**model_args)
         self.selector = get_subsample_selector(config)
         self.config = config
@@ -69,6 +68,11 @@ class DreamSampler(nn.Module):
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
+        # transformers 5.x does not materialize non-persistent buffers (the RoPE
+        # inv_freq is not in the checkpoint), leaving it filled with uninitialized
+        # memory. That silently scrambles positions and intermittently produces
+        # nan logits. Recompute inv_freq on the target device after loading.
+        self.model.reset_rope_parameters()
         self.model.eval()
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
@@ -135,9 +139,8 @@ class DreamSampler(nn.Module):
         assert x.size(1) >= suffix_width, "Dream requires at least one prompt token."
         with torch.amp.autocast(
             device_type=self.device,
-            dtype=self.torch_dtype,
-            # Autocasting to a lower precision only makes sense for 16-bit dtypes.
-            enabled=self.device == "cuda" and self.torch_dtype != torch.float32,
+            dtype=torch.bfloat16,
+            enabled=self.device == "cuda",
         ):
             out = self.model.forward(
                 cast(torch.LongTensor, x),
@@ -166,27 +169,20 @@ class DreamSampler(nn.Module):
         return logits, embeddings
 
     def _effective_log_probs(self, logits: torch.Tensor) -> torch.Tensor:
-        # Compute the categorical distribution in fp32: a softmax over the full
-        # ~152k vocabulary loses too much precision in bf16 to sample reliably.
-        # (Non-finite logits are already rejected in _forward_model.)
-        orig_dtype = logits.dtype
-        logits = logits.float()
-        if self.config.cat_temperature > 0.0:
-            logits = logits / self.config.cat_temperature
-        # Apply the -inf sentinels AFTER temperature scaling. Scaling them
-        # would overflow finfo.min to -inf, which then poisons log_softmax.
-        neg_inf = torch.finfo(logits.dtype).min
-        logits[..., self.mask_index] = neg_inf
+        logits = logits.clone()
+        logits[..., self.mask_index] = torch.finfo(logits.dtype).min
         # Dream denoises a fixed-width suffix rather than stopping
         # autoregressively. Sampling a stop marker into suffix position zero
         # therefore creates an apparently empty completion even when later
         # positions contain a valid answer.
         for stop_id in self._stop_token_ids():
             if 0 <= stop_id < logits.size(-1):
-                logits[:, 0, stop_id] = neg_inf
+                logits[:, 0, stop_id] = torch.finfo(logits.dtype).min
+        if self.config.cat_temperature > 0.0:
+            logits = logits / self.config.cat_temperature
         logits = _top_p_logits(logits, self.config.dream_top_p)
         logits = _top_k_logits(logits, self.config.dream_top_k)
-        return F.log_softmax(logits, dim=-1).to(orig_dtype)
+        return F.log_softmax(logits, dim=-1)
 
     def _sample_tokens(self, log_probs: torch.Tensor, expand: int) -> tuple[torch.Tensor, torch.Tensor]:
         probs = log_probs.exp()

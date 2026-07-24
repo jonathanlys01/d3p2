@@ -289,11 +289,6 @@ def sample_categorical(categorical_probs: torch.Tensor, expand: int | None = Non
     B, T, V = categorical_probs.shape
 
     flat = categorical_probs.reshape(B * T, V)
-    # Guard multinomial against non-finite or all-zero rows: on CUDA these
-    # raise an uncatchable device-side assert instead of a Python error.
-    flat = torch.nan_to_num(flat, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
-    degenerate = flat.sum(dim=-1, keepdim=True) <= 0
-    flat = torch.where(degenerate, torch.ones_like(flat), flat)
     idx = torch.multinomial(flat, num_samples=expand, replacement=True)
 
     if expand == 1:

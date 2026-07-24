@@ -52,13 +52,9 @@ def _decode_generations(
     if prompt_len is None:
         prompt_len = model._preprocess_prompt(prompt).shape[1]
     stop_ids = _stop_token_ids(model.tokenizer)
-    debug = bool(os.environ.get("DREAM_DEBUG_DECODE"))
     generations = []
     for sample in raw_samples:
         completion = sample[prompt_len:].tolist()
-        if debug:
-            raw_full = cast(str, model.tokenizer.decode(completion, skip_special_tokens=False))
-            print(f"[DREAM_DEBUG] raw completion ({len(completion)} tok, specials kept):\n{raw_full!r}\n")
         # A diffusion suffix can contain a leading stop marker while later
         # positions still contain useful text. Only accept a stop once the
         # preceding suffix decodes to non-empty content.
