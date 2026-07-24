@@ -68,12 +68,8 @@ class DreamSampler(nn.Module):
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
-        # transformers 5.x does not materialize non-persistent buffers (the RoPE
-        # inv_freq is not in the checkpoint), leaving it filled with uninitialized
-        # memory. That silently scrambles positions and intermittently produces
-        # nan logits. Recompute inv_freq on the target device after loading.
-        self.model.reset_rope_parameters()
         self.model.eval()
+        self._checked_finite_forward = False
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
@@ -96,22 +92,6 @@ class DreamSampler(nn.Module):
 
     def _selector_needs_embeddings(self) -> bool:
         return getattr(self.selector, "needs_embeddings", True)
-
-    def _stop_token_ids(self) -> set[int]:
-        stop_ids: set[int] = set()
-        eos = getattr(self.tokenizer, "eos_token_id", None)
-        if isinstance(eos, int):
-            stop_ids.add(eos)
-        elif eos is not None:
-            stop_ids.update(int(token_id) for token_id in eos)
-
-        convert = getattr(self.tokenizer, "convert_tokens_to_ids", None)
-        if callable(convert):
-            end_turn = convert("<|im_end|>")
-            unk = getattr(self.tokenizer, "unk_token_id", None)
-            if isinstance(end_turn, int) and end_turn >= 0 and end_turn != unk:
-                stop_ids.add(end_turn)
-        return stop_ids
 
     def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
         messages = [{"role": "user", "content": prompt}]
@@ -152,16 +132,17 @@ class DreamSampler(nn.Module):
             )
             assert isinstance(out, MaskedLMOutput) and out.logits is not None
             logits = out.logits[:, :-1]
-            # A healthy forward is always finite here (verified for bf16 and
-            # fp32). Non-finite logits from finite weights/inputs indicate a
-            # GPU/driver fault, not a modelling issue — fail loudly so the run
-            # can be requeued on a good device instead of emitting garbage.
-            if not torch.isfinite(logits).all():
-                raise RuntimeError(
-                    "Dream forward produced non-finite logits. Weights and inputs are finite, "
-                    "so this is almost certainly a hardware/stack fault (flaky GPU, or an "
-                    "unstable torch/CUDA build). Retry on a different node/GPU.",
-                )
+            # Validate one freshly loaded forward. This catches a failed
+            # non-persistent RoPE-buffer reset without synchronizing the GPU
+            # on every denoising step.
+            if not getattr(self, "_checked_finite_forward", False):
+                if not torch.isfinite(logits).all():
+                    raise RuntimeError(
+                        "Dream's first forward produced non-finite logits after reinitializing "
+                        "its non-persistent RoPE buffers. Check the checkpoint load and "
+                        "Transformers compatibility before sampling.",
+                    )
+                self._checked_finite_forward = True
             embeddings = None
             if need_embeddings:
                 assert out.hidden_states is not None
@@ -171,13 +152,6 @@ class DreamSampler(nn.Module):
     def _effective_log_probs(self, logits: torch.Tensor) -> torch.Tensor:
         logits = logits.clone()
         logits[..., self.mask_index] = torch.finfo(logits.dtype).min
-        # Dream denoises a fixed-width suffix rather than stopping
-        # autoregressively. Sampling a stop marker into suffix position zero
-        # therefore creates an apparently empty completion even when later
-        # positions contain a valid answer.
-        for stop_id in self._stop_token_ids():
-            if 0 <= stop_id < logits.size(-1):
-                logits[:, 0, stop_id] = torch.finfo(logits.dtype).min
         if self.config.cat_temperature > 0.0:
             logits = logits / self.config.cat_temperature
         logits = _top_p_logits(logits, self.config.dream_top_p)

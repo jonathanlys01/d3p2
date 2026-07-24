@@ -45,7 +45,6 @@ def configure_runtime(cfg: Config):
     MINIMAL_LOG = cfg.minimal_log
     QUIET = cfg.quiet
     STANDALONE_JOB = cfg.standalone_job
-    warnings.filterwarnings("ignore", message=".*rope_config_validation.*", category=FutureWarning)
 
 
 def is_standalone_job(cfg: Config | None = None) -> bool:

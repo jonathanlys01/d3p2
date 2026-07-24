@@ -1,8 +1,8 @@
-"""Test the hypothesis: rope inv_freq (a non-persistent buffer, not in the
-checkpoint) is left uninitialized by transformers-5.12 meta-device loading,
-which non-deterministically poisons the whole forward with nan.
+"""Verify that Dream's vendored loader materializes RoPE ``inv_freq``.
 
-Run several times: `for i in 1 2 3 4 5; do python _scratchpad/dream_rope_test.py; done`
+Transformers 5 constructs checkpoints on the meta device, so non-persistent
+buffers are absent after weight streaming unless the model explicitly resets
+them. ``DreamModel.from_pretrained`` now performs that reset automatically.
 """
 
 import torch
@@ -11,11 +11,12 @@ from transformers import AutoTokenizer
 from d5p4.dream_ref.configuration_dream import DreamConfig
 from d5p4.dream_ref.modeling_dream import DreamModel
 
+
 model_path = "/Brain/public/models/Dream-org/Dream-v0-Instruct-7B"
 config = DreamConfig.from_pretrained(model_path)
 tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
-# Load WITHOUT moving to cuda yet, to inspect the buffer as loaded.
+# The vendored loader must return healthy RoPE buffers before device transfer.
 model = DreamModel.from_pretrained(model_path, config=config, torch_dtype=torch.bfloat16).eval()
 
 
@@ -38,15 +39,16 @@ def fwd_finite():
     return bool(torch.isfinite(out.logits).all())
 
 
-print("=== as loaded (pre-cuda) ===")
+print("=== automatically reset by from_pretrained (pre-cuda) ===")
 inv_freq_report("loaded")
 
 model = model.to("cuda")
-print("=== after .to(cuda), BEFORE reset ===")
-inv_freq_report("pre-reset")
+print("=== after .to(cuda) ===")
+inv_freq_report("cuda")
 print("  forward finite:", fwd_finite())
 
+# The public reset remains safe and idempotent for diagnostics.
 model.reset_rope_parameters()
-print("=== after reset_rope_parameters() ===")
+print("=== after explicit idempotent reset_rope_parameters() ===")
 inv_freq_report("post-reset")
 print("  forward finite:", fwd_finite())

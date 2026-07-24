@@ -6,6 +6,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 SRC_ROOT="${ROOT}/src/d5p4"
 RUN_OUTPUT_DIR="${RESULTS_DIR:-${ROOT}/results/dream_gsm8k}"
 RESUME_DB_DIR="${RESUME_DB_DIR:-${RUN_OUTPUT_DIR}/resume}"
+CACHE_DIR="${CACHE_DIR:-${ROOT}/.cache}"
 
 NPROC="${NPROC:-1}"
 N_QUESTIONS="${N_QUESTIONS:--1}"
@@ -62,10 +63,10 @@ COMMON_ARGS=(
   minimal_log=true
   results_dir="${RUN_OUTPUT_DIR}"
   resume_db_dir="${RESUME_DB_DIR}"
-  cache_dir="${ROOT}/.cache"
+  cache_dir="${CACHE_DIR}"
 )
 
-mkdir -p "${RUN_OUTPUT_DIR}" "${ROOT}/.cache"
+mkdir -p "${RUN_OUTPUT_DIR}" "${CACHE_DIR}"
 cd "${ROOT}"
 export PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"

@@ -27,6 +27,19 @@ def _references_from_results(results: list[dict]) -> list[list[str]]:
     return [[row["answer_str"] if row["answer_str"] else row["gold_answer"]] for row in results]
 
 
+def _print_generation_group(
+    question_index: int,
+    prompt: str,
+    generations: list[str],
+    scores: list[float],
+) -> None:
+    print(f"\nQuestion {question_index}:\n{prompt}")
+    for candidate_index, generation in enumerate(generations, start=1):
+        score = f", mean token log-prob={scores[candidate_index - 1]:.4f}" if candidate_index <= len(scores) else ""
+        print(f"\nCandidate {candidate_index}{score}:\n{generation}")
+    print("")
+
+
 def _score_result(
     evaluator: MathEvaluator,
     *,
@@ -166,6 +179,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     store.record_decoded(item_index=i, decoded=decoded, result=result)
 
             if preflight.master:
+                if config.interactive:
+                    _print_generation_group(i + 1, prompt, decoded, scores)
                 all_generations.append(decoded)
                 internal_scores_all.append(scores)
                 if result is not None:

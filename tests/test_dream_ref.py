@@ -43,17 +43,32 @@ def test_tiny_dream_forward_returns_only_final_hidden_state():
     assert output.hidden_states[-1].shape == (1, 4, 32)
 
 
-def test_tiny_dream_save_and_reload_preserves_state_dict(tmp_path):
+def test_tiny_dream_save_and_reload_preserves_state_dict_and_resets_rope(tmp_path, monkeypatch):
     model = DreamModel(_tiny_config()).eval()
     original = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
     model.save_pretrained(tmp_path)
     model.generation_config.save_pretrained(tmp_path)
 
+    reset_calls = 0
+    reset_rope_parameters = DreamModel.reset_rope_parameters
+
+    def tracked_reset(self):
+        nonlocal reset_calls
+        reset_calls += 1
+        reset_rope_parameters(self)
+
+    monkeypatch.setattr(DreamModel, "reset_rope_parameters", tracked_reset)
     loaded = DreamModel.from_pretrained(tmp_path)
 
+    assert reset_calls == 1
     assert original.keys() == loaded.state_dict().keys()
     for name, tensor in loaded.state_dict().items():
         torch.testing.assert_close(tensor, original[name])
+
+    rope_modules = [loaded.model.rotary_emb, *(layer.self_attn.rotary_emb for layer in loaded.model.layers)]
+    for rope in rope_modules:
+        expected, _ = rope.rope_init_fn(rope.config, rope.inv_freq.device, **rope.rope_kwargs)
+        torch.testing.assert_close(rope.inv_freq, expected)
 
 
 def test_tiny_dream_compiled_forward():

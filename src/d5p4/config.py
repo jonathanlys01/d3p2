@@ -67,8 +67,6 @@ OmegaConf.register_new_resolver("env_path_or", env_path_or, replace=True)
 OmegaConf.register_new_resolver("user", get_user, replace=True)
 
 
-# Note: any new modification here will be breaking for
-# resume_db.py (based on a legacy config)
 @dataclass(frozen=True)
 class Config:
     disable_sys_args: bool = False

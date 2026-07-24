@@ -23,7 +23,9 @@ DREAM_INTERNAL_SCORE_METADATA = {
     "higher_is_better": True,
 }
 
-DREAM_WORKFLOW_VERSION = 2
+# Increment this when sampling changes invalidate stored token generations.
+# Version 3 separates healthy RoPE-initialized runs from earlier broken caches.
+DREAM_WORKFLOW_VERSION = 3
 
 
 def _stop_token_ids(tokenizer: Any) -> set[int]:
@@ -55,19 +57,9 @@ def _decode_generations(
     generations = []
     for sample in raw_samples:
         completion = sample[prompt_len:].tolist()
-        # A diffusion suffix can contain a leading stop marker while later
-        # positions still contain useful text. Only accept a stop once the
-        # preceding suffix decodes to non-empty content.
-        for idx, token_id in enumerate(completion):
-            if token_id not in stop_ids:
-                continue
-            prefix = cast(
-                str,
-                model.tokenizer.decode(completion[:idx], skip_special_tokens=True),
-            )
-            if prefix.strip():
-                completion = completion[:idx]
-                break
+        stop_positions = [idx for idx, token_id in enumerate(completion) if token_id in stop_ids]
+        if stop_positions:
+            completion = completion[: stop_positions[0]]
         decoded = cast(str, model.tokenizer.decode(completion, skip_special_tokens=True))
         generations.append(decoded.strip())
     return generations

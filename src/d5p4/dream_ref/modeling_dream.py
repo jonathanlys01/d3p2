@@ -633,6 +633,12 @@ class DreamPreTrainedModel(PreTrainedModel):
             _from_auto=from_auto_class,
             _from_pipeline=from_pipeline,
         )
+        # Transformers 5 constructs the model on the meta device and does not
+        # restore non-persistent buffers from the checkpoint. Dream's RoPE
+        # frequency tables must therefore be materialized after weight loading.
+        reset_rope = getattr(_model, "reset_rope_parameters", None)
+        if callable(reset_rope):
+            reset_rope()
         return _model
 
 class DreamBaseModel(DreamPreTrainedModel):

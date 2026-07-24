@@ -32,7 +32,7 @@ class _FakeTokenizer:
 
     def decode(self, token_ids, skip_special_tokens=True):
         assert skip_special_tokens
-        return ",".join(str(token_id) for token_id in token_ids if token_id not in {7, 8})
+        return ",".join(str(token_id) for token_id in token_ids)
 
 
 class _ToyDreamModel(nn.Module):
@@ -164,19 +164,6 @@ def test_dream_top_k_filter_limits_sampling_support():
 
     assert torch.count_nonzero(probs > 0).item() == 1
     assert probs.argmax(dim=-1).item() == 1
-
-
-def test_dream_suppresses_stop_tokens_at_first_completion_position():
-    sampler = _build_sampler(_config(dream_top_p=None, dream_top_k=None, cat_temperature=0.0))
-    logits = torch.zeros(1, 2, 10)
-    logits[0, 0, 7] = 10.0
-    logits[0, 0, 8] = 9.0
-    logits[0, 0, 3] = 8.0
-    logits[0, 1, 7] = 10.0
-
-    sampled = sampler._effective_log_probs(logits).argmax(dim=-1)
-
-    assert sampled.tolist() == [[3, 7]]
 
 
 def test_dream_temperature_and_top_p_filtering():

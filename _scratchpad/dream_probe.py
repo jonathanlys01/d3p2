@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from d5p4.config import Config
 from d5p4.diffusion_dream import DreamSampler
 
+
 cfg_path = sys.argv[1] if len(sys.argv) > 1 else "src/d5p4/_default.yaml"
 
 # Merge the yaml onto the structured defaults (same precedence as a real run),
@@ -30,7 +31,6 @@ cfg = Config(
     dream_model_path=merged.dream_model_path,
     dream_tokenizer=merged.dream_tokenizer,
     cache_dir=merged.cache_dir,
-    dream_dtype="bfloat16",  # probe the bf16 failure explicitly
 )
 print(f"model_path: {cfg.dream_model_path}")
 print(f"tokenizer : {cfg.dream_tokenizer}")
@@ -55,7 +55,6 @@ print("pad_token       :", repr(getattr(tok, "pad_token", None)), getattr(tok, "
 print("mask_index      :", m.mask_index)
 print("<|im_end|> id    :", tok.convert_tokens_to_ids("<|im_end|>"))
 print("<|endoftext|> id :", tok.convert_tokens_to_ids("<|endoftext|>"))
-print("stop_ids used    :", m._stop_token_ids())
 print("chat_template set:", tok.chat_template is not None)
 
 print("\n=== prompt formatting ===")
