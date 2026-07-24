@@ -22,9 +22,7 @@ import torch
 import torch.distributions as dists
 from torch.nn import functional as F
 from transformers import __version__
-from transformers.generation.configuration_utils import (
-    GenerationConfig
-)
+from transformers.generation.configuration_utils import GenerationConfig
 from transformers.utils import (
     ModelOutput,
     is_torchdynamo_compiling,
@@ -47,6 +45,7 @@ def top_p_logits(logits, top_p=None):
     logits = logits.masked_fill(mask, torch.finfo(logits.dtype).min)
     return logits
 
+
 def top_k_logits(logits, top_k=None):
     top_k = min(top_k, logits.size(-1))  # Safety check
     # Remove all tokens with a probability less than the last token of the top-k
@@ -56,7 +55,6 @@ def top_k_logits(logits, top_k=None):
 
 
 def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confidence=False, neg_entropy=False):
-
     if temperature > 0:
         logits = logits / temperature
     if top_p is not None and top_p < 1:
@@ -73,20 +71,20 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
             confidence, x0 = probs.max(dim=-1)
     else:
         confidence, x0 = probs.max(dim=-1)
-    
+
     if margin_confidence:
         sorted_probs, _ = torch.sort(probs, dim=-1, descending=True)
         # Extract top1 and top2 probabilities
-        top1_probs = sorted_probs[:, 0] 
-        top2_probs = sorted_probs[:, 1] 
+        top1_probs = sorted_probs[:, 0]
+        top2_probs = sorted_probs[:, 1]
         # Calculate confidence as top1 - top2
-        confidence = top1_probs - top2_probs 
-    
+        confidence = top1_probs - top2_probs
+
     if neg_entropy:
         epsilon = 1e-10
         log_probs = torch.log(probs + epsilon)
         confidence = torch.sum(probs * log_probs, dim=-1)
-    
+
     return confidence, x0
 
 
@@ -106,7 +104,7 @@ class DreamGenerationConfig(GenerationConfig):
         # diffusion specific params
         self.eps: float = kwargs.pop("eps", 1e-3)
         self.steps: int = kwargs.pop("steps", 512)
-        self.alg: str = kwargs.pop("alg", 'origin')
+        self.alg: str = kwargs.pop("alg", "origin")
         self.alg_temp: Optional[float] = kwargs.pop("alg_temp", None)
 
         # Parameters that define the output variables of `generate`
@@ -146,12 +144,18 @@ class DreamGenerationConfig(GenerationConfig):
     def validate(self, is_init=False, **_kwargs):
         pass
 
+    @classmethod
+    def from_model_config(cls, model_config: Union["PretrainedConfig", dict]) -> "DreamGenerationConfig":
+        config_dict = model_config.to_dict() if hasattr(model_config, "to_dict") else dict(model_config)
+        return cls(**config_dict)
+
+
 class DreamGenerationMixin:
     @staticmethod
     def _expand_inputs_for_generation(
         expand_size: int = 1,
         input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.LongTensor] = None
+        attention_mask: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.LongTensor, Dict[str, Any]]:
         """Expands tensors from [batch_size, ...] to [batch_size * expand_size, ...]"""
         # Do not call torch.repeat_interleave if expand_size is 1 because it clones
@@ -323,7 +327,7 @@ class DreamGenerationMixin:
         )
 
         self._validate_generated_length(generation_config, input_ids_length, has_default_max_length)
-        
+
         # 4. Check input_ids
         if not is_torchdynamo_compiling() and self.device.type != input_ids.device.type:
             warnings.warn(
@@ -336,9 +340,9 @@ class DreamGenerationMixin:
                 UserWarning,
             )
         if (
-            hasattr(generation_config, "pad_token_id") and
-            torch.any(input_ids == generation_config.pad_token_id) and 
-            attention_mask is None
+            hasattr(generation_config, "pad_token_id")
+            and torch.any(input_ids == generation_config.pad_token_id)
+            and attention_mask is None
         ):
             warnings.warn(
                 "Padding was detected but no attention mask is passed here. For correct "
@@ -347,9 +351,7 @@ class DreamGenerationMixin:
             )
 
         input_ids, attention_mask = self._expand_inputs_for_generation(
-            expand_size=generation_config.num_return_sequences,
-            input_ids=input_ids,
-            attention_mask=attention_mask 
+            expand_size=generation_config.num_return_sequences, input_ids=input_ids, attention_mask=attention_mask
         )
 
         result = self._sample(
@@ -357,7 +359,7 @@ class DreamGenerationMixin:
             attention_mask=attention_mask,
             generation_config=generation_config,
             generation_tokens_hook_func=generation_tokens_hook_func,
-            generation_logits_hook_func=generation_logits_hook_func
+            generation_logits_hook_func=generation_logits_hook_func,
         )
         return result
 
@@ -367,7 +369,7 @@ class DreamGenerationMixin:
         attention_mask: Optional[torch.LongTensor],
         generation_config: DreamGenerationConfig,
         generation_tokens_hook_func,
-        generation_logits_hook_func
+        generation_logits_hook_func,
     ) -> Union[DreamModelOutput, torch.LongTensor]:
         # init values
         output_history = generation_config.output_history
@@ -407,9 +409,9 @@ class DreamGenerationMixin:
         # this allows user-defined token control of the intermediate steps
         x = generation_tokens_hook_func(None, x, None)
         for i in range(steps):
-            mask_index = (x == mask_token_id)
+            mask_index = x == mask_token_id
             logits = self(x, attention_mask, tok_idx).logits
-            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
 
             # this allows user-defined logits control of the intermediate steps
             logits = generation_logits_hook_func(i, x, logits)
@@ -417,19 +419,23 @@ class DreamGenerationMixin:
             mask_logits = logits[mask_index]
             t = timesteps[i]
             s = timesteps[i + 1]
-        
-            if alg == 'origin':
+
+            if alg == "origin":
                 p_transfer = 1 - s / t if i < steps - 1 else 1
                 x0 = torch.zeros_like(x[mask_index], device=self.device, dtype=torch.long) + mask_token_id
                 transfer_index_t_s = torch.rand(*x0.shape, device=self.device) < p_transfer
-                _, x0[transfer_index_t_s]= sample_tokens(mask_logits[transfer_index_t_s], temperature=temperature, top_p=top_p, top_k=top_k)
+                _, x0[transfer_index_t_s] = sample_tokens(
+                    mask_logits[transfer_index_t_s], temperature=temperature, top_p=top_p, top_k=top_k
+                )
                 x[mask_index] = x0.clone()
             else:
-                if alg == 'maskgit_plus':
+                if alg == "maskgit_plus":
                     confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k)
-                elif alg == 'topk_margin':
-                    confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, margin_confidence=True)
-                elif alg == 'entropy':
+                elif alg == "topk_margin":
+                    confidence, x0 = sample_tokens(
+                        mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, margin_confidence=True
+                    )
+                elif alg == "entropy":
                     confidence, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, neg_entropy=True)
                 else:
                     raise RuntimeError(f"Unknown alg: {alg}")
@@ -447,14 +453,14 @@ class DreamGenerationMixin:
                     x_ = torch.zeros_like(x, device=self.device, dtype=torch.long) + mask_token_id
                     x_[mask_index] = x0.clone()
                     row_indices = torch.arange(x.size(0), device=self.device).unsqueeze(1).expand_as(transfer_index)
-                    x[row_indices,transfer_index] = x_[row_indices,transfer_index]
+                    x[row_indices, transfer_index] = x_[row_indices, transfer_index]
 
             # this allows user-defined token control of the intermediate steps
             x = generation_tokens_hook_func(i, x, logits)
 
             if histories is not None:
                 histories.append(x.clone())
-        
+
         if return_dict_in_generate:
             return DreamModelOutput(
                 sequences=x,
