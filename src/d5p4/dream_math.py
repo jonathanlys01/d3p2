@@ -135,6 +135,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     if preflight.master:
         print(f"Experiment ID: {unique_id}")
+        print(f"Method: {config.method}")
 
     try:
         for i, prompt_item in enumerate(prompts):

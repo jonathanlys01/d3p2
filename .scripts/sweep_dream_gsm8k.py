@@ -281,7 +281,7 @@ def build_entries(args: argparse.Namespace) -> list[SweepEntry]:
                 "dream_alg_temp": 0.0,
                 "dream_top_p": 0.9,
                 "gen_length": 256,
-                "cat_temperature": 0.7,
+                "cat_temperature": 1.0,
                 "transversal": True,
                 "subsample_start": 0,
                 "subsample_end": 256,

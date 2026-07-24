@@ -41,7 +41,7 @@ def test_default_dream_sweep_has_equal_budget_method_seed_grid() -> None:
         assert overrides["dream_steps"] == 256
         assert overrides["dream_alg"] == "entropy"
         assert overrides["dream_alg_temp"] == 0.0
-        assert overrides["cat_temperature"] == 0.7
+        assert overrides["cat_temperature"] == 1.0
         assert overrides["dream_top_p"] == 0.9
         assert overrides["resume_runs"] is True
 
