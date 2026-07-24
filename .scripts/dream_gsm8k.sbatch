@@ -8,8 +8,12 @@
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
 
 # Submit several identical workers to run the default 4 methods x 3 seeds in
-# parallel. Resume DB locks assign each configuration to at most one worker:
+# parallel. Each worker uses every GPU allocated by Slurm, while resume DB
+# locks assign each configuration to at most one worker:
 #   for _ in 1 2 3 4; do sbatch .scripts/dream_gsm8k.sbatch; done
+#
+# Use two GPUs for each claimed configuration:
+#   sbatch --gres=gpu:a100:2 .scripts/dream_gsm8k.sbatch
 #
 # Full-length generation for one GSM8K question across all arms:
 #   for _ in 1 2 3 4; do
@@ -65,7 +69,7 @@ for arg in "$@"; do
 done
 
 COMMON_ARGS=(
-  --nproc=1
+  --nproc=gpu
   --dream_model_path=/Brain/public/models/Dream-org/Dream-v0-Instruct-7B
   --dream_tokenizer=/Brain/public/models/Dream-org/Dream-v0-Instruct-7B
   --results_dir=/Brain/private/j21lys/results/dream_gsm8k

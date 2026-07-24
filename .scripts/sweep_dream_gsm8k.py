@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Cooperative one-GPU sweep for Dream GSM8K sampling.
+"""Cooperative multi-GPU sweep for Dream GSM8K sampling.
 
 The default grid contains four equal-budget sampling methods across three
 seeds. Multiple copies of the Slurm wrapper can run concurrently: each
 ``dream_math.py`` subprocess claims its configuration's resume lock before
-loading Dream, while other workers move to the next available arm.
+loading Dream, while other workers move to the next available arm. Each
+subprocess uses every GPU allocated to its Slurm job by default.
 """
 
 import argparse
@@ -239,7 +240,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[method.method for method in METHOD_CONFIGS],
         default=[method.method for method in METHOD_CONFIGS],
     )
-    parser.add_argument("--nproc", default="1", help="Processes per torchrun subprocess; default: 1.")
+    parser.add_argument(
+        "--nproc",
+        default="gpu",
+        help="Processes per torchrun subprocess; 'gpu' uses every visible GPU (default: gpu).",
+    )
     parser.add_argument("--skip_eval", choices=["true", "false"], default="false")
     parser.add_argument("--resume_db_keep_completed", choices=["true", "false"], default="true")
     parser.add_argument("--compile_model", choices=["true", "false"], default="true")
@@ -276,7 +281,7 @@ def build_entries(args: argparse.Namespace) -> list[SweepEntry]:
                 "dream_alg_temp": 0.0,
                 "dream_top_p": 0.9,
                 "gen_length": 256,
-                "cat_temperature": 0.1,
+                "cat_temperature": 0.7,
                 "transversal": True,
                 "subsample_start": 0,
                 "subsample_end": 256,

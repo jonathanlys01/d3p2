@@ -41,7 +41,7 @@ def test_default_dream_sweep_has_equal_budget_method_seed_grid() -> None:
         assert overrides["dream_steps"] == 256
         assert overrides["dream_alg"] == "entropy"
         assert overrides["dream_alg_temp"] == 0.0
-        assert overrides["cat_temperature"] == 0.1
+        assert overrides["cat_temperature"] == 0.7
         assert overrides["dream_top_p"] == 0.9
         assert overrides["resume_runs"] is True
 
@@ -50,6 +50,7 @@ def test_default_dream_sweep_has_equal_budget_method_seed_grid() -> None:
     assert by_method["baseline"]["group_size"] == 1
     assert by_method["greedy_map"]["_w_interaction"] == 25.0
     assert by_method["diverse_beam"]["_diversity_alpha"] == 12.0
+    assert all("--nproc_per_node=gpu" in entry.cmd for entry in entries)
 
 
 def test_dream_sweep_filters_grid_and_forwards_cluster_paths() -> None:
@@ -82,3 +83,14 @@ def test_dream_sweep_filters_grid_and_forwards_cluster_paths() -> None:
         assert entry.overrides["resume_db_dir"] == "/results/resume"
         assert "qa_dataset_len=1" in entry.cmd
         assert "gen_length=256" in entry.cmd
+
+
+def test_dream_sweep_gpu_count_does_not_change_semantic_config() -> None:
+    sweep = _load_sweep_module()
+    common = ["--qa_dataset_len=1", "--seeds", "0", "--methods", "greedy_map"]
+    one_gpu = sweep.build_entries(sweep._build_parser().parse_args([*common, "--nproc=1"]))[0]
+    two_gpu = sweep.build_entries(sweep._build_parser().parse_args([*common, "--nproc=2"]))[0]
+
+    assert one_gpu.overrides == two_gpu.overrides
+    assert "--nproc_per_node=1" in one_gpu.cmd
+    assert "--nproc_per_node=2" in two_gpu.cmd

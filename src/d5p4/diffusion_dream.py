@@ -5,6 +5,7 @@ implementation. Parent selection and expansion follow the same D5P4 lifecycle
 as the LLaDA sampler.
 """
 
+from dataclasses import replace
 from typing import Any, cast
 
 import torch
@@ -16,7 +17,7 @@ from transformers.modeling_outputs import MaskedLMOutput
 from d5p4.config import Cache, Config
 from d5p4.dream_ref.modeling_dream import DreamConfig, DreamModel
 from d5p4.subsample import get_subsample_selector
-from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
+from d5p4.utils import configure_runtime, get_runtime_world_size, get_tokenizer, process_model_args, tqdm
 
 
 def _top_p_logits(logits: torch.Tensor, top_p: float | None) -> torch.Tensor:
@@ -48,11 +49,37 @@ def _deterministic_transfer_mask(confidence: torch.Tensor, counts: torch.Tensor)
     return mask
 
 
+def _localize_distributed_config(config: Config, world_size: int) -> Config:
+    """Convert global Dream group counts to the equal per-rank runtime share."""
+    if world_size <= 1:
+        return config
+    if config.n_groups % world_size != 0:
+        raise ValueError(
+            f"Dream's global n_groups={config.n_groups} must be divisible by world_size={world_size}.",
+        )
+    return replace(
+        config,
+        disable_sys_args=True,
+        n_groups=config.n_groups // world_size,
+    )
+
+
+def _mix_seed(*values: int) -> int:
+    """Stable 63-bit seed mixer for batch-partition-independent token draws."""
+    mixed = 0x9E3779B97F4A7C15
+    for value in values:
+        mixed ^= int(value) & 0xFFFFFFFFFFFFFFFF
+        mixed = (mixed * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+        mixed ^= mixed >> 30
+    return mixed & 0x7FFFFFFFFFFFFFFF
+
+
 class DreamSampler(nn.Module):
     """Prompt-conditioned Dream sampler with in-loop D5P4 resampling."""
 
     def __init__(self, config: Config):
         super().__init__()
+        config = _localize_distributed_config(config, get_runtime_world_size(config))
         configure_runtime(config)
 
         model_args = process_model_args(config.dream_model_path, cache_dir=config.cache_dir, dtype="bfloat16")
@@ -75,6 +102,7 @@ class DreamSampler(nn.Module):
 
     def update_config(self, config: Config):
         """Update the sampler without reloading checkpoint weights."""
+        config = _localize_distributed_config(config, get_runtime_world_size(config))
         configure_runtime(config)
         rebuild_selector = (
             config.method != self.config.method
@@ -158,12 +186,42 @@ class DreamSampler(nn.Module):
         logits = _top_k_logits(logits, self.config.dream_top_k)
         return F.log_softmax(logits, dim=-1)
 
-    def _sample_tokens(self, log_probs: torch.Tensor, expand: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def _sample_tokens(
+        self,
+        log_probs: torch.Tensor,
+        expand: int,
+        *,
+        step: int,
+        sample_index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         probs = log_probs.exp()
         if self.config.cat_temperature == 0.0:
             sampled = torch.argmax(log_probs, dim=-1).repeat_interleave(expand, dim=0)
         else:
-            sampled = sample_categorical(probs, expand=expand)
+            # Draw each global parent from its own stable RNG stream. A one-GPU
+            # run and a multi-GPU run therefore consume the same streams even
+            # though the parent batch is partitioned across ranks.
+            rank = self.distributed_utils.rank if self.distributed_utils is not None else 0
+            parent_offset = rank * probs.size(0)
+            sampled_parents = []
+            for local_parent, parent_probs in enumerate(probs):
+                generator = torch.Generator(device=parent_probs.device)
+                generator.manual_seed(
+                    _mix_seed(
+                        self.config.seed,
+                        sample_index,
+                        step,
+                        parent_offset + local_parent,
+                    ),
+                )
+                parent_samples = torch.multinomial(
+                    parent_probs,
+                    num_samples=expand,
+                    replacement=True,
+                    generator=generator,
+                )
+                sampled_parents.append(parent_samples.transpose(0, 1))
+            sampled = torch.cat(sampled_parents, dim=0)
 
         expanded_probs = probs.repeat_interleave(expand, dim=0)
         expanded_log_probs = log_probs.repeat_interleave(expand, dim=0)
@@ -208,6 +266,8 @@ class DreamSampler(nn.Module):
 
     def sample(self, prompt: str, return_internal_scores: bool = False):  # noqa: C901, PLR0912, PLR0915
         with torch.no_grad():
+            sample_index = getattr(self, "_sample_call_index", 0)
+            self._sample_call_index = sample_index + 1
             prompt_tokens = self._preprocess_prompt(prompt)
             prompt_len = prompt_tokens.size(1)
             total_length = prompt_len + self.config.gen_length
@@ -268,7 +328,12 @@ class DreamSampler(nn.Module):
                     if selected_score_log_probs is not None
                     else None
                 )
-                sampled, confidence = self._sample_tokens(selected_log_probs, expand)
+                sampled, confidence = self._sample_tokens(
+                    selected_log_probs,
+                    expand,
+                    step=step,
+                    sample_index=sample_index,
+                )
 
                 generation = x[:, prompt_len:]
                 mask_index = generation == self.mask_index

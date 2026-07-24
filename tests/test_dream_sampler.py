@@ -6,7 +6,7 @@ from torch import nn
 from transformers.modeling_outputs import MaskedLMOutput
 
 from d5p4.config import Config
-from d5p4.diffusion_dream import DreamSampler
+from d5p4.diffusion_dream import DreamSampler, _localize_distributed_config
 from d5p4.subsample import get_subsample_selector
 
 
@@ -249,3 +249,58 @@ def test_dream_seeded_sampling_is_reproducible():
     second_samples = second.sample("question")
 
     assert torch.equal(first_samples, second_samples)
+
+
+def test_dream_distributed_config_keeps_group_counts_global() -> None:
+    global_config = _config(
+        n_groups=4,
+        group_size=4,
+        method="greedy_map",
+    )
+
+    local_config = _localize_distributed_config(global_config, world_size=2)
+
+    assert global_config.n_groups == 4
+    assert global_config.batch_size == 16
+    assert local_config.n_groups == 2
+    assert local_config.batch_size == 8
+
+    with pytest.raises(ValueError, match="must be divisible"):
+        _localize_distributed_config(global_config, world_size=3)
+
+
+def test_dream_token_draws_are_invariant_to_two_rank_partition() -> None:
+    config = _config(
+        seed=23,
+        n_groups=4,
+        group_size=4,
+        method="greedy_map",
+        cat_temperature=0.7,
+    )
+    generator = torch.Generator().manual_seed(9)
+    logits = torch.randn((4, 3, 10), generator=generator)
+    log_probs = torch.log_softmax(logits, dim=-1)
+
+    single = _build_sampler(config)
+    single_samples, _ = single._sample_tokens(log_probs, 4, step=7, sample_index=2)
+
+    rank_samples = []
+    for rank in range(2):
+        local_config = _config(
+            seed=23,
+            n_groups=2,
+            group_size=4,
+            method="greedy_map",
+            cat_temperature=0.7,
+        )
+        local = _build_sampler(local_config)
+        local.distributed_utils = SimpleNamespace(rank=rank)
+        samples, _ = local._sample_tokens(
+            log_probs[rank * 2 : (rank + 1) * 2],
+            4,
+            step=7,
+            sample_index=2,
+        )
+        rank_samples.append(samples)
+
+    assert torch.equal(single_samples, torch.cat(rank_samples))

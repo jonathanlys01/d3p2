@@ -24,8 +24,8 @@ DREAM_INTERNAL_SCORE_METADATA = {
 }
 
 # Increment this when sampling changes invalidate stored token generations.
-# Version 3 separates healthy RoPE-initialized runs from earlier broken caches.
-DREAM_WORKFLOW_VERSION = 3
+# Version 4 adds GPU-count-invariant stochastic token streams.
+DREAM_WORKFLOW_VERSION = 4
 
 
 def _stop_token_ids(tokenizer: Any) -> set[int]:

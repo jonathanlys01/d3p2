@@ -8,7 +8,7 @@ RUN_OUTPUT_DIR="${RESULTS_DIR:-${ROOT}/results/dream_gsm8k}"
 RESUME_DB_DIR="${RESUME_DB_DIR:-${RUN_OUTPUT_DIR}/resume}"
 CACHE_DIR="${CACHE_DIR:-${ROOT}/.cache}"
 
-NPROC="${NPROC:-1}"
+NPROC="${NPROC:-gpu}"
 N_QUESTIONS="${N_QUESTIONS:--1}"
 N_GROUPS="${N_GROUPS:-4}"
 GROUP_SIZE="${GROUP_SIZE:-4}"
@@ -18,7 +18,7 @@ DREAM_MODEL_PATH="${DREAM_MODEL_PATH:-/Brain/public/models/Dream-org/Dream-v0-In
 DREAM_TOKENIZER="${DREAM_TOKENIZER:-${DREAM_MODEL_PATH}}"
 DREAM_STEPS="${DREAM_STEPS:-256}"
 GEN_LENGTH="${GEN_LENGTH:-256}"
-CAT_TEMPERATURE="${CAT_TEMPERATURE:-0.1}"
+CAT_TEMPERATURE="${CAT_TEMPERATURE:-0.7}"
 DREAM_TOP_P="${DREAM_TOP_P:-0.9}"
 DREAM_ALG="${DREAM_ALG:-entropy}"
 DREAM_ALG_TEMP="${DREAM_ALG_TEMP:-0.0}"
@@ -39,9 +39,6 @@ if (( N_GROUPS % WORLD_SIZE != 0 || INDEP_N_GROUPS % WORLD_SIZE != 0 )); then
   echo "N_GROUPS and INDEP_N_GROUPS must be divisible by WORLD_SIZE=${WORLD_SIZE}" >&2
   exit 1
 fi
-
-N_GROUPS_PER_RANK=$((N_GROUPS / WORLD_SIZE))
-INDEP_N_GROUPS_PER_RANK=$((INDEP_N_GROUPS / WORLD_SIZE))
 
 COMMON_ARGS=(
   --config="${SRC_ROOT}/_default.yaml"
@@ -83,13 +80,13 @@ run_arm() {
 
 run_arm independent \
   method=baseline \
-  n_groups="${INDEP_N_GROUPS_PER_RANK}" \
+  n_groups="${INDEP_N_GROUPS}" \
   group_size=1 \
   comment="Dream GSM8K independent ${INDEP_N_GROUPS}x1"
 
 run_arm d5p4 \
   method=greedy_map \
-  n_groups="${N_GROUPS_PER_RANK}" \
+  n_groups="${N_GROUPS}" \
   group_size="${GROUP_SIZE}" \
   _w_interaction="${D5P4_W_INTERACTION}" \
   comment="Dream GSM8K D5P4 ${N_GROUPS}x${GROUP_SIZE} w=${D5P4_W_INTERACTION}"
