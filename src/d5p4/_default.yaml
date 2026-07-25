@@ -65,6 +65,9 @@ cfg_scale: 2.5
 llada_steps: 128
 gen_length: 256
 block_length: 32
+llada_decoder: diffusion
+classic_beam_branching_factor: null
+force_left_to_right: false
 remasking: low_confidence
 selection_temperature: 0.1
 

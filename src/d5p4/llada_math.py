@@ -10,6 +10,7 @@ import json
 import os
 import uuid
 from datetime import datetime
+from time import perf_counter
 
 import torch
 
@@ -26,12 +27,74 @@ from d5p4.resume_db import (
 from d5p4.utils import compile_model, print, seed_all
 
 
-LLADA_INTERNAL_SCORE_METADATA = {
+LLADA_INTERNAL_SCORE_METADATA: dict[str, object] = {
     "name": "confidence",
     "method": "final_step_mean_token_logprob",
     "scope": "generated_tokens",
     "higher_is_better": True,
 }
+
+
+def _internal_score_metadata(config: Config) -> dict[str, object]:
+    if config.llada_decoder == "classic_beam":
+        return {
+            "name": "beam_score",
+            # Search maximizes the cumulative log prob; the reported score divides it by the
+            # hypothesis length (up to and including EOS) so ranking is not length-biased and
+            # is comparable in kind with the diffusion arms' mean token log prob.
+            "method": "length_normalized_left_to_right_token_logprob",
+            "scope": "generated_tokens",
+            "higher_is_better": True,
+        }
+    return LLADA_INTERNAL_SCORE_METADATA
+
+
+def _ranked_pass_metrics(
+    results: list[dict],
+    internal_scores: list[list[float]],
+) -> dict[str, float]:
+    if not results:
+        return {}
+    if len(results) != len(internal_scores):
+        raise ValueError(f"Expected score groups for {len(results)} results, got {len(internal_scores)}")
+
+    group_size = len(results[0]["scores"])
+    ranked_top1: list[float] = []
+    ranked_topk: list[float] = []
+    for result, sequence_scores in zip(results, internal_scores, strict=True):
+        correctness = result["scores"]
+        if len(correctness) != group_size or len(sequence_scores) != group_size:
+            raise ValueError("All result, correctness, and internal-score groups must have the same size")
+        ranked_indices = sorted(range(group_size), key=lambda index: sequence_scores[index], reverse=True)
+        ranked_top1.append(float(correctness[ranked_indices[0]] > 0))
+        ranked_topk.append(float(any(correctness[index] > 0 for index in ranked_indices)))
+
+    metrics = {
+        "ranked_pass@1": sum(ranked_top1) / len(ranked_top1),
+        f"ranked_pass@{group_size}": sum(ranked_topk) / len(ranked_topk),
+    }
+    return metrics
+
+
+def _aggregate_generation_metadata(metadata: list[dict[str, float | int] | None]) -> dict[str, float | int]:
+    measured = [row for row in metadata if row is not None]
+    total_wall_time_s = sum(float(row["wall_time_s"]) for row in measured)
+    total_forward_passes = sum(int(row["model_forward_passes"]) for row in measured)
+    measured_count = len(measured)
+    return {
+        "prompt_count": len(metadata),
+        "measured_prompt_count": measured_count,
+        "missing_prompt_count": len(metadata) - measured_count,
+        "total_wall_time_s": total_wall_time_s,
+        "mean_wall_time_s": total_wall_time_s / measured_count if measured_count else 0.0,
+        "total_model_forward_passes": total_forward_passes,
+        "mean_model_forward_passes": total_forward_passes / measured_count if measured_count else 0.0,
+    }
+
+
+def _synchronize_sampler_device(model: LLADASampler) -> None:
+    if model.device == "cuda":
+        torch.cuda.synchronize()
 
 
 def _text_samples_from_results(results: list[dict]) -> list[list[str]]:
@@ -84,7 +147,7 @@ def save(
         config=config,
         references=_references_from_results(results),
         internal_scores=internal_scores,
-        internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA if internal_scores is not None else None,
+        internal_score_metadata=_internal_score_metadata(config) if internal_scores is not None else None,
         experiment_id=str(uid),
         extra={"results": results},
     )
@@ -155,6 +218,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     results = []
     all_generations = []
     internal_scores_all = []
+    generation_metadata_all: list[dict[str, float | int] | None] = []
 
     if master:
         print(f"Experiment ID: {unique_id}")
@@ -170,6 +234,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 assert generation is not None
                 raw_samples = generation["tokens"]
                 scores = generation["internal_scores"] or []
+                generation_metadata = generation["generation_metadata"]
                 decoded = generation["decoded"] or _decode_generations(
                     model,
                     prompt,
@@ -184,7 +249,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             else:
                 if master:
                     print(f"Sampling {i + 1}/{len(prompts)}...", progress=True)
+                _synchronize_sampler_device(model)
+                sampling_start = perf_counter()
                 raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
+                _synchronize_sampler_device(model)
+                generation_metadata = {
+                    "wall_time_s": perf_counter() - sampling_start,
+                    "model_forward_passes": model.last_forward_count,
+                }
                 if not master:
                     continue
                 prompt_len = raw_samples.shape[1] - config.gen_length
@@ -199,6 +271,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         token_ids=raw_samples,
                         prompt_len=prompt_len,
                         internal_scores=scores,
+                        generation_metadata=generation_metadata,
                     )
                 decoded = _decode_generations(model, prompt, raw_samples, prompt_len)
                 result = None if config.skip_eval else score_generations(i, prompt, decoded)
@@ -208,6 +281,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             if master:
                 all_generations.append(decoded)
                 internal_scores_all.append(scores)
+                generation_metadata_all.append(generation_metadata)
                 if result is not None:
                     results.append(result)
                     cur_pass1 = result["accuracy"]
@@ -234,32 +308,50 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     num_workers = min(8, os.cpu_count() or 1)
     print(f"Computing aggregate math metrics with {num_workers} CPU worker(s)...")
-    math_metrics = (
+    math_metrics: dict[str, float | str] = (
         evaluator.evaluate(
             all_generations,
             answer_numbers,
             string_references=string_references,
+            k_values=sorted({1, config.batch_size}),
             num_workers=num_workers,
         )
         if results
         else {}
     )
+    ranked_metrics = _ranked_pass_metrics(results, internal_scores_all) if results else {}
+    math_metrics.update(ranked_metrics)
+    generation_stats = _aggregate_generation_metadata(generation_metadata_all)
     math_metrics_summary = math_metrics.get("math_metrics_summary")
     if math_metrics_summary:
         print(f"math metrics: {math_metrics_summary}")
+    if ranked_metrics:
+        print(
+            f"ranked metrics: top-1={ranked_metrics['ranked_pass@1']:.4%} | "
+            f"top-{config.batch_size}={ranked_metrics[f'ranked_pass@{config.batch_size}']:.4%}",
+        )
+    print(
+        f"generation: total={generation_stats['total_wall_time_s']:.3f}s | "
+        f"mean={generation_stats['mean_wall_time_s']:.3f}s/prompt | "
+        f"forwards={generation_stats['total_model_forward_passes']} total, "
+        f"{generation_stats['mean_model_forward_passes']:.1f}/prompt",
+    )
 
     payload = build_generation_result_payload(
         text_samples=all_generations,
         config=config,
         references=string_references,
         internal_scores=internal_scores_all,
-        internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA if internal_scores_all else None,
+        internal_score_metadata=_internal_score_metadata(config) if internal_scores_all else None,
         metrics=math_metrics,
         experiment_id=str(unique_id),
         extra={
             "results": results,
             "overall_accuracy": overall_acc,
             "math_metrics": math_metrics,
+            "ranked_metrics": ranked_metrics,
+            "generation_stats": generation_stats,
+            "generation_metadata": generation_metadata_all,
         },
     )
 

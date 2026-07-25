@@ -10,6 +10,7 @@ python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.0
 python diffusion_llada.py --config=_default.yaml cat_temperature=1 cfg_scale=1.5
 """
 
+from itertools import accumulate
 from typing import cast
 
 import torch
@@ -27,6 +28,224 @@ from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sam
 MASK_TOKEN_ID = 126336
 
 
+def _validate_classic_beam_inputs(  # noqa: C901, PLR0913
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    generation_length: int,
+    beam_size: int,
+    branching_factor: int | None,
+) -> tuple[int, int]:
+    """Validate public beam inputs and return branching factor plus mask ID."""
+    if input_ids.ndim != 2:
+        raise ValueError(f"input_ids must have shape [batch, prompt_len], got {tuple(input_ids.shape)}")
+    if input_ids.dtype != torch.long:
+        raise TypeError(f"input_ids must have dtype torch.long, got {input_ids.dtype}")
+    if attention_mask.shape != input_ids.shape:
+        raise ValueError(
+            f"attention_mask must match input_ids shape, got {tuple(attention_mask.shape)} "
+            f"and {tuple(input_ids.shape)}",
+        )
+    if generation_length <= 0:
+        raise ValueError(f"generation_length must be positive, got {generation_length}")
+    if beam_size <= 0:
+        raise ValueError(f"beam_size must be positive, got {beam_size}")
+
+    effective_branching_factor = beam_size if branching_factor is None else branching_factor
+    if effective_branching_factor <= 0:
+        raise ValueError(f"branching_factor must be positive, got {effective_branching_factor}")
+    reachable_beams = 1
+    for _ in range(generation_length):
+        reachable_beams = min(beam_size, reachable_beams * effective_branching_factor)
+    if reachable_beams < beam_size:
+        raise ValueError(
+            f"branching_factor={effective_branching_factor} cannot populate beam_size={beam_size} "
+            f"within generation_length={generation_length}",
+        )
+
+    config = getattr(model, "config", None)
+    mask_token_id = getattr(config, "mask_token_id", None)
+    vocab_size = getattr(config, "vocab_size", None)
+    if not isinstance(mask_token_id, int):
+        raise ValueError("model.config.mask_token_id must be an integer")
+    if isinstance(vocab_size, int) and effective_branching_factor > vocab_size - 1:
+        raise ValueError(
+            f"branching_factor={effective_branching_factor} exceeds the "
+            f"{vocab_size - 1} non-mask vocabulary entries",
+        )
+    if torch.any(input_ids == mask_token_id):
+        raise ValueError("input_ids must contain prompt tokens only, without mask tokens")
+    if not torch.all((attention_mask == 0) | (attention_mask == 1)):
+        raise ValueError("attention_mask must contain only 0/1 values")
+    return effective_branching_factor, mask_token_id
+
+
+def _classic_beam_position_log_probs(  # noqa: PLR0913
+    model: nn.Module,
+    flat_beams: torch.Tensor,
+    flat_attention: torch.Tensor,
+    pos: int,
+    mask_token_id: int,
+    branching_factor: int,
+) -> torch.Tensor:
+    outputs = model.forward(
+        input_ids=flat_beams,
+        attention_mask=flat_attention,
+        return_dict=True,
+        output_hidden_states=False,
+        last_hidden_state_only=True,
+        logits_slice=slice(pos, pos + 1),
+    )
+    logits = getattr(outputs, "logits", None)
+    if logits is None or logits.ndim != 3 or logits.shape[1] != 1:
+        shape = None if logits is None else tuple(logits.shape)
+        raise ValueError(f"Expected model logits with shape [batch * beam, 1, vocab], got {shape}")
+
+    next_log_probs = F.log_softmax(logits[:, 0].float(), dim=-1)
+    if mask_token_id >= next_log_probs.shape[-1]:
+        raise ValueError(
+            f"mask_token_id={mask_token_id} is outside model vocabulary size {next_log_probs.shape[-1]}",
+        )
+    if branching_factor > next_log_probs.shape[-1] - 1:
+        raise ValueError(
+            f"branching_factor={branching_factor} exceeds the "
+            f"{next_log_probs.shape[-1] - 1} non-mask vocabulary entries",
+        )
+    next_log_probs[:, mask_token_id] = -torch.inf
+    return next_log_probs
+
+
+@torch.inference_mode()
+def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
+    model: nn.Module,
+    input_ids: torch.LongTensor,
+    attention_mask: torch.Tensor,
+    generation_length: int,
+    beam_size: int,
+    branching_factor: int | None = None,
+    eos_token_ids: tuple[int, ...] = (),
+) -> tuple[torch.LongTensor, torch.FloatTensor, int]:
+    """Forced left-to-right beam search using a bidirectional masked-language model.
+
+    ``input_ids`` contains only the (possibly padded) prompt. Generation starts after its padded
+    width, and every later position remains masked until it is committed — the model keeps its
+    bidirectional attention, only the *decoding order* is forced, so this stays in-distribution for
+    LLaDA (unlike imposing a causal attention bias).
+
+    Search uses cumulative log probabilities, the classic beam-search objective. A beam that emits
+    one of ``eos_token_ids`` is *finished*: its remaining positions are filled with that token at
+    zero added log probability, so a completed short hypothesis is neither penalised nor perturbed
+    by post-EOS continuations. Decoding stops once every beam is finished.
+
+    Returns ``(sequences, scores, forward_passes)``. ``scores`` are per-generated-token mean log
+    probabilities (cumulative sum divided by the length up to and including EOS), which keeps them
+    comparable in kind with the diffusion sampler's internal scores and removes beam search's
+    length bias when ranking the returned hypotheses.
+    """
+    branching_factor, mask_token_id = _validate_classic_beam_inputs(
+        model,
+        input_ids,
+        attention_mask,
+        generation_length,
+        beam_size,
+        branching_factor,
+    )
+    if any(token_id == mask_token_id for token_id in eos_token_ids):
+        raise ValueError("eos_token_ids must not contain the mask token")
+
+    batch_size, generation_start = input_ids.shape
+    seq_len = generation_start + generation_length
+    device = input_ids.device
+
+    prompt = input_ids.unsqueeze(1).expand(batch_size, beam_size, generation_start)
+    masked_suffix = torch.full(
+        (batch_size, beam_size, generation_length),
+        mask_token_id,
+        dtype=torch.long,
+        device=device,
+    )
+    beams = torch.cat((prompt, masked_suffix), dim=-1)
+
+    prompt_attention = attention_mask.to(device=device)
+    generation_attention = torch.ones(
+        (batch_size, generation_length),
+        dtype=prompt_attention.dtype,
+        device=device,
+    )
+    full_attention = torch.cat((prompt_attention, generation_attention), dim=-1)
+    beam_attention = full_attention.unsqueeze(1).expand(batch_size, beam_size, seq_len)
+
+    scores = torch.full((batch_size, beam_size), -torch.inf, dtype=torch.float32, device=device)
+    scores[:, 0] = 0.0
+    finished = torch.zeros((batch_size, beam_size), dtype=torch.bool, device=device)
+    lengths = torch.zeros((batch_size, beam_size), dtype=torch.long, device=device)
+    eos_tensor = torch.tensor(eos_token_ids, dtype=torch.long, device=device)
+    # Finished beams are padded with EOS, which the tokenizer strips when decoding.
+    pad_token_id = eos_token_ids[0] if eos_token_ids else mask_token_id
+    forward_passes = 0
+
+    for pos in range(generation_start, seq_len):
+        if bool(finished.all()):
+            beams[:, :, pos:] = pad_token_id
+            break
+
+        flat_beams = beams.reshape(batch_size * beam_size, seq_len)
+        flat_attention = beam_attention.reshape(batch_size * beam_size, seq_len)
+        next_log_probs = _classic_beam_position_log_probs(
+            model,
+            flat_beams,
+            flat_attention,
+            pos,
+            mask_token_id,
+            branching_factor,
+        )
+        forward_passes += 1
+
+        candidate_log_probs, candidate_tokens = torch.topk(
+            next_log_probs,
+            k=branching_factor,
+            dim=-1,
+        )
+        candidate_log_probs = candidate_log_probs.reshape(batch_size, beam_size, branching_factor)
+        candidate_tokens = candidate_tokens.reshape(batch_size, beam_size, branching_factor)
+
+        # A finished beam gets exactly one child (pad, +0 log prob) so it neither dies nor
+        # duplicates itself across the beam.
+        candidate_log_probs = torch.where(
+            finished.unsqueeze(-1),
+            torch.full_like(candidate_log_probs, -torch.inf),
+            candidate_log_probs,
+        )
+        candidate_tokens = torch.where(
+            finished.unsqueeze(-1),
+            torch.full_like(candidate_tokens, pad_token_id),
+            candidate_tokens,
+        )
+        candidate_log_probs[:, :, 0] = torch.where(
+            finished,
+            torch.zeros_like(candidate_log_probs[:, :, 0]),
+            candidate_log_probs[:, :, 0],
+        )
+        candidate_scores = scores.unsqueeze(-1) + candidate_log_probs
+
+        flat_candidate_scores = candidate_scores.flatten(1)
+        next_scores, selected_flat = torch.topk(flat_candidate_scores, k=beam_size, dim=-1)
+        parent_indices = torch.div(selected_flat, branching_factor, rounding_mode="floor")
+        selected_tokens = torch.gather(candidate_tokens.flatten(1), dim=1, index=selected_flat)
+
+        gather_indices = parent_indices.unsqueeze(-1).expand(batch_size, beam_size, seq_len)
+        beams = torch.gather(beams, dim=1, index=gather_indices)
+        beams[:, :, pos] = selected_tokens
+        scores = next_scores
+
+        was_finished = torch.gather(finished, dim=1, index=parent_indices)
+        lengths = torch.gather(lengths, dim=1, index=parent_indices) + (~was_finished).long()
+        finished = was_finished | torch.isin(selected_tokens, eos_tensor)
+
+    mean_scores = scores / lengths.clamp(min=1)
+    return cast(torch.LongTensor, beams), cast(torch.FloatTensor, mean_scores), forward_passes
+
+
 def topk_row_transfer_mask(confidence: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
     """Boolean mask selecting, per row j, the counts[j] highest-confidence positions.
 
@@ -40,6 +259,17 @@ def topk_row_transfer_mask(confidence: torch.Tensor, counts: torch.Tensor) -> to
     mask = torch.zeros_like(confidence, dtype=torch.bool)
     mask.scatter_(1, sorted_idx, keep)
     return mask
+
+
+def leftmost_transfer_mask(mask_index: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
+    """Boolean mask selecting, per row j, the counts[j] leftmost still-masked positions.
+
+    Forced left-to-right counterpart of `topk_row_transfer_mask`: the unmasking order is the
+    position order rather than a confidence ranking, so `remasking` and `selection_temperature`
+    have no effect. `counts` must not exceed the number of masked entries per row.
+    """
+    masked_rank = torch.cumsum(mask_index.long(), dim=1) - 1
+    return mask_index & (masked_rank < counts.unsqueeze(1))
 
 
 def cfg_combine_logits(cond_logits: torch.Tensor, uncond_logits: torch.Tensor, cfg_scale: float) -> torch.Tensor:
@@ -85,6 +315,8 @@ class LLADASampler(nn.Module):
         self.model.eval()
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
+        self._forward_call_count = 0
+        self.last_forward_count = 0
 
     def update_config(self, config: Config):
         """Update model and selector config (for reusing model across sweep trials)."""
@@ -110,6 +342,7 @@ class LLADASampler(nn.Module):
         output_hidden_states: bool = True,
         logits_slice: slice | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...] | None]:
+        self._forward_call_count += 1
         with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore
             input_ids = cast(torch.LongTensor, x)
             out = self.model.forward(
@@ -245,8 +478,52 @@ class LLADASampler(nn.Module):
         reference for equivalence tests."""
         return LLADASampler._score_generation_sequences(log_p_x0[:, prompt_len:], x0[:, prompt_len:])
 
+    def _eos_token_ids(self) -> tuple[int, ...]:
+        """Sequence-terminating ids, used to freeze finished beams in classic beam search."""
+        # Resolved from the added vocabulary rather than `convert_tokens_to_ids`, which silently
+        # falls back to the unk id for a token the tokenizer does not have.
+        added_vocab = getattr(self.tokenizer, "get_added_vocab", dict)() or {}
+        candidates = [getattr(self.tokenizer, "eos_token_id", None)]
+        candidates += [added_vocab.get(special) for special in ("<|endoftext|>", "<|eot_id|>")]
+        seen: dict[int, None] = {}
+        for token_id in candidates:
+            if isinstance(token_id, int) and token_id != self.mask_index:
+                seen.setdefault(token_id, None)
+        return tuple(seen)
+
+    def _sample_classic_beam(self, prompt: str, return_internal_scores: bool):
+        if self.distributed_utils is not None:
+            raise RuntimeError(
+                "classic_beam decoding is single-process only; set standalone_job=true or use one process",
+            )
+
+        prompt_tokens = self._preprocess_prompt(prompt)
+        attention_mask = torch.ones_like(prompt_tokens)
+        branching_factor = self.config.classic_beam_branching_factor
+        with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore
+            sequences, scores, forward_passes = left_to_right_beam_sample(
+                self.model,
+                cast(torch.LongTensor, prompt_tokens),
+                attention_mask,
+                generation_length=self.config.gen_length,
+                beam_size=self.config.batch_size,
+                branching_factor=branching_factor,
+                eos_token_ids=self._eos_token_ids(),
+            )
+
+        self.last_forward_count = forward_passes
+        sequences = sequences.squeeze(0)
+        scores = scores.squeeze(0)
+        if return_internal_scores:
+            return sequences, scores
+        return sequences
+
     def sample(self, prompt: str, return_internal_scores: bool = False):  # noqa: C901, PLR0912, PLR0915
+        if self.config.llada_decoder == "classic_beam":
+            return self._sample_classic_beam(prompt, return_internal_scores)
+
         with torch.no_grad():
+            self._forward_call_count = 0
             num_blocks = self.config.gen_length // self.config.block_length
             steps = self.config.llada_steps // num_blocks
             batch_size = self.config.batch_size
@@ -282,6 +559,17 @@ class LLADASampler(nn.Module):
                 block_mask_index = x[:, start:end] == self.mask_index
 
                 num_transfer_tokens = self._get_block_transfer_tokens(block_mask_index, steps)
+
+                # Forced left-to-right: the block is fully masked here, so after step s exactly
+                # `frontier_widths[s]` of its positions are decided. Everything beyond that is still
+                # a mask token, and feeding those positions to the selector would drown the quality
+                # score and the embedding kernel in identical mask-state features — so the selector
+                # cache is narrowed to the decided prefix each step.
+                frontier_widths = (
+                    list(accumulate(num_transfer_tokens.amax(dim=0).tolist()))
+                    if self.config.force_left_to_right
+                    else None
+                )
 
                 step_iter = tqdm(range(steps), desc="Steps", disable=disable) if single_block else range(steps)
                 for step in step_iter:
@@ -342,15 +630,16 @@ class LLADASampler(nn.Module):
                         block_log_p_x0 = F.log_softmax(logits, dim=-1)
                     del logits
 
+                    selector_end = start + frontier_widths[step] if frontier_widths is not None else end
                     if embeddings is not None:
-                        cache_embeddings = embeddings[:, start:end].contiguous()
+                        cache_embeddings = embeddings[:, start:selector_end].contiguous()
                         del embeddings
                     else:
                         cache_embeddings = None
                     cache = Cache(
-                        log_p_x0=block_log_p_x0,
+                        log_p_x0=block_log_p_x0[:, : selector_end - start],
                         embeddings=cache_embeddings,
-                        x=x[:, start:end],
+                        x=x[:, start:selector_end],
                     )
                     subsample_step, slice_idx = self._get_slice(step, cache)
 
@@ -387,6 +676,14 @@ class LLADASampler(nn.Module):
                         generation_start = num_block * self.config.block_length
                         generation_x0[:, generation_start : generation_start + self.config.block_length] = candidate_x0
                         final_internal_scores = self._score_generation_sequences(generation_log_p_x0, generation_x0)
+
+                    if frontier_widths is not None:
+                        # Position order replaces the confidence ranking; nothing else in the step changes.
+                        x0 = candidate_x0
+                        transfer_index = leftmost_transfer_mask(block_mask_index, num_transfer_tokens[:, step])
+                        x_block = x[:, start:end]
+                        x_block[transfer_index] = x0[transfer_index]
+                        continue
 
                     if self.config.remasking == "random":
                         # Full-width draw sliced to the block: keeps the RNG stream identical to the
@@ -437,6 +734,7 @@ class LLADASampler(nn.Module):
                     gathered_scores = self.distributed_utils.all_gather_sequences(final_internal_scores.unsqueeze(1))
                     final_internal_scores = gathered_scores.squeeze(1)
 
+            self.last_forward_count = self._forward_call_count
             if return_internal_scores:
                 assert final_internal_scores is not None
                 return x, final_internal_scores

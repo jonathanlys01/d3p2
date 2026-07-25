@@ -55,6 +55,16 @@ DREAM_CONFIG_KEYS = {
     "dream_top_k",
 }
 
+# Added after the original resume-hash schema. A key holding its pre-feature value must be omitted
+# entirely (not serialized with a default), so the semantic config stays byte-for-byte compatible
+# with databases written before the feature existed. Keys with a non-default value are included,
+# because then they do change generation semantics.
+LEFT_TO_RIGHT_CONFIG_DEFAULTS = {
+    "llada_decoder": "diffusion",
+    "classic_beam_branching_factor": None,
+    "force_left_to_right": False,
+}
+
 
 class ResumeLockError(RuntimeError):
     """Raised when another live process owns the resume DB lock."""
@@ -127,6 +137,13 @@ def semantic_config_dict(config: Any) -> dict[str, Any]:
     excluded_keys = HASH_EXCLUDED_CONFIG_KEYS
     if config_dict.get("legacy_config", False):
         excluded_keys = excluded_keys | DREAM_CONFIG_KEYS
+    at_legacy_default = {
+        key for key, legacy in LEFT_TO_RIGHT_CONFIG_DEFAULTS.items() if config_dict.get(key, legacy) == legacy
+    }
+    if config_dict.get("llada_decoder", "diffusion") == "diffusion":
+        # An unused branching factor cannot change a diffusion run.
+        at_legacy_default.add("classic_beam_branching_factor")
+    excluded_keys = excluded_keys | at_legacy_default
     return {key: value for key, value in config_dict.items() if key not in excluded_keys}
 
 
@@ -277,6 +294,7 @@ class ResumableRunStore:
                 prompt_len INTEGER,
                 internal_scores_json TEXT,
                 sequence_scores_json TEXT,
+                generation_metadata_json TEXT,
                 decoded_json TEXT,
                 eval_decoded_json TEXT,
                 selected_indices_json TEXT,
@@ -287,6 +305,12 @@ class ResumableRunStore:
             );
             """,
         )
+        generation_columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(generations)").fetchall()
+        }
+        if "generation_metadata_json" not in generation_columns:
+            self.conn.execute("ALTER TABLE generations ADD COLUMN generation_metadata_json TEXT")
         self.conn.commit()
 
     def _initialize_run(self) -> None:
@@ -354,7 +378,7 @@ class ResumableRunStore:
         ).fetchall()
         return {int(row["item_index"]) for row in rows}
 
-    def record_generated(
+    def record_generated(  # noqa: PLR0913
         self,
         *,
         item_index: int,
@@ -362,6 +386,7 @@ class ResumableRunStore:
         prompt_len: int | None = None,
         internal_scores: list[float] | None = None,
         sequence_scores: list[float] | None = None,
+        generation_metadata: dict[str, Any] | None = None,
     ) -> None:
         now = time.time()
         with self.conn:
@@ -369,9 +394,9 @@ class ResumableRunStore:
                 """
                 INSERT OR REPLACE INTO generations (
                     experiment_hash, item_index, token_ids_blob, prompt_len,
-                    internal_scores_json, sequence_scores_json, generated_at
+                    internal_scores_json, sequence_scores_json, generation_metadata_json, generated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.experiment_hash,
@@ -380,6 +405,7 @@ class ResumableRunStore:
                     prompt_len,
                     _json_dumps(internal_scores) if internal_scores is not None else None,
                     _json_dumps(sequence_scores) if sequence_scores is not None else None,
+                    _json_dumps(generation_metadata) if generation_metadata is not None else None,
                     now,
                 ),
             )
@@ -433,6 +459,9 @@ class ResumableRunStore:
             "prompt_len": row["prompt_len"],
             "internal_scores": json.loads(row["internal_scores_json"]) if row["internal_scores_json"] else None,
             "sequence_scores": json.loads(row["sequence_scores_json"]) if row["sequence_scores_json"] else None,
+            "generation_metadata": (
+                json.loads(row["generation_metadata_json"]) if row["generation_metadata_json"] else None
+            ),
             "decoded": json.loads(row["decoded_json"]) if row["decoded_json"] else None,
             "eval_decoded": json.loads(row["eval_decoded_json"]) if row["eval_decoded_json"] else None,
             "selected_indices": json.loads(row["selected_indices_json"]) if row["selected_indices_json"] else None,

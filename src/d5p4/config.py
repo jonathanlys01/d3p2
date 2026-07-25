@@ -43,6 +43,7 @@ SCORE_METHOD_CHOICES = {
 }
 GIDD_SCHEDULE_CHOICES = {"uniform", "hybrid"}
 REMASKING_CHOICES = {"low_confidence", "selection_temperature", "random"}
+LLADA_DECODER_CHOICES = {"diffusion", "classic_beam"}
 DREAM_ALG_CHOICES = {"origin", "maskgit_plus", "topk_margin", "entropy"}
 EVAL_SELECTION_METRIC_CHOICES = {"ppl", "f1", "int"}
 CODE_DATASET_CHOICES = {"humaneval", "mbpp"}
@@ -90,6 +91,10 @@ class Config:
     llada_steps: int = 128
     gen_length: int = 128
     block_length: int = 32
+    llada_decoder: str = "diffusion"  # "diffusion" or forced left-to-right "classic_beam"
+    classic_beam_branching_factor: int | None = None
+    # Force the diffusion sampler to unmask strictly left-to-right (implicit for classic_beam).
+    force_left_to_right: bool = False
     remasking: str = "low_confidence"  # "low_confidence", "selection_temperature", or "random"
     selection_temperature: float = 1.0
     logits_eos_inf: bool = False
@@ -281,15 +286,42 @@ class Config:
             self._validate_dream()
 
     def _validate_llada(self):
+        assert self.llada_decoder in LLADA_DECODER_CHOICES, (
+            f"llada_decoder must be one of {sorted(LLADA_DECODER_CHOICES)}, got {self.llada_decoder!r}"
+        )
+        if self.classic_beam_branching_factor is not None:
+            assert self.classic_beam_branching_factor > 0, "classic_beam_branching_factor must be positive"
+        if self.llada_decoder == "classic_beam":
+            assert self.cfg_scale == 1.0, "classic_beam requires conditional-only cfg_scale=1.0"
+            assert self.method == "baseline", "classic_beam requires method=baseline"
+            assert not self.logits_eos_inf, "classic_beam requires logits_eos_inf=false so beams can terminate"
+            assert not self.force_left_to_right, "classic_beam is already left-to-right; unset force_left_to_right"
+
         assert self.remasking in REMASKING_CHOICES, f"Remasking method {self.remasking} not recognized."
         if self.eval_transversal_group_representatives:
             assert self.transversal, "eval_transversal_group_representatives requires transversal=True"
             assert self.group_size > 1, "eval_transversal_group_representatives requires group_size > 1"
         assert self.selection_temperature >= 0.0, "selection_temperature must be non-negative"
-        assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
-        num_blocks = self.gen_length // self.block_length
-        assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
-        if self.remasking == "selection_temperature" and self.cat_temperature != 0.0 and idr_torch.rank == 0:
+        if self.llada_decoder == "diffusion":
+            assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
+            num_blocks = self.gen_length // self.block_length
+            assert self.llada_steps % num_blocks == 0, "llada_steps must be divisible by num_blocks"
+        if self.force_left_to_right and idr_torch.rank == 0:
+            inert = [
+                name
+                for name, is_set in (
+                    (f"remasking={self.remasking}", self.remasking != "low_confidence"),
+                    ("selection_temperature", self.remasking == "selection_temperature"),
+                    ("confidence_eos_eot_inf", self.confidence_eos_eot_inf),
+                )
+                if is_set
+            ]
+            if inert:
+                print(
+                    f"Warning: force_left_to_right makes {', '.join(inert)} inert; "
+                    "the unmasking order is the position order, not a confidence ranking.",
+                )
+        elif self.remasking == "selection_temperature" and self.cat_temperature != 0.0 and idr_torch.rank == 0:
             print(
                 "Warning: remasking=selection_temperature with cat_temperature != 0.0. "
                 "This mixes stochastic token sampling with stochastic remasking.",

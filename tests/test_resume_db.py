@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 from dataclasses import asdict
 
@@ -7,6 +8,7 @@ import torch
 
 from d5p4.config import Config
 from d5p4.resume_db import (
+    LEFT_TO_RIGHT_CONFIG_DEFAULTS,
     ResumableRunStore,
     ResumeLockError,
     experiment_hash,
@@ -76,7 +78,9 @@ def test_legacy_config_hash_matches_pre_dream_schema():
     expected = {
         key: value
         for key, value in asdict(cfg).items()
-        if key not in HASH_EXCLUDED_CONFIG_KEYS and key not in DREAM_CONFIG_KEYS
+        if key not in HASH_EXCLUDED_CONFIG_KEYS
+        and key not in DREAM_CONFIG_KEYS
+        and key not in LEFT_TO_RIGHT_CONFIG_DEFAULTS
     }
 
     assert semantic_config_dict(cfg) == expected
@@ -110,7 +114,13 @@ def test_store_roundtrips_tokens_and_decoded_payload():
             mode="prompt_generation",
             work_items=items,
         ) as store:
-            store.record_generated(item_index=0, token_ids=tokens, prompt_len=1, internal_scores=[0.5])
+            store.record_generated(
+                item_index=0,
+                token_ids=tokens,
+                prompt_len=1,
+                internal_scores=[0.5],
+                generation_metadata={"wall_time_s": 1.25, "model_forward_passes": 4},
+            )
             store.record_decoded(
                 item_index=0,
                 decoded=["abc"],
@@ -122,9 +132,116 @@ def test_store_roundtrips_tokens_and_decoded_payload():
             torch.testing.assert_close(loaded["tokens"], tokens)
             assert loaded["prompt_len"] == 1
             assert loaded["internal_scores"] == [0.5]
+            assert loaded["generation_metadata"] == {"model_forward_passes": 4, "wall_time_s": 1.25}
             assert loaded["decoded"] == ["abc"]
             assert loaded["result"] == {"accuracy": 1.0}
             assert store.generated_indices() == {0}
+
+
+def test_store_adds_generation_metadata_column_to_existing_database():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = _cfg(tmpdir)
+        items = make_work_items(1, prefix="prompt", prompts=["hello"])
+        store = ResumableRunStore(
+            config=cfg,
+            workflow_id="prompt_generation:llada",
+            mode="prompt_generation",
+            work_items=items,
+        )
+        store.db_dir.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(store.db_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE generations (
+                    experiment_hash TEXT NOT NULL,
+                    item_index INTEGER NOT NULL,
+                    token_ids_blob BLOB NOT NULL,
+                    prompt_len INTEGER,
+                    internal_scores_json TEXT,
+                    sequence_scores_json TEXT,
+                    decoded_json TEXT,
+                    eval_decoded_json TEXT,
+                    selected_indices_json TEXT,
+                    result_json TEXT,
+                    generated_at REAL NOT NULL,
+                    decoded_at REAL,
+                    PRIMARY KEY (experiment_hash, item_index)
+                )
+                """,
+            )
+
+        store.open()
+        try:
+            columns = {
+                str(row["name"])
+                for row in store.conn.execute("PRAGMA table_info(generations)").fetchall()
+            }
+            assert "generation_metadata_json" in columns
+        finally:
+            store.close()
+
+
+def test_diffusion_hash_ignores_classic_beam_fields_but_classic_hash_includes_them():
+    items = make_work_items(1, prefix="prompt", prompts=["hello"])
+    work_hash = manifest_hash(items)
+    diffusion_a = _cfg("tmpdir", llada_decoder="diffusion", classic_beam_branching_factor=None)
+    diffusion_b = _cfg("tmpdir", llada_decoder="diffusion", classic_beam_branching_factor=17)
+    classic_a = _cfg(
+        "tmpdir",
+        llada_decoder="classic_beam",
+        classic_beam_branching_factor=4,
+        cfg_scale=1.0,
+        method="baseline",
+    )
+    classic_b = _cfg(
+        "tmpdir",
+        llada_decoder="classic_beam",
+        classic_beam_branching_factor=8,
+        cfg_scale=1.0,
+        method="baseline",
+    )
+
+    assert experiment_hash("math_generation:llada", diffusion_a, work_hash) == experiment_hash(
+        "math_generation:llada",
+        diffusion_b,
+        work_hash,
+    )
+    assert experiment_hash("math_generation:llada", classic_a, work_hash) != experiment_hash(
+        "math_generation:llada",
+        classic_b,
+        work_hash,
+    )
+
+
+def test_forced_left_to_right_diffusion_hashes_apart_from_any_order_diffusion():
+    items = make_work_items(1, prefix="prompt", prompts=["hello"])
+    work_hash = manifest_hash(items)
+    any_order = _cfg("tmpdir", force_left_to_right=False)
+    left_to_right = _cfg("tmpdir", force_left_to_right=True)
+
+    assert experiment_hash("math_generation:llada", any_order, work_hash) != experiment_hash(
+        "math_generation:llada",
+        left_to_right,
+        work_hash,
+    )
+    assert "force_left_to_right" in semantic_config_dict(left_to_right)
+    assert "force_left_to_right" not in semantic_config_dict(any_order)
+
+
+def test_diffusion_hash_matches_config_dictionary_from_before_classic_beam_fields_existed():
+    items = make_work_items(1, prefix="prompt", prompts=["hello"])
+    work_hash = manifest_hash(items)
+    current = _cfg("tmpdir", llada_decoder="diffusion", classic_beam_branching_factor=None)
+    pre_classic_beam = asdict(current)
+    for key in LEFT_TO_RIGHT_CONFIG_DEFAULTS:
+        pre_classic_beam.pop(key)
+
+    assert semantic_config_dict(current) == semantic_config_dict(pre_classic_beam)
+    assert experiment_hash("math_generation:llada", current, work_hash) == experiment_hash(
+        "math_generation:llada",
+        pre_classic_beam,
+        work_hash,
+    )
 
 
 def test_store_uses_configured_shared_db_dir_and_releases_files():
