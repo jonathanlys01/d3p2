@@ -186,9 +186,13 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 internal_scores_all.append(scores)
                 if result is not None:
                     results.append(result)
+                    cur_pass1 = result["accuracy"]
+                    cur_passk = 1.0 if any(score > 0 for score in result["scores"]) else 0.0
+                    run_pass1 = sum(row["accuracy"] for row in results) / len(results)
+                    run_passk = sum(any(s > 0 for s in row["scores"]) for row in results) / len(results)
                     print(
-                        f"  → accuracy for this question: {result['accuracy']:.2%} "
-                        f"({sum(result['scores'])}/{len(result['scores'])} correct)",
+                        f"  cur_acc: {cur_pass1:.2%} | cur_pass@k: {cur_passk:.2%} | "
+                        f"run_acc: {run_pass1:.2%} | run_pass@k: {run_passk:.2%}",
                     )
     finally:
         if store is not None:
