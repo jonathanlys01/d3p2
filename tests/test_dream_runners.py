@@ -63,6 +63,26 @@ def test_dream_resume_decode_uses_stored_prompt_length():
     assert decoded == ["42"]
 
 
+def test_dream_decode_drops_ids_the_tokenizer_cannot_map():
+    class _HoleyTokenizer(_Tokenizer):
+        """Mimics Dream's tokenizer: ids outside the vocab decode to ``None``."""
+
+        def convert_ids_to_tokens(self, token_ids):
+            return [chr(token_id) if token_id < 128 else None for token_id in token_ids]
+
+        def decode(self, token_ids, skip_special_tokens=True):
+            return "".join(self.convert_ids_to_tokens(token_ids))
+
+    class _HoleySampler(_FakeSampler):
+        tokenizer = _HoleyTokenizer()
+
+    raw_samples = torch.tensor([[1, 2, ord("4"), 151999, ord("2"), 8]])
+
+    decoded = _decode_generations(cast(DreamSampler, _HoleySampler()), "question", raw_samples)
+
+    assert decoded == ["42"]
+
+
 def test_dream_gsm8k_prompt_matches_official_zero_shot_profile():
     assert _format_dream_gsm8k_query("What is 40 + 2?") == "Q: What is 40 + 2?\n\nA:"
 

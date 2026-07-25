@@ -304,3 +304,33 @@ def test_dream_token_draws_are_invariant_to_two_rank_partition() -> None:
         rank_samples.append(samples)
 
     assert torch.equal(single_samples, torch.cat(rank_samples))
+
+
+def test_dream_masks_logits_with_no_tokenizer_entry():
+    class _VocabTokenizer(_FakeTokenizer):
+        def get_vocab(self):
+            return {chr(token_id): token_id for token_id in range(6)}
+
+        added_tokens_decoder = {7: object(), 8: object()}
+
+    sampler = _build_sampler(_config(cat_temperature=1.0))
+    sampler.tokenizer = _VocabTokenizer()
+    sampler.mask_index = 0
+    logits = torch.zeros((2, 3, 10))
+
+    log_probs = sampler._effective_log_probs(logits)
+    support = log_probs.exp()[0, 0] > 0
+
+    # Ids 0 (mask) and 6, 9 (absent from the vocab) must be unreachable.
+    assert support.tolist() == [False, True, True, True, True, True, False, True, True, False]
+
+
+def test_dream_keeps_full_support_when_tokenizer_has_no_vocab():
+    sampler = _build_sampler(_config(cat_temperature=1.0))
+    sampler.mask_index = 0
+    logits = torch.zeros((2, 3, 10))
+
+    log_probs = sampler._effective_log_probs(logits)
+    support = log_probs.exp()[0, 0] > 0
+
+    assert support.tolist() == [False] + [True] * 9

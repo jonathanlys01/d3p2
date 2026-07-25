@@ -43,7 +43,9 @@ from d5p4.eval_utils import (
     _math_group_task,
     _time_call,
     _vocab_size_from_refs,
+    as_text,
     compute_statistics,
+    sanitize_text_groups,
 )
 from d5p4.jina_ref.modeling_bert import JinaBertModel
 from d5p4.result_schema import get_eval_text_groups, normalize_result_payload, validate_generation_result_payload
@@ -521,6 +523,10 @@ class Evaluator:
                 f"{len(references)} references for {len(texts)} groups.",
             )
 
+        texts = sanitize_text_groups(texts)
+        if references is not None:
+            references = sanitize_text_groups(references)
+
         timings: list[tuple[str, float]] = []
 
         ppl_stats, elapsed = _time_call(self.perplexity_model, texts, batch_size=self.batch_size)
@@ -727,6 +733,9 @@ class Evaluator:
         ``"random"``
             Uniform random subsampling. Higher sampled score is better.
         """
+        full_sequences = sanitize_text_groups(full_sequences)
+        if references is not None:
+            references = sanitize_text_groups(references)
         unflattened_scores, reverse_sort = self.score_baseline_candidates(
             full_sequences,
             metric,
@@ -901,12 +910,14 @@ class MathEvaluator:
 
     def _extract(self, text: str) -> str:
         """Extract a normalised numeric string from *text*."""
+        text = as_text(text)
         if self._use_math_parser:
             return self._parser.extract_universal_numeric(text)
         return universal_math_postprocess(text)
 
     def check(self, generation: str, answer_number: str) -> int:
         """Return 1 if *generation* contains the correct answer, else 0."""
+        answer_number = as_text(answer_number)
         extracted = self._extract(generation)
         expected = self._extract(answer_number)
         if expected == "NULL":
@@ -980,6 +991,11 @@ class MathEvaluator:
         """
         if not generations:
             return {}
+
+        generations = sanitize_text_groups(generations)
+        gold_answers = [as_text(gold) for gold in gold_answers]
+        if string_references is not None:
+            string_references = sanitize_text_groups(string_references)
 
         group_size = max(len(g) for g in generations)
 

@@ -227,6 +227,20 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(mean_nll[1], 15.0)
         self.assertEqual(mean_nll[2], 15.0)
 
+    def test_math_metrics_tolerate_missing_generations(self):
+        evaluator = MathEvaluator()
+
+        self.assertEqual(evaluator.score_group([None, "the answer is 7"], "7"), [0, 1])  # type: ignore[list-item]
+        self.assertEqual(evaluator.check("7", None), 0)  # type: ignore[arg-type]
+
+        metrics = evaluator.evaluate(
+            [[None, "the answer is 7"], None],  # type: ignore[list-item]
+            ["7", "3"],
+            num_workers=1,
+        )
+
+        self.assertEqual(metrics["accuracy"], 0.5)
+
     def test_evaluate_baseline_f1_requires_aligned_references(self):
         evaluator = Evaluator.__new__(Evaluator)
 

@@ -17,7 +17,7 @@ from transformers.modeling_outputs import MaskedLMOutput
 from d5p4.config import Cache, Config
 from d5p4.dream_ref.modeling_dream import DreamConfig, DreamModel
 from d5p4.subsample import get_subsample_selector
-from d5p4.utils import configure_runtime, get_runtime_world_size, get_tokenizer, process_model_args, tqdm
+from d5p4.utils import configure_runtime, get_runtime_world_size, get_tokenizer, print, process_model_args, tqdm
 
 
 def _top_p_logits(logits: torch.Tensor, top_p: float | None) -> torch.Tensor:
@@ -39,6 +39,22 @@ def _top_k_logits(logits: torch.Tensor, top_k: int | None) -> torch.Tensor:
     top_k = min(top_k, logits.size(-1))
     threshold = torch.topk(logits, top_k, dim=-1).values[..., -1, None]
     return logits.masked_fill(logits < threshold, torch.finfo(logits.dtype).min)
+
+
+def decodable_token_ids(tokenizer: Any, vocab_size: int) -> set[int]:
+    """Return the token ids in ``[0, vocab_size)`` that map to a real token string.
+
+    Dream's LM head is wider than its tokenizer vocabulary (the embedding matrix
+    is padded for efficiency), so a sampled id can have no entry in the id→token
+    map. ``convert_ids_to_tokens`` yields ``None`` for those and decoding then
+    fails with ``TypeError: sequence item N: expected str instance, NoneType``.
+    """
+    ids: set[int] = set()
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if callable(get_vocab):
+        ids.update(int(token_id) for token_id in get_vocab().values())
+    ids.update(int(token_id) for token_id in getattr(tokenizer, "added_tokens_decoder", {}))
+    return {token_id for token_id in ids if 0 <= token_id < vocab_size}
 
 
 def _deterministic_transfer_mask(confidence: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -97,6 +113,7 @@ class DreamSampler(nn.Module):
         self.model.to(self.device)
         self.model.eval()
         self._checked_finite_forward = False
+        self._undecodable_mask: torch.Tensor | None = None
 
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
 
@@ -177,9 +194,32 @@ class DreamSampler(nn.Module):
                 embeddings = out.hidden_states[-1][:, -suffix_width:-1].contiguous()
         return logits, embeddings
 
+    def _undecodable_token_mask(self, vocab_size: int, device: torch.device) -> torch.Tensor:
+        """Boolean mask over the LM head, ``True`` where the id cannot be decoded."""
+        cached = getattr(self, "_undecodable_mask", None)
+        if cached is not None and cached.numel() == vocab_size and cached.device == device:
+            return cached
+        decodable = sorted(decodable_token_ids(self.tokenizer, vocab_size))
+        if not decodable:
+            # The tokenizer exposes no vocabulary; masking everything would make
+            # every logit -inf, so trust the LM head instead.
+            print("Dream: tokenizer exposes no vocabulary, skipping undecodable-token masking.")
+            mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
+        else:
+            valid = torch.zeros(vocab_size, dtype=torch.bool, device=device)
+            valid[torch.tensor(decodable, dtype=torch.long, device=device)] = True
+            mask = ~valid
+            blocked = int(mask.sum().item())
+            if blocked:
+                print(f"Dream: masking {blocked}/{vocab_size} logits with no tokenizer entry.")
+        self._undecodable_mask = mask
+        return mask
+
     def _effective_log_probs(self, logits: torch.Tensor) -> torch.Tensor:
         logits = logits.clone()
         logits[..., self.mask_index] = torch.finfo(logits.dtype).min
+        undecodable = self._undecodable_token_mask(logits.size(-1), logits.device)
+        logits = logits.masked_fill(undecodable, torch.finfo(logits.dtype).min)
         if self.config.cat_temperature > 0.0:
             logits = logits / self.config.cat_temperature
         logits = _top_p_logits(logits, self.config.dream_top_p)

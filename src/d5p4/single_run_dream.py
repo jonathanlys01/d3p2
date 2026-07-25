@@ -24,8 +24,8 @@ DREAM_INTERNAL_SCORE_METADATA = {
 }
 
 # Increment this when sampling changes invalidate stored token generations.
-# Version 4 adds GPU-count-invariant stochastic token streams.
-DREAM_WORKFLOW_VERSION = 4
+# Version 5 masks LM-head ids that the tokenizer cannot decode.
+DREAM_WORKFLOW_VERSION = 5
 
 
 def _stop_token_ids(tokenizer: Any) -> set[int]:
@@ -45,6 +45,25 @@ def _stop_token_ids(tokenizer: Any) -> set[int]:
     return stop_ids
 
 
+def _safe_decode(tokenizer: Any, token_ids: list[int]) -> str:
+    """Decode *token_ids*, dropping any id the tokenizer cannot map to a token.
+
+    Dream's LM head is wider than its tokenizer vocabulary, so an id sampled
+    before the sampler learned to mask those columns — or replayed from an older
+    resume database — decodes to ``None`` and blows up ``"".join(tokens)``.
+    """
+    try:
+        return cast(str, tokenizer.decode(token_ids, skip_special_tokens=True))
+    except TypeError:
+        pass
+    tokens = tokenizer.convert_ids_to_tokens(token_ids)
+    kept = [token_id for token_id, token in zip(token_ids, tokens, strict=True) if isinstance(token, str)]
+    dropped = len(token_ids) - len(kept)
+    if dropped:
+        print(f"Dropped {dropped}/{len(token_ids)} undecodable token ids while decoding.")
+    return cast(str, tokenizer.decode(kept, skip_special_tokens=True))
+
+
 def _decode_generations(
     model: DreamSampler,
     prompt: str,
@@ -60,7 +79,7 @@ def _decode_generations(
         stop_positions = [idx for idx, token_id in enumerate(completion) if token_id in stop_ids]
         if stop_positions:
             completion = completion[: stop_positions[0]]
-        decoded = cast(str, model.tokenizer.decode(completion, skip_special_tokens=True))
+        decoded = _safe_decode(model.tokenizer, completion)
         generations.append(decoded.strip())
     return generations
 

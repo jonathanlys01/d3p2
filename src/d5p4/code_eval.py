@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from d5p4.eval_utils import compute_statistics
+from d5p4.eval_utils import as_text, compute_statistics
 
 
 _FENCED_CODE_RE = re.compile(r"```(?P<lang>[A-Za-z0-9_+-]*)[ \t]*\n(?P<code>.*?)```", re.DOTALL)
@@ -134,7 +134,7 @@ class CodeEvaluator:
         entry_point: str,
         dataset: str,
     ) -> CodeValidationResult:
-        extracted, full_code = self.build_full_code(generation, prompt, dataset)
+        extracted, full_code = self.build_full_code(as_text(generation), prompt, dataset)
         parse_ok, parse_error = validate_python_ast(full_code)
         if not parse_ok:
             return CodeValidationResult(

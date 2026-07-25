@@ -38,6 +38,32 @@ _BATCH_SELF_BLEU_EXACT_THRESHOLD = 256
 
 
 # ---------------------------------------------------------------------------
+# Input sanitisation
+# ---------------------------------------------------------------------------
+
+
+def as_text(value: object) -> str:
+    """Coerce a possibly-missing generation to a string.
+
+    Generation pipelines can emit ``None`` (a failed decode, a truncated resume
+    row, a null in a results JSON). Metrics treat those as empty strings rather
+    than crashing halfway through an evaluation.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
+def sanitize_text_groups(groups: list[list[str]] | None) -> list[list[str]]:
+    """Apply :func:`as_text` to every entry of a per-question generation list."""
+    if not groups:
+        return []
+    return [[as_text(text) for text in (group or [])] for group in groups]
+
+
+# ---------------------------------------------------------------------------
 # Statistics helpers
 # ---------------------------------------------------------------------------
 
