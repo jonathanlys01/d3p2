@@ -31,12 +31,12 @@
 
 set -euo pipefail
 
-ROOT="${WORK}/projects/d3p2"
+ROOT="${WORK_ejh}/projects/d3p2"
 SRC_ROOT="${ROOT}/src/d5p4"
 RESULTS_ROOT="${RESULTS_ROOT:-${ROOT}/results/dream_alg_temp_diagnostic_200}"
 RESUME_DB_DIR="${RESUME_DB_DIR:-${RESULTS_ROOT}/resume}"
 CACHE_DIR="${CACHE_DIR:-${ROOT}/.cache}"
-DREAM_MODEL_PATH="${DREAM_MODEL_PATH:-${WORK}/models/Dream-org/Dream-v0-Instruct-7B}"
+DREAM_MODEL_PATH="${DREAM_MODEL_PATH:-${WORK_ejh}/models/Dream-org/Dream-v0-Instruct-7B}"
 DREAM_TOKENIZER="${DREAM_TOKENIZER:-${DREAM_MODEL_PATH}}"
 
 # Keep the token distribution fixed and vary only entropy-based reveal-order
