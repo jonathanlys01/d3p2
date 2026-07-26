@@ -23,8 +23,8 @@
 #SBATCH --hint=nomultithread
 
 #SBATCH --job-name=dream-algtemp
-#SBATCH --output=slurm-%x-%A_%a.out
-#SBATCH --error=slurm-%x-%A_%a.err
+#SBATCH --output=logs/slurm-%x-%A_%a.out
+#SBATCH --error=logs/slurm-%x-%A_%a.err
 #SBATCH --time=02:00:00
 #SBATCH --qos=qos_gpu_h100-dev
 #SBATCH --array=0-4
