@@ -109,6 +109,12 @@ class AnalysisDefaults:
     model_cache_dir: Path
 
 
+@dataclass(frozen=True)
+class CandidateSelection:
+    target_k: int
+    grouped_methods: tuple[str, ...]
+
+
 def _stable_hash(*parts: str) -> str:
     payload = "\x1f".join(parts).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -298,6 +304,63 @@ def validation_summary(runs: Sequence[MathRun]) -> dict[str, Any]:
             for run in runs
         ],
     }
+
+
+def candidate_selection_layout(runs: Sequence[MathRun]) -> CandidateSelection:
+    grouped_counts: dict[tuple[str, str, str], int] = {}
+    for run in runs:
+        group_size = run.config.get("group_size", 1)
+        if not isinstance(group_size, int) or group_size < 1:
+            raise ValueError(f"{run.path}: config.group_size must be a positive integer")
+        if run.k % group_size:
+            raise ValueError(f"{run.path}: raw k={run.k} is not divisible by group_size={group_size}")
+        if group_size > 1:
+            grouped_counts[(run.family, run.seed, run.method)] = run.k // group_size
+
+    target_counts = set(grouped_counts.values())
+    if len(target_counts) > 1:
+        details = ", ".join(
+            f"{family}/{seed}/{method}={count}"
+            for (family, seed, method), count in sorted(grouped_counts.items())
+        )
+        raise ValueError(f"grouped methods produce different final candidate counts: {details}")
+    target_k = target_counts.pop() if target_counts else min(run.k for run in runs)
+    for run in runs:
+        group_size = int(run.config.get("group_size", 1))
+        available = run.k // group_size if group_size > 1 else run.k
+        if available < target_k:
+            raise ValueError(
+                f"{run.path}: only {available} final candidates are available, but target k={target_k}",
+            )
+    grouped_methods = tuple(sorted({method for _, _, method in grouped_counts}))
+    return CandidateSelection(target_k=target_k, grouped_methods=grouped_methods)
+
+
+def select_candidate_indices(
+    run: MathRun,
+    result: PromptResult,
+    target_k: int,
+    selection_seed: int,
+) -> tuple[int, ...]:
+    group_size = int(run.config.get("group_size", 1))
+    seed_digest = _stable_hash(
+        str(selection_seed),
+        run.family,
+        run.seed,
+        run.method,
+        result.prompt_id,
+    )
+    rng = np.random.default_rng(int(seed_digest[:16], 16))
+    if group_size > 1:
+        group_starts = range(0, run.k, group_size)
+        indices = tuple(start + int(rng.integers(group_size)) for start in group_starts)
+        if len(indices) != target_k:
+            raise ValueError(
+                f"{run.path}: grouped selection produced {len(indices)} candidates, expected {target_k}",
+            )
+        return indices
+    selected = rng.choice(run.k, size=target_k, replace=False)
+    return tuple(sorted(int(index) for index in selected))
 
 
 def final_answer_controlled(text: str, parser: MathParser | None = None) -> tuple[str, bool]:
@@ -579,10 +642,12 @@ def build_prompt_rows(  # noqa: PLR0913
     batch_size: int,
     num_workers: int,
     model_cache_dir: Path,
+    selection_seed: int,
     baseline_method: str = "baseline",
 ) -> tuple[pd.DataFrame, str]:
     parser = MathParser()
     baselines = _baseline_lookup(runs, baseline_method)
+    selection = candidate_selection_layout(runs)
     lexical_groups: dict[str, tuple[tuple[str, ...], bool]] = {}
     prepared: list[dict[str, Any]] = []
     all_embedding_texts: list[str] = []
@@ -591,28 +656,39 @@ def build_prompt_rows(  # noqa: PLR0913
         baseline = baselines[(run.family, run.seed)]
         for item_id, result in run.prompts.items():
             baseline_pass1 = baseline.prompts[item_id].scores[0]
-            observed_passk = int(any(result.scores))
+            selected_indices = select_candidate_indices(
+                run,
+                result,
+                selection.target_k,
+                selection_seed,
+            )
+            selected_generations = tuple(result.generations[index] for index in selected_indices)
+            selected_scores = tuple(result.scores[index] for index in selected_indices)
+            observed_passk = int(any(selected_scores))
             bucket = classify_bucket(baseline_pass1, observed_passk)
 
-            rationale_pairs = [final_answer_controlled(text, parser) for text in result.generations]
+            rationale_pairs = [final_answer_controlled(text, parser) for text in selected_generations]
             rationale_texts = tuple(text for text, _ in rationale_pairs)
             incorrect_texts = tuple(
-                text for text, score in zip(result.generations, result.scores) if score == 0
+                text for text, score in zip(selected_generations, selected_scores) if score == 0
             )
             base_key = _stable_hash(str(run.path), item_id)
-            lexical_groups[f"{base_key}:full"] = (result.generations, False)
+            lexical_groups[f"{base_key}:full"] = (selected_generations, False)
             lexical_groups[f"{base_key}:rationale"] = (rationale_texts, False)
             if len(incorrect_texts) >= 2:
                 lexical_groups[f"{base_key}:incorrect"] = (incorrect_texts, True)
-            all_embedding_texts.extend(result.generations)
+            all_embedding_texts.extend(selected_generations)
             all_embedding_texts.extend(rationale_texts)
             prepared.append(
                 {
                     "base_key": base_key,
                     "run": run,
                     "result": result,
+                    "selected_indices": selected_indices,
+                    "selected_generations": selected_generations,
+                    "selected_scores": selected_scores,
                     "rationale_texts": rationale_texts,
-                    "rationale_mask_coverage": sum(masked for _, masked in rationale_pairs) / run.k,
+                    "rationale_mask_coverage": sum(masked for _, masked in rationale_pairs) / selection.target_k,
                     "incorrect_texts": incorrect_texts,
                     "baseline_pass1": baseline_pass1,
                     "observed_passk": observed_passk,
@@ -634,12 +710,14 @@ def build_prompt_rows(  # noqa: PLR0913
     for item in prepared:
         run: MathRun = item["run"]
         result: PromptResult = item["result"]
+        selected_generations: tuple[str, ...] = item["selected_generations"]
+        selected_scores: tuple[int, ...] = item["selected_scores"]
         base_key = item["base_key"]
         full_lexical = lexical[f"{base_key}:full"]
         rationale_lexical = lexical[f"{base_key}:rationale"]
         incorrect_texts = item["incorrect_texts"]
         incorrect_lexical = lexical.get(f"{base_key}:incorrect")
-        full_vectors = np.stack([embeddings[text] for text in result.generations])
+        full_vectors = np.stack([embeddings[text] for text in selected_generations])
         rationale_vectors = np.stack([embeddings[text] for text in item["rationale_texts"]])
         incorrect_vectors = (
             np.stack([embeddings[text] for text in incorrect_texts]) if len(incorrect_texts) >= 2 else None
@@ -654,12 +732,16 @@ def build_prompt_rows(  # noqa: PLR0913
                 "prompt_id": result.prompt_id,
                 "question": result.question,
                 "gold_answer": result.gold_answer,
-                "k": run.k,
+                "raw_k": run.k,
+                "k": selection.target_k,
+                "group_size": int(run.config.get("group_size", 1)),
+                "candidate_selection": "random_one_per_group" if run.config.get("group_size", 1) > 1 else "random",
+                "selected_indices": json.dumps(item["selected_indices"]),
                 "baseline_pass1": item["baseline_pass1"],
                 "observed_passk": item["observed_passk"],
                 "marginal_gain": item["observed_passk"] - item["baseline_pass1"],
                 "bucket": item["bucket"],
-                "n_correct": sum(result.scores),
+                "n_correct": sum(selected_scores),
                 "unique_fraction": full_lexical.unique_fraction,
                 "self_bleu": full_lexical.self_bleu,
                 "lexical_diversity": full_lexical.lexical_diversity,
@@ -1179,7 +1261,11 @@ def write_report(  # noqa: PLR0913
         f"- Family-seed replicates: {validation['replicates']}",
         f"- Methods: {', '.join(validation['methods'])}",
         f"- Prompt counts: {validation['prompt_counts']}",
-        f"- Candidate counts: {validation['candidate_counts']}",
+        f"- Raw candidate counts: {validation['candidate_counts']}",
+        f"- Compared candidates per prompt: {validation['selected_candidate_count']}",
+        f"- Grouped methods: {', '.join(validation['grouped_methods'])}",
+        "- Candidate selection: one seeded-random representative per contiguous grouped-method lineage; "
+        "the same number sampled without replacement from independent methods.",
         f"- Embedding model: `{model_id}`",
         f"- Embedding fingerprint: `{fingerprint}`",
         "",
@@ -1214,6 +1300,11 @@ def write_report(  # noqa: PLR0913
 def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
     runs = discover_runs(args.results_root, baseline_method=args.baseline_method)
     validation = validation_summary(runs)
+    selection = candidate_selection_layout(runs)
+    validation["selected_candidate_count"] = selection.target_k
+    validation["grouped_methods"] = list(selection.grouped_methods)
+    validation["candidate_selection"] = "seeded_random"
+    validation["selection_seed"] = args.analysis_seed
     defaults = load_analysis_defaults(args.config)
     cos_model_id = args.cos_model_id or defaults.cos_model_id
     model_cache_dir = args.model_cache_dir or defaults.model_cache_dir
@@ -1241,6 +1332,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
             args.batch_size,
             args.num_workers,
             model_cache_dir,
+            args.analysis_seed,
             baseline_method=args.baseline_method,
         )
     finally:

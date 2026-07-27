@@ -12,6 +12,7 @@ from d5p4.gsm8k_diversity_analysis import (
     AnalysisCache,
     benjamini_hochberg,
     build_prompt_rows,
+    candidate_selection_layout,
     classify_bucket,
     compute_lexical_metrics,
     discover_runs,
@@ -23,6 +24,7 @@ from d5p4.gsm8k_diversity_analysis import (
     plot_gain,
     plot_recovery_curves,
     run_inference,
+    select_candidate_indices,
     validation_summary,
 )
 
@@ -112,6 +114,26 @@ def test_discovery_matches_by_prompt_not_order_and_supports_seeds(tmp_path: Path
     assert summary["replicates"] == 2
     assert summary["prompt_counts"] == [3]
     assert summary["candidate_counts"] == [2]
+
+
+def test_grouped_methods_select_one_per_group_and_baseline_matches_final_k(tmp_path: Path) -> None:
+    generations = [f"candidate {idx}" for idx in range(8)]
+    rows = [_row("q", "7", generations, [0, 0, 0, 0, 0, 0, 0, 1])]
+    _write_run(tmp_path, "family", "baseline_cfg", "baseline", 0, rows, group_size=1)
+    _write_run(tmp_path, "family", "method_cfg", "greedy_map", 0, rows, group_size=2)
+    runs = discover_runs(tmp_path)
+    layout = candidate_selection_layout(runs)
+
+    assert layout.target_k == 4
+    baseline = next(run for run in runs if run.method == "baseline")
+    grouped = next(run for run in runs if run.method == "greedy_map")
+    baseline_indices = select_candidate_indices(baseline, next(iter(baseline.prompts.values())), 4, 17)
+    grouped_indices = select_candidate_indices(grouped, next(iter(grouped.prompts.values())), 4, 17)
+
+    assert len(set(baseline_indices)) == 4
+    assert len(grouped_indices) == 4
+    assert all(start <= index < start + 2 for start, index in zip(range(0, 8, 2), grouped_indices))
+    assert grouped_indices == select_candidate_indices(grouped, next(iter(grouped.prompts.values())), 4, 17)
 
 
 @pytest.mark.parametrize(
@@ -221,6 +243,7 @@ def test_prompt_rows_share_baseline_anchor_and_track_incorrect_eligibility(
             2,
             1,
             tmp_path / "models",
+            7,
         )
     finally:
         cache.close()
