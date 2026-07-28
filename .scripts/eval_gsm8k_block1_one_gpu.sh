@@ -1,16 +1,15 @@
 #!/bin/bash
 
-# Evaluate one arm of gsm8k_block1_sweep.sbatch from an interactive one-GPU
-# allocation. The generation configuration and resume directory remain
-# unchanged; only the launcher-provided distributed runtime is disabled.
+# Evaluate one arm of gsm8k_block1_sweep.sbatch directly from its SQLite resume
+# database. This path is read-only and does not load the model or use the GPU.
 #
 # Usage:
 #   .scripts/eval_gsm8k_block1_one_gpu.sh independent_lr
 #   .scripts/eval_gsm8k_block1_one_gpu.sh greedy_beam
 #   .scripts/eval_gsm8k_block1_one_gpu.sh d5p4
 #
-# Generation-time environment overrides must be repeated, for example:
-#   QA_DATASET_LEN=10 SEED=42 \
+# Set QA_DATASET_LEN when generation used a subset, for example:
+#   QA_DATASET_LEN=10 \
 #     .scripts/eval_gsm8k_block1_one_gpu.sh independent_lr
 
 set -euo pipefail
@@ -22,41 +21,45 @@ fi
 
 case "${ARM}" in
   independent_lr)
-    TASK_ID=0
     ;;
   greedy_beam)
-    TASK_ID=1
     ;;
   d5p4)
-    TASK_ID=2
     ;;
   *)
-    echo "Usage: $0 {independent_lr|greedy_beam|d5p4} [Hydra overrides ...]" >&2
+    echo "Usage: $0 {independent_lr|greedy_beam|d5p4} [snapshot options ...]" >&2
     exit 2
     ;;
 esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
+BRAIN_ROOT="${BRAIN_ROOT:-/Brain/private/j21lys}"
+SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
+RESULTS_ROOT="${RESULTS_ROOT:-${BRAIN_ROOT}/results/gsm8k_block1_sweep}"
+RESUME_DB_DIR="${RESUME_DB_DIR:-${RESULTS_ROOT}/resume}"
+QA_DATASET_LEN="${QA_DATASET_LEN:--1}"
 
-# The sweep launcher requests a three-GPU Slurm step. In this wrapper, execute
-# the command payload directly inside the existing interactive allocation.
-srun() {
-  while (( $# > 0 )); do
-    if [[ "$1" == "env" ]]; then
-      command "$@"
-      return
-    fi
-    shift
-  done
-  echo "Could not find the command payload in the sweep launcher's srun arguments." >&2
-  return 2
-}
-export -f srun
+if [[ "${QA_DATASET_LEN}" == "-1" ]]; then
+  THRESHOLD=1319
+elif [[ "${QA_DATASET_LEN}" =~ ^[1-9][0-9]*$ ]]; then
+  THRESHOLD="${QA_DATASET_LEN}"
+else
+  echo "QA_DATASET_LEN must be -1 or a positive integer, got ${QA_DATASET_LEN}" >&2
+  exit 2
+fi
 
-echo "Evaluating ${ARM} on the current GPU."
-SLURM_ARRAY_TASK_ID="${TASK_ID}" ROOT="${ROOT}" \
-  bash "${SCRIPT_DIR}/gsm8k_block1_sweep.sbatch" \
-  skip_eval=false \
-  standalone_job=true \
+PYTHON="${PYTHON:-${SROOT}/d3p2/.venv/bin/python}"
+if [[ ! -x "${PYTHON}" ]]; then
+  PYTHON="$(command -v python)"
+fi
+
+echo "Evaluating ${ARM} read-only from ${RESUME_DB_DIR}."
+PYTHONPATH="${ROOT}/src:${PYTHONPATH:-}" "${PYTHON}" \
+  "${SCRIPT_DIR}/snapshot_llada_math_resume.py" \
+  --resume-db-dir "${RESUME_DB_DIR}" \
+  --results-dir "${RESULTS_ROOT}" \
+  --threshold "${THRESHOLD}" \
+  --arm "${ARM}" \
+  --prefer-most-complete \
   "$@"

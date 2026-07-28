@@ -176,6 +176,38 @@ def test_snapshot_requires_the_complete_contiguous_prefix(tmp_path):
             read_snapshot_rows(run, threshold=2)
 
 
+@pytest.mark.parametrize(
+    ("method", "expected_arm"),
+    [
+        ("baseline", "independent_lr"),
+        ("greedy_beam", "greedy_beam"),
+        ("greedy_map", "d5p4"),
+    ],
+)
+def test_snapshot_recognizes_block1_sweep_arms(tmp_path, method, expected_arm):
+    config = _config(tmp_path)
+    config = Config(
+        **{
+            **config.__dict__,
+            "disable_sys_args": True,
+            "force_left_to_right": False,
+            "block_length": 1,
+            "method": method,
+        },
+    )
+    items = _work_items()
+    with ResumableRunStore(
+        config=config,
+        workflow_id="math_generation:llada",
+        mode="math_generation",
+        work_items=items,
+    ) as store:
+        _record_decoded_row(store, 0, "1")
+        run = inspect_resume_db(store.db_path)
+        assert run is not None
+        assert run.arm == expected_arm
+
+
 def test_read_only_inspection_does_not_create_or_migrate_schema(tmp_path):
     db_path = tmp_path / "foreign.sqlite3"
     with sqlite3.connect(db_path) as connection:

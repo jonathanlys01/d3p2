@@ -21,6 +21,7 @@ from d5p4.result_schema import build_generation_result_payload
 WORKFLOW_ID = "math_generation:llada"
 MODE = "math_generation"
 DEFAULT_ARMS = ("independent_lr", "classic_beam", "d5p4")
+SUPPORTED_ARMS = (*DEFAULT_ARMS, "greedy_beam")
 
 
 class SnapshotError(RuntimeError):
@@ -77,12 +78,15 @@ def _arm_from_config(config: dict[str, Any]) -> str | None:
     decoder = str(config.get("llada_decoder", "diffusion"))
     method = str(config.get("method", "baseline"))
     force_left_to_right = bool(config.get("force_left_to_right", False))
+    block_length = int(config.get("block_length", 0))
 
     if decoder == "classic_beam" and method == "baseline":
         return "classic_beam"
-    if decoder == "diffusion" and force_left_to_right and method == "baseline":
+    if decoder == "diffusion" and method == "greedy_beam" and block_length == 1:
+        return "greedy_beam"
+    if decoder == "diffusion" and (force_left_to_right or block_length == 1) and method == "baseline":
         return "independent_lr"
-    if decoder == "diffusion" and force_left_to_right and method != "baseline":
+    if decoder == "diffusion" and (force_left_to_right or block_length == 1) and method != "baseline":
         return "d5p4"
     return None
 
@@ -126,12 +130,32 @@ def inspect_resume_db(db_path: Path) -> ResumeRun | None:
     )
 
 
+def _prefer_most_complete_runs(matches: dict[str, list[ResumeRun]]) -> None:
+    for arm, runs in matches.items():
+        if len(runs) <= 1:
+            continue
+        ready_counts: dict[str, int] = {}
+        for run in runs:
+            with closing(_connect_read_only(run.db_path)) as connection:
+                ready_counts[run.experiment_hash] = _ready_count(connection, run.experiment_hash)
+        runs.sort(
+            key=lambda run: (
+                ready_counts[run.experiment_hash],
+                run.status == "complete",
+                run.updated_at,
+            ),
+            reverse=True,
+        )
+        matches[arm] = runs[:1]
+
+
 def discover_resume_runs(
     resume_db_dir: Path,
     *,
     arms: set[str],
     experiment_hashes: set[str] | None = None,
     minimum_work_items: int = 0,
+    prefer_most_complete: bool = False,
 ) -> dict[str, ResumeRun]:
     """Find exactly one matching database per requested comparison arm."""
     matches: dict[str, list[ResumeRun]] = {arm: [] for arm in arms}
@@ -147,6 +171,9 @@ def discover_resume_runs(
         if experiment_hashes is not None and run.experiment_hash not in experiment_hashes:
             continue
         matches[run.arm].append(run)
+
+    if prefer_most_complete:
+        _prefer_most_complete_runs(matches)
 
     duplicates = {arm: runs for arm, runs in matches.items() if len(runs) > 1}
     if duplicates:
@@ -429,7 +456,7 @@ def export_run_snapshot(
 
 def _parse_arms(values: list[str] | None) -> set[str]:
     arms = set(values or DEFAULT_ARMS)
-    invalid = arms - set(DEFAULT_ARMS)
+    invalid = arms - set(SUPPORTED_ARMS)
     if invalid:
         raise ValueError(f"Unknown arms: {', '.join(sorted(invalid))}")
     return arms
@@ -448,7 +475,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--arm",
         action="append",
-        choices=DEFAULT_ARMS,
+        choices=SUPPORTED_ARMS,
         help="Arm to export; repeat as needed. Defaults to all three comparison arms.",
     )
     parser.add_argument(
@@ -456,6 +483,11 @@ def _parser() -> argparse.ArgumentParser:
         "--experiment_hash",
         action="append",
         help="Restrict discovery to one or more exact resume experiment hashes.",
+    )
+    parser.add_argument(
+        "--prefer-most-complete",
+        action="store_true",
+        help="When an arm has multiple resume DBs, select the one with the most decoded items.",
     )
     parser.add_argument("--wait", action="store_true", help="Poll until every requested arm reaches the threshold.")
     parser.add_argument("--poll-interval", "--poll_interval", type=float, default=60.0)
@@ -515,21 +547,20 @@ def _export_ready_runs(
 
 def _discover_with_busy_handling(
     *,
-    resume_db_dir: Path,
+    args: argparse.Namespace,
     pending: set[str],
     experiment_hashes: set[str] | None,
-    minimum_work_items: int,
-    wait: bool,
 ) -> dict[str, ResumeRun]:
     try:
         return discover_resume_runs(
-            resume_db_dir,
+            args.resume_db_dir,
             arms=pending,
             experiment_hashes=experiment_hashes,
-            minimum_work_items=minimum_work_items,
+            minimum_work_items=args.threshold,
+            prefer_most_complete=args.prefer_most_complete,
         )
     except sqlite3.OperationalError as exc:
-        if not wait:
+        if not args.wait:
             raise SnapshotError(f"Could not read resume DB: {exc}") from exc
         print(f"Resume DB is temporarily busy: {exc}")
         return {}
@@ -544,11 +575,9 @@ def _wait_for_snapshots(args: argparse.Namespace) -> dict[str, Path]:
 
     while pending:
         runs = _discover_with_busy_handling(
-            resume_db_dir=args.resume_db_dir,
+            args=args,
             pending=pending,
             experiment_hashes=experiment_hashes,
-            minimum_work_items=args.threshold,
-            wait=args.wait,
         )
         newly_exported, progress = _export_ready_runs(
             runs=runs,
