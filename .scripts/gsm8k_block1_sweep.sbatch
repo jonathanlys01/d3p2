@@ -16,7 +16,7 @@
 #   sbatch --export=ALL,QA_DATASET_LEN=10 .scripts/gsm8k_block1_sweep.sbatch
 #
 # The generation profile matches .jz_next/gsm8k_sweep.slurm: zero-shot, CFG
-# 2.5, categorical temperature 1.0, selection temperature 0.1, 256
+# 2.5, categorical temperature 1.0, low_confidence remasking (selection temperature 0.0), 256
 # steps/tokens, and generation-only output.
 #
 # The arms share a resume directory, but their semantic experiment hashes keep
@@ -64,8 +64,8 @@ D5P4_GROUP_SIZE=3
 BEAM_SIZE=$((GLOBAL_GROUP_COUNT * D5P4_GROUP_SIZE))
 D5P4_W_INTERACTION="${D5P4_W_INTERACTION:-25.0}"
 CAT_TEMPERATURE="${CAT_TEMPERATURE:-1.0}"
-REMASKING="${REMASKING:-selection_temperature}"
-SELECTION_TEMPERATURE="${SELECTION_TEMPERATURE:-0.1}"
+REMASKING="${REMASKING:-low_confidence}"
+SELECTION_TEMPERATURE="${SELECTION_TEMPERATURE:-0.0}"
 CFG_SCALE=2.5
 D5P4_SUBSAMPLE_END="${D5P4_SUBSAMPLE_END:-1024}"
 LLADA_STEPS="${LLADA_STEPS:-256}"
