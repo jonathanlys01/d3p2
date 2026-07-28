@@ -17,6 +17,7 @@ from d5p4.llada_math import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".scripts_next" / "gsm8k_classic_beam_comparison.sh"
+LOCAL_CLUSTER_SCRIPT = REPO_ROOT / ".scripts" / "llada_ltr_beam_comparison.sbatch"
 
 
 def test_ranked_metrics_use_internal_score_order():
@@ -191,3 +192,78 @@ def test_gsm8k_classic_beam_comparison_dry_run_has_three_equal_population_arms()
         assert "cfg_scale=1.0" in command
         assert "standalone_job=true" in command
         assert "gen_length=256" in command
+
+
+def test_local_cluster_comparison_uses_one_group_of_three_per_gpu():
+    env = os.environ.copy()
+    env.update(
+        {
+            "DRY_RUN": "1",
+            "CLASSIC_BEAM_BRANCHING_FACTOR": "5",
+        },
+    )
+    commands = []
+    for task_id in range(3):
+        env["SLURM_ARRAY_TASK_ID"] = str(task_id)
+        completed = subprocess.run(
+            ["bash", str(LOCAL_CLUSTER_SCRIPT)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commands.extend(line for line in completed.stdout.splitlines() if "llada_math.py" in line)
+
+    assert len(commands) == 3
+    independent, d5p4, classic = commands
+
+    for command in (independent, d5p4):
+        assert "srun --exclusive --nodes=1 --ntasks=3 --cpus-per-task=8 --gres=gpu:3" in command
+        assert "standalone_job=false" in command
+        assert "resume_db_keep_completed=true" in command
+        assert "gen_length=256" in command
+        assert "qa_n_shots=0" in command
+        assert "compile_model=true" in command
+        assert "cat_temperature=1.0" in command
+        assert "remasking=selection_temperature" in command
+        assert "selection_temperature=0.1" in command
+        assert "skip_eval=true" in command
+
+    assert "srun --exclusive --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1" in classic
+    assert "standalone_job=true" in classic
+
+    assert "cfg_scale=1.0" in independent
+    assert "llada_decoder=diffusion" in independent
+    assert "force_left_to_right=true" in independent
+    assert "method=baseline" in independent
+    assert "n_groups=3" in independent
+    assert "group_size=1" in independent
+
+    assert "cfg_scale=1.0" in classic
+    assert "llada_decoder=classic_beam" in classic
+    assert "classic_beam_branching_factor=5" in classic
+    assert "method=baseline" in classic
+    assert "n_groups=9" in classic
+    assert "group_size=1" in classic
+
+    assert "cfg_scale=1.0" in d5p4
+    assert "llada_decoder=diffusion" in d5p4
+    assert "force_left_to_right=true" in d5p4
+    assert "method=greedy_map" in d5p4
+    assert "n_groups=1" in d5p4
+    assert "group_size=3" in d5p4
+    assert "subsample_start=0" in d5p4
+    assert "subsample_end=1024" in d5p4
+    assert "_kernel_method=additive" in d5p4
+    assert "_w_interaction=25.0" in d5p4
+
+    script_text = LOCAL_CLUSTER_SCRIPT.read_text()
+    assert "#SBATCH --ntasks=3" in script_text
+    assert "#SBATCH --gres=gpu:3" in script_text
+    assert "#SBATCH --array=0-2" in script_text
+    assert "GLOBAL_GROUP_COUNT=3" in script_text
+    assert "D5P4_GROUP_SIZE=3" in script_text
+    assert "CFG_SCALE=1.0" in script_text
+    assert "UV_PROJECT_ENVIRONMENT=" in script_text
+    assert 'PATH="/usr/bin:/bin:' in script_text
