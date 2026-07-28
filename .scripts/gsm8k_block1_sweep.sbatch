@@ -174,7 +174,7 @@ run_selected_arm() {
         comment="LLaDA GSM8K independent LR global K=${BEAM_SIZE} local=${INDEPENDENT_LOCAL_N_GROUPS}x1" \
         "$@"
       ;;
-    1)
+    2)
       run_arm d5p4 "${NUM_GPUS}" "${NUM_GPUS}" \
         cfg_scale="${CFG_SCALE}" \
         method=greedy_map \
@@ -190,7 +190,7 @@ run_selected_arm() {
         comment="LLaDA GSM8K D5P4 LR global ${GLOBAL_GROUP_COUNT}x${D5P4_GROUP_SIZE} local 1x${D5P4_GROUP_SIZE} w=${D5P4_W_INTERACTION}" \
         "$@"
       ;;
-    2)
+    1)
       run_arm greedy_beam "${NUM_GPUS}" "${NUM_GPUS}" \
         cfg_scale="${CFG_SCALE}" \
         method=greedy_beam \
