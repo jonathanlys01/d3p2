@@ -137,7 +137,6 @@ run_arm() {
   shift 3
   local arm_dir="${RESULTS_ROOT}/${arm}"
   local job_tag="${SLURM_JOB_ID:-manual}"
-  local arm_log="${arm_dir}/run-${job_tag}.log"
   local arm_inductor_cache="${SROOT}/torchinductor/${job_tag}/${arm}"
   local arm_triton_cache="${SROOT}/triton/${job_tag}/${arm}"
   local command=(
@@ -164,9 +163,9 @@ run_arm() {
   fi
 
   mkdir -p "${arm_dir}" "${arm_inductor_cache}" "${arm_triton_cache}"
-  echo "Launching ${arm} with ${step_tasks} task(s) on ${step_gpus} GPU(s); log: ${arm_log}"
-  "${command[@]}" >"${arm_log}" 2>&1
-  echo "${arm} completed successfully; log: ${arm_log}"
+  echo "Launching ${arm} with ${step_tasks} task(s) on ${step_gpus} GPU(s)"
+  "${command[@]}"
+  echo "${arm} completed successfully"
 }
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:?Submit this launcher as its configured Slurm array}"

@@ -260,7 +260,7 @@ def test_local_cluster_comparison_uses_one_group_of_three_per_gpu():
 
     script_text = LOCAL_CLUSTER_SCRIPT.read_text()
     assert "#SBATCH --ntasks=3" in script_text
-    assert "#SBATCH --gres=gpu:3" in script_text
+    assert "#SBATCH --gres=gpu:a100:3" in script_text
     assert "#SBATCH --array=0-2" in script_text
     assert "GLOBAL_GROUP_COUNT=3" in script_text
     assert "D5P4_GROUP_SIZE=3" in script_text
