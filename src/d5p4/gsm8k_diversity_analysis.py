@@ -35,7 +35,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 
-ANALYSIS_VERSION = "gsm8k-diversity-v1"
+ANALYSIS_VERSION = "gsm8k-diversity-v2"
+LEXICAL_CACHE_VERSION = "gsm8k-diversity-v1"
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("_default.yaml")
 METHOD_LABELS = {
     "baseline": "Standard sampling",
@@ -113,6 +114,15 @@ class AnalysisDefaults:
 class CandidateSelection:
     target_k: int
     grouped_methods: tuple[str, ...]
+
+
+def _available_candidate_count(run: MathRun, baseline_method: str) -> int:
+    group_size = int(run.config.get("group_size", 1))
+    if run.method == baseline_method:
+        if group_size != 1:
+            raise ValueError(f"{run.path}: the pass@1 baseline must have group_size=1")
+        return run.k - 1
+    return run.k // group_size if group_size > 1 else run.k
 
 
 def _stable_hash(*parts: str) -> str:
@@ -306,7 +316,10 @@ def validation_summary(runs: Sequence[MathRun]) -> dict[str, Any]:
     }
 
 
-def candidate_selection_layout(runs: Sequence[MathRun]) -> CandidateSelection:
+def candidate_selection_layout(
+    runs: Sequence[MathRun],
+    baseline_method: str = "baseline",
+) -> CandidateSelection:
     grouped_counts: dict[tuple[str, str, str], int] = {}
     for run in runs:
         group_size = run.config.get("group_size", 1)
@@ -324,10 +337,15 @@ def candidate_selection_layout(runs: Sequence[MathRun]) -> CandidateSelection:
             for (family, seed, method), count in sorted(grouped_counts.items())
         )
         raise ValueError(f"grouped methods produce different final candidate counts: {details}")
-    target_k = target_counts.pop() if target_counts else min(run.k for run in runs)
+    target_k = (
+        target_counts.pop()
+        if target_counts
+        else min(_available_candidate_count(run, baseline_method) for run in runs)
+    )
+    if target_k < 1:
+        raise ValueError("candidate selection requires at least one candidate beyond the pass@1 anchor")
     for run in runs:
-        group_size = int(run.config.get("group_size", 1))
-        available = run.k // group_size if group_size > 1 else run.k
+        available = _available_candidate_count(run, baseline_method)
         if available < target_k:
             raise ValueError(
                 f"{run.path}: only {available} final candidates are available, but target k={target_k}",
@@ -341,6 +359,7 @@ def select_candidate_indices(
     result: PromptResult,
     target_k: int,
     selection_seed: int,
+    baseline_method: str = "baseline",
 ) -> tuple[int, ...]:
     group_size = int(run.config.get("group_size", 1))
     seed_digest = _stable_hash(
@@ -359,7 +378,8 @@ def select_candidate_indices(
                 f"{run.path}: grouped selection produced {len(indices)} candidates, expected {target_k}",
             )
         return indices
-    selected = rng.choice(run.k, size=target_k, replace=False)
+    start = 1 if run.method == baseline_method else 0
+    selected = rng.choice(np.arange(start, run.k), size=target_k, replace=False)
     return tuple(sorted(int(index) for index in selected))
 
 
@@ -480,7 +500,7 @@ class AnalysisCache:
             SELECT self_bleu, lexical_diversity, pairwise_lexical_distance, unique_fraction
             FROM lexical_metrics WHERE version = ? AND group_hash = ?
             """,
-            (ANALYSIS_VERSION, group_hash),
+            (LEXICAL_CACHE_VERSION, group_hash),
         ).fetchone()
         return LexicalMetrics(*map(float, row)) if row is not None else None
 
@@ -488,7 +508,7 @@ class AnalysisCache:
         self.connection.execute(
             "INSERT OR REPLACE INTO lexical_metrics VALUES (?, ?, ?, ?, ?, ?)",
             (
-                ANALYSIS_VERSION,
+                LEXICAL_CACHE_VERSION,
                 group_hash,
                 metrics.self_bleu,
                 metrics.lexical_diversity,
@@ -533,7 +553,7 @@ class AnalysisCache:
 
 
 def _group_hash(texts: Sequence[str], include_pairwise: bool) -> str:
-    return _stable_hash(ANALYSIS_VERSION, "pairwise" if include_pairwise else "self", *texts)
+    return _stable_hash(LEXICAL_CACHE_VERSION, "pairwise" if include_pairwise else "self", *texts)
 
 
 def compute_lexical_groups(
@@ -647,7 +667,7 @@ def build_prompt_rows(  # noqa: PLR0913
 ) -> tuple[pd.DataFrame, str]:
     parser = MathParser()
     baselines = _baseline_lookup(runs, baseline_method)
-    selection = candidate_selection_layout(runs)
+    selection = candidate_selection_layout(runs, baseline_method)
     lexical_groups: dict[str, tuple[tuple[str, ...], bool]] = {}
     prepared: list[dict[str, Any]] = []
     all_embedding_texts: list[str] = []
@@ -661,6 +681,7 @@ def build_prompt_rows(  # noqa: PLR0913
                 result,
                 selection.target_k,
                 selection_seed,
+                baseline_method,
             )
             selected_generations = tuple(result.generations[index] for index in selected_indices)
             selected_scores = tuple(result.scores[index] for index in selected_indices)
@@ -735,7 +756,15 @@ def build_prompt_rows(  # noqa: PLR0913
                 "raw_k": run.k,
                 "k": selection.target_k,
                 "group_size": int(run.config.get("group_size", 1)),
-                "candidate_selection": "random_one_per_group" if run.config.get("group_size", 1) > 1 else "random",
+                "candidate_selection": (
+                    "random_excluding_pass1_anchor"
+                    if run.method == baseline_method
+                    else (
+                        "random_one_per_group"
+                        if run.config.get("group_size", 1) > 1
+                        else "random"
+                    )
+                ),
                 "selected_indices": json.dumps(item["selected_indices"]),
                 "baseline_pass1": item["baseline_pass1"],
                 "observed_passk": item["observed_passk"],
@@ -1265,7 +1294,8 @@ def write_report(  # noqa: PLR0913
         f"- Compared candidates per prompt: {validation['selected_candidate_count']}",
         f"- Grouped methods: {', '.join(validation['grouped_methods'])}",
         "- Candidate selection: one seeded-random representative per contiguous grouped-method lineage; "
-        "the same number sampled without replacement from independent methods.",
+        "the same number sampled without replacement from independent methods. Baseline candidate 0 "
+        "is reserved exclusively for the pass@1 hardness anchor and excluded from recovery/diversity.",
         f"- Embedding model: `{model_id}`",
         f"- Embedding fingerprint: `{fingerprint}`",
         "",
@@ -1286,7 +1316,8 @@ def write_report(  # noqa: PLR0913
         "",
         "- `pass@1` is candidate 0 from the matched independent-sampling baseline, "
         "not the aggregate unbiased estimator.",
-        "- `pass@k` is the observed binary indicator that any saved candidate is correct.",
+        "- `pass@k` is the observed binary indicator that any evaluated candidate is correct; "
+        "for the baseline, these are additional candidates sampled from indices 1 onward.",
         "- Positive associations support a relationship between diversity and recovery; "
         "they do not establish that diversity directly causes accuracy gains.",
         "- Null and opposite-direction effects are reported without alteration.",
@@ -1300,10 +1331,10 @@ def write_report(  # noqa: PLR0913
 def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
     runs = discover_runs(args.results_root, baseline_method=args.baseline_method)
     validation = validation_summary(runs)
-    selection = candidate_selection_layout(runs)
+    selection = candidate_selection_layout(runs, args.baseline_method)
     validation["selected_candidate_count"] = selection.target_k
     validation["grouped_methods"] = list(selection.grouped_methods)
-    validation["candidate_selection"] = "seeded_random"
+    validation["candidate_selection"] = "seeded_random_with_held_out_pass1_anchor"
     validation["selection_seed"] = args.analysis_seed
     defaults = load_analysis_defaults(args.config)
     cos_model_id = args.cos_model_id or defaults.cos_model_id

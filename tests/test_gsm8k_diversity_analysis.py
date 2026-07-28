@@ -131,6 +131,7 @@ def test_grouped_methods_select_one_per_group_and_baseline_matches_final_k(tmp_p
     grouped_indices = select_candidate_indices(grouped, next(iter(grouped.prompts.values())), 4, 17)
 
     assert len(set(baseline_indices)) == 4
+    assert 0 not in baseline_indices
     assert len(grouped_indices) == 4
     assert all(start <= index < start + 2 for start, index in zip(range(0, 8, 2), grouped_indices))
     assert grouped_indices == select_candidate_indices(grouped, next(iter(grouped.prompts.values())), 4, 17)
@@ -210,7 +211,7 @@ def test_prompt_rows_share_baseline_anchor_and_track_incorrect_eligibility(
     baseline_rows = _fixture_rows()
     method_rows = [
         _row("q1", "1", ["method wrong", "method wrong 2"], [0, 0]),
-        _row("q2", "2", ["method wrong", "method correct 2"], [0, 1]),
+        _row("q2", "2", ["method correct", "method correct 2"], [1, 1]),
         _row("q3", "3", ["method wrong", "method wrong 2"], [0, 0]),
     ]
     _write_run(tmp_path, "family", "baseline_cfg", "baseline", 0, baseline_rows)
@@ -255,6 +256,8 @@ def test_prompt_rows_share_baseline_anchor_and_track_incorrect_eligibility(
         assert method_frame.loc["q2", "bucket"] == "Hard / Recovered"
         assert method_frame.loc["q3", "bucket"] == "Unsolved"
     baseline_q1 = frame[(frame["method_label"] == "Standard sampling") & (frame["question"] == "q1")].iloc[0]
+    assert baseline_q1["selected_indices"] == "[1]"
+    assert baseline_q1["candidate_selection"] == "random_excluding_pass1_anchor"
     assert baseline_q1["incorrect_n"] == 1
     assert np.isnan(baseline_q1["incorrect_semantic_diversity"])
 
