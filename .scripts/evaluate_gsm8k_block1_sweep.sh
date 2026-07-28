@@ -3,9 +3,8 @@
 # Rebuild evaluated GSM8K JSONs from the block-length-1 sweep's resume DBs,
 # then run the standard math selection/metrics pipeline.
 #
-# The three cached arms each contain 9 candidates per question:
+# The two evaluated arms each contain 9 candidates per question:
 #   independent_lr: select the best 3 from all 9 candidates
-#   greedy_beam:    select one representative from each 3-candidate subgroup
 #   d5p4:           select one representative from each 3-candidate subgroup
 #
 # Usage for a 500-question generation run:
@@ -46,7 +45,7 @@ echo "Resume DB: ${RESUME_DB_DIR}"
 echo "Evaluated source JSONs: ${EVALUATED_RESULTS_ROOT}"
 echo "Compact selected metrics: ${EVAL_OUTPUT_ROOT}"
 echo "Questions: ${QA_DATASET_LEN}"
-echo "Selection: independent top-3-of-9; grouped arms one-per-3 (3 selected)"
+echo "Selection: independent top-3-of-9; D5P4 one-per-3 (3 selected)"
 
 run_snapshot() {
   local arm="$1"
@@ -67,7 +66,7 @@ run_snapshot() {
   fi
 }
 
-for arm in independent_lr greedy_beam d5p4; do
+for arm in independent_lr d5p4; do
   run_snapshot "${arm}"
 done
 
