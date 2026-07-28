@@ -502,7 +502,10 @@ class AnalysisCache:
             """,
             (LEXICAL_CACHE_VERSION, group_hash),
         ).fetchone()
-        return LexicalMetrics(*map(float, row)) if row is not None else None
+        if row is None:
+            return None
+        values = (float(value) if value is not None else float("nan") for value in row)
+        return LexicalMetrics(*values)
 
     def put_lexical(self, group_hash: str, metrics: LexicalMetrics) -> None:
         self.connection.execute(

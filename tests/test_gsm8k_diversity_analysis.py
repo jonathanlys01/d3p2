@@ -10,6 +10,7 @@ import pytest
 import d5p4.gsm8k_diversity_analysis as diversity_analysis
 from d5p4.gsm8k_diversity_analysis import (
     AnalysisCache,
+    LexicalMetrics,
     benjamini_hochberg,
     build_prompt_rows,
     candidate_selection_layout,
@@ -95,6 +96,23 @@ def test_analysis_defaults_resolve_server_model_and_cache(
 
     assert defaults.cos_model_id == "/server/work/models/jina"
     assert defaults.model_cache_dir == (Path.cwd() / "shared-cache").resolve()
+
+
+def test_lexical_cache_round_trips_nan_as_sqlite_null(tmp_path: Path) -> None:
+    cache = AnalysisCache(tmp_path / "cache.sqlite")
+    expected = LexicalMetrics(float("nan"), 0.2, 0.3, 0.5)
+    try:
+        cache.put_lexical("nan-metric", expected)
+        cache.commit()
+        actual = cache.get_lexical("nan-metric")
+    finally:
+        cache.close()
+
+    assert actual is not None
+    assert np.isnan(actual.self_bleu)
+    assert actual.lexical_diversity == expected.lexical_diversity
+    assert actual.pairwise_lexical_distance == expected.pairwise_lexical_distance
+    assert actual.unique_fraction == expected.unique_fraction
 
 
 def test_discovery_matches_by_prompt_not_order_and_supports_seeds(tmp_path: Path) -> None:
