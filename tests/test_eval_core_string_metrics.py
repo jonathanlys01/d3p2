@@ -384,12 +384,13 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
                 self.evaluate_inputs = None
                 self.evaluate_gold_answers = None
                 self.evaluate_references = None
+                self.evaluate_kwargs = None
 
             def evaluate(self, generations, gold_answers, string_references=None, **kwargs):
-                del kwargs
                 self.evaluate_inputs = generations
                 self.evaluate_gold_answers = gold_answers
                 self.evaluate_references = string_references
+                self.evaluate_kwargs = kwargs
                 return {"accuracy": 0.75, "pass@1": 0.75}
 
         results = [
@@ -426,6 +427,7 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(math_evaluator.evaluate_inputs, [["wrong", "The answer is 4."], ["The answer is 9.", "wrong"]])
         self.assertEqual(math_evaluator.evaluate_gold_answers, ["4", "9"])
         self.assertEqual(math_evaluator.evaluate_references, [["#### 4"], ["#### 9"]])
+        self.assertEqual(math_evaluator.evaluate_kwargs["k_values"], [1, 2])
         self.assertEqual(selected_results[0]["generations"], ["wrong", "The answer is 4."])
         self.assertEqual(selected_results[0]["scores"], [0, 1])
         self.assertEqual(selected_results[0]["accuracy"], 0.5)
@@ -433,6 +435,32 @@ class TestEvalCoreStringMetrics(unittest.TestCase):
         self.assertEqual(selected_results[1]["accuracy"], 0.5)
         self.assertEqual(selection_evaluator.evaluate_baseline_kwargs["k"], 2)
         self.assertFalse(selection_evaluator.evaluate_baseline_kwargs["transversal"])
+
+    def test_oversample_math_requests_pass_at_selected_cardinality(self):
+        class _SelectionEvaluator:
+            def evaluate_baseline(self, texts, metric, k, **kwargs):
+                del metric, k, kwargs
+                return [group[:3] for group in texts]
+
+        results = [
+            {
+                "gold_answer": "4",
+                "answer_str": "#### 4",
+                "generations": ["The answer is 4.", *[f"wrong {idx}" for idx in range(8)]],
+            },
+        ]
+
+        _selected_results, metrics = _select_and_evaluate_math_baseline(
+            _SelectionEvaluator(),
+            MathEvaluator(),
+            results,
+            metric="random",
+            subsample_k=3,
+            expected_selected_k=3,
+        )
+
+        self.assertIn("pass@1", metrics)
+        self.assertIn("pass@3", metrics)
 
     def test_oversample_math_baseline_transversal_uses_one_per_lineage(self):
         class _RecordingSelectionEvaluator:

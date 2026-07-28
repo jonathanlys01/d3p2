@@ -270,10 +270,12 @@ def _select_and_evaluate_math_baseline(  # noqa: PLR0913
         expected_selected_k=expected_selected_k,
     )
     selected_results = _build_selected_results(results, selected, math_evaluator)
+    selected_k = len(selected[0]) if selected else 0
     metrics = math_evaluator.evaluate(
         selected,
         gold_answers,
         string_references=references,
+        k_values=sorted({1, selected_k}) if selected_k else None,
         num_workers=num_workers,
     )
     return selected_results, metrics
