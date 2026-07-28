@@ -1,34 +1,30 @@
 #!/bin/bash
 
-# Run the three forced-left-to-right GSM8K comparison arms as a three-element
-# Slurm array. Each arm gets one three-GPU allocation, so the array can use all
-# nine available GPUs concurrently. The diffusion arms use a local batch of
-# three candidates per rank:
-#   independent diffusion: 3 independent candidates/GPU, 9 globally
-#   D5P4 diffusion:         1 group x 3 candidates/GPU, 3x3 globally
-#   classic beam search:    beam width 9 on one GPU (single-process only)
+# Run the standard LLaDA GSM8K math sweep with one-token diffusion blocks.
+# Three array arms each use three GPUs:
+#   0. independent diffusion: 3 independent candidates/GPU, 9 globally
+#   1. D5P4 diffusion:         1 group x 3 candidates/GPU, 3x3 globally
+#   2. greedy beam selector:   1 group x 3 candidates/GPU, 3x3 globally
 #
-# The classic-beam array task reserves three GPUs like the other tasks but uses
-# only one; distributing a single global beam would change the search algorithm.
+# block_length=1 makes each diffusion block commit one position, yielding the
+# desired left-to-right order without using the separate classic-beam decoder.
 #
 # Submit from the repository root:
-#   sbatch .scripts/llada_ltr_beam_comparison.sbatch
+#   sbatch .scripts/gsm8k_block1_sweep.sbatch
 #
 # Override experiment settings through the submission environment, for example:
-#   sbatch --export=ALL,QA_DATASET_LEN=10 .scripts/llada_ltr_beam_comparison.sbatch
+#   sbatch --export=ALL,QA_DATASET_LEN=10 .scripts/gsm8k_block1_sweep.sbatch
 #
-# The generation profile matches .jz_next/gsm8k_sweep.slurm: zero-shot,
-# categorical temperature 1.0, selection temperature
-# 0.1, 256 steps/tokens, and generation-only output. All three arms use
-# conditional-only decoding with cfg_scale=1.0 so classic beam and diffusion
-# remain directly comparable.
+# The generation profile matches .jz_next/gsm8k_sweep.slurm: zero-shot, CFG
+# 2.5, categorical temperature 1.0, selection temperature 0.1, 256
+# steps/tokens, and generation-only output.
 #
 # The arms share a resume directory, but their semantic experiment hashes keep
 # their rows separate. Databases transferred from Jean Zay still require an
 # explicit import/rekey into these local semantic identities before they can
 # resume.
 
-#SBATCH --job-name=llada-ltr-3gpu
+#SBATCH --job-name=gsm8k-block1
 #SBATCH --partition=Mee_Global_GPU
 #SBATCH --account=mee
 #SBATCH --qos=mee_short
@@ -51,7 +47,7 @@ BRAIN_ROOT="${BRAIN_ROOT:-/Brain/private/j21lys}"
 BUV="${BUV:-${BRAIN_ROOT}/.local/bin/uv}"
 SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
 
-RESULTS_ROOT="${RESULTS_ROOT:-${BRAIN_ROOT}/results/llada_ltr_beam_comparison}"
+RESULTS_ROOT="${RESULTS_ROOT:-${BRAIN_ROOT}/results/gsm8k_block1_sweep}"
 RESUME_DB_DIR="${RESUME_DB_DIR:-${RESULTS_ROOT}/resume}"
 CACHE_DIR="${CACHE_DIR:-${BRAIN_ROOT}/.cache/d3p2}"
 LLADA_MODEL_PATH="${LLADA_MODEL_PATH:-/Brain/public/models/GSAI-ML/LLaDA-8B-Instruct}"
@@ -66,23 +62,18 @@ NUM_GPUS=3
 GLOBAL_GROUP_COUNT=3
 D5P4_GROUP_SIZE=3
 BEAM_SIZE=$((GLOBAL_GROUP_COUNT * D5P4_GROUP_SIZE))
-CLASSIC_BEAM_BRANCHING_FACTOR="${CLASSIC_BEAM_BRANCHING_FACTOR:-${BEAM_SIZE}}"
 D5P4_W_INTERACTION="${D5P4_W_INTERACTION:-25.0}"
 CAT_TEMPERATURE="${CAT_TEMPERATURE:-1.0}"
 REMASKING="${REMASKING:-selection_temperature}"
 SELECTION_TEMPERATURE="${SELECTION_TEMPERATURE:-0.1}"
-CFG_SCALE=1.0
+CFG_SCALE=2.5
 D5P4_SUBSAMPLE_END="${D5P4_SUBSAMPLE_END:-1024}"
 LLADA_STEPS="${LLADA_STEPS:-256}"
 GEN_LENGTH="${GEN_LENGTH:-256}"
-BLOCK_LENGTH="${BLOCK_LENGTH:-256}"
+BLOCK_LENGTH=1
 COMPILE_MODEL="${COMPILE_MODEL:-true}"
 DRY_RUN="${DRY_RUN:-0}"
 
-if ! [[ "${CLASSIC_BEAM_BRANCHING_FACTOR}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "CLASSIC_BEAM_BRANCHING_FACTOR must be a positive integer, got ${CLASSIC_BEAM_BRANCHING_FACTOR}" >&2
-  exit 1
-fi
 if ! [[ "${D5P4_GROUP_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
   echo "D5P4_GROUP_SIZE must be a positive integer, got ${D5P4_GROUP_SIZE}" >&2
   exit 1
@@ -91,12 +82,13 @@ if (( GLOBAL_GROUP_COUNT != NUM_GPUS )); then
   echo "GLOBAL_GROUP_COUNT=${GLOBAL_GROUP_COUNT} must equal NUM_GPUS=${NUM_GPUS} for one D5P4 group per GPU" >&2
   exit 1
 fi
-if (( BLOCK_LENGTH != GEN_LENGTH )); then
-  echo "BLOCK_LENGTH=${BLOCK_LENGTH} must equal GEN_LENGTH=${GEN_LENGTH} for the left-to-right comparison" >&2
+if (( GEN_LENGTH % BLOCK_LENGTH != 0 )); then
+  echo "GEN_LENGTH=${GEN_LENGTH} must be divisible by BLOCK_LENGTH=${BLOCK_LENGTH}" >&2
   exit 1
 fi
-if (( LLADA_STEPS != GEN_LENGTH )); then
-  echo "LLADA_STEPS=${LLADA_STEPS} must equal GEN_LENGTH=${GEN_LENGTH} for one token per diffusion step" >&2
+NUM_BLOCKS=$((GEN_LENGTH / BLOCK_LENGTH))
+if (( LLADA_STEPS % NUM_BLOCKS != 0 )); then
+  echo "LLADA_STEPS=${LLADA_STEPS} must be divisible by NUM_BLOCKS=${NUM_BLOCKS}" >&2
   exit 1
 fi
 
@@ -175,8 +167,6 @@ run_selected_arm() {
     0)
       run_arm independent_lr "${NUM_GPUS}" "${NUM_GPUS}" \
         cfg_scale="${CFG_SCALE}" \
-        llada_decoder=diffusion \
-        force_left_to_right=true \
         method=baseline \
         n_groups="${INDEPENDENT_LOCAL_N_GROUPS}" \
         group_size=1 \
@@ -187,8 +177,6 @@ run_selected_arm() {
     1)
       run_arm d5p4 "${NUM_GPUS}" "${NUM_GPUS}" \
         cfg_scale="${CFG_SCALE}" \
-        llada_decoder=diffusion \
-        force_left_to_right=true \
         method=greedy_map \
         n_groups="${D5P4_LOCAL_N_GROUPS}" \
         group_size="${D5P4_GROUP_SIZE}" \
@@ -203,15 +191,16 @@ run_selected_arm() {
         "$@"
       ;;
     2)
-      run_arm classic_beam 1 1 \
+      run_arm greedy_beam "${NUM_GPUS}" "${NUM_GPUS}" \
         cfg_scale="${CFG_SCALE}" \
-        llada_decoder=classic_beam \
-        classic_beam_branching_factor="${CLASSIC_BEAM_BRANCHING_FACTOR}" \
-        method=baseline \
-        n_groups="${BEAM_SIZE}" \
-        group_size=1 \
-        standalone_job=true \
-        comment="LLaDA GSM8K classic beam K=${BEAM_SIZE} branch=${CLASSIC_BEAM_BRANCHING_FACTOR}" \
+        method=greedy_beam \
+        n_groups="${D5P4_LOCAL_N_GROUPS}" \
+        group_size="${D5P4_GROUP_SIZE}" \
+        transversal=true \
+        standalone_job=false \
+        subsample_start=0 \
+        subsample_end="${D5P4_SUBSAMPLE_END}" \
+        comment="LLaDA GSM8K GreedyBS block1 global ${GLOBAL_GROUP_COUNT}x${D5P4_GROUP_SIZE} local 1x${D5P4_GROUP_SIZE}" \
         "$@"
       ;;
     *)
@@ -248,7 +237,7 @@ echo "Job started at $(date)"
 hostname
 nvidia-smi
 echo "Running array arm ${TASK_ID} with ${BEAM_SIZE} global candidates."
-echo "Diffusion layout: ${NUM_GPUS} GPUs, local batch ${D5P4_GROUP_SIZE}, one D5P4 group per GPU."
+echo "Diffusion layout: ${NUM_GPUS} GPUs, local batch ${D5P4_GROUP_SIZE}, block length ${BLOCK_LENGTH}."
 echo "Results root: ${RESULTS_ROOT}"
 echo "Resume DB: ${RESUME_DB_DIR}"
 
