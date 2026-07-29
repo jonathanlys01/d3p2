@@ -28,13 +28,14 @@ from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sam
 MASK_TOKEN_ID = 126336
 
 
-def _validate_classic_beam_inputs(  # noqa: C901, PLR0913
+def _validate_classic_beam_inputs(  # noqa: C901, PLR0912, PLR0913
     model: nn.Module,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     generation_length: int,
     beam_size: int,
     branching_factor: int | None,
+    num_groups: int = 1,
 ) -> tuple[int, int]:
     """Validate public beam inputs and return branching factor plus mask ID."""
     if input_ids.ndim != 2:
@@ -50,17 +51,31 @@ def _validate_classic_beam_inputs(  # noqa: C901, PLR0913
         raise ValueError(f"generation_length must be positive, got {generation_length}")
     if beam_size <= 0:
         raise ValueError(f"beam_size must be positive, got {beam_size}")
+    if num_groups <= 0:
+        raise ValueError(f"num_groups must be positive, got {num_groups}")
+    if beam_size % num_groups != 0:
+        raise ValueError(f"beam_size={beam_size} must be divisible by num_groups={num_groups}")
 
     effective_branching_factor = beam_size if branching_factor is None else branching_factor
     if effective_branching_factor <= 0:
         raise ValueError(f"branching_factor must be positive, got {effective_branching_factor}")
+    # Each group is an independent beam of `beam_size // num_groups`, seeded with at least one live
+    # hypothesis, so reachability is a per-group property.
+    beams_per_group = beam_size // num_groups
     reachable_beams = 1
     for _ in range(generation_length):
-        reachable_beams = min(beam_size, reachable_beams * effective_branching_factor)
-    if reachable_beams < beam_size:
+        reachable_beams = min(beams_per_group, reachable_beams * effective_branching_factor)
+    if reachable_beams < beams_per_group:
         raise ValueError(
-            f"branching_factor={effective_branching_factor} cannot populate beam_size={beam_size} "
-            f"within generation_length={generation_length}",
+            f"branching_factor={effective_branching_factor} cannot populate "
+            f"{beams_per_group} beams per group within generation_length={generation_length}",
+        )
+    # Only `branching_factor` candidates exist at the first generated position, and every group
+    # needs one: a group seeded entirely with -inf can never revive, since groups never interact.
+    if num_groups > 1 and effective_branching_factor < num_groups:
+        raise ValueError(
+            f"branching_factor={effective_branching_factor} cannot seed num_groups={num_groups} "
+            f"groups; every group needs a distinct first-position candidate",
         )
 
     config = getattr(model, "config", None)
@@ -115,6 +130,95 @@ def _classic_beam_position_log_probs(  # noqa: PLR0913
     return next_log_probs
 
 
+def _select_next_beams(
+    candidate_scores: torch.Tensor,
+    candidate_tokens: torch.Tensor,
+    num_groups: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pick the next beam front from `[batch, beam, branching_factor]` candidates.
+
+    ``num_groups == 1`` is one global ``topk`` over the whole candidate pool: classic beam search,
+    where any parent may take several slots and any parent may die.
+
+    ``num_groups > 1`` partitions the beam into equal groups, each ranked only against itself. That
+    is a different *search*, not a different objective: a global ranking may spend every slot on
+    continuations of one prefix, whereas a partition guarantees each group keeps its
+    ``beam_size // num_groups`` slots alive to the end. Groups never interact, so the partition is
+    only meaningful once they start from different states — see the split seeding in
+    `left_to_right_beam_sample`, without which every group would follow an identical trajectory.
+
+    Scores returned are the true cumulative log probabilities in every case.
+    """
+    batch_size, beam_size, branching_factor = candidate_scores.shape
+    beams_per_group = beam_size // num_groups
+    grouped_scores = candidate_scores.view(batch_size, num_groups, beams_per_group, branching_factor)
+    grouped_tokens = candidate_tokens.view(batch_size, num_groups, beams_per_group, branching_factor)
+
+    parent_chunks: list[torch.Tensor] = []
+    token_chunks: list[torch.Tensor] = []
+    score_chunks: list[torch.Tensor] = []
+
+    for group in range(num_groups):
+        flat_scores = grouped_scores[:, group].flatten(1)
+        flat_tokens = grouped_tokens[:, group].flatten(1)
+
+        next_scores, selected_flat = torch.topk(flat_scores, k=beams_per_group, dim=-1)
+        local_parents = torch.div(selected_flat, branching_factor, rounding_mode="floor")
+
+        parent_chunks.append(local_parents + group * beams_per_group)
+        token_chunks.append(torch.gather(flat_tokens, 1, selected_flat))
+        score_chunks.append(next_scores)
+
+    return (
+        torch.cat(parent_chunks, dim=1),
+        torch.cat(token_chunks, dim=1),
+        torch.cat(score_chunks, dim=1),
+    )
+
+
+def _split_seed_groups(
+    candidate_scores: torch.Tensor,
+    candidate_tokens: torch.Tensor,
+    num_groups: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Seed each group from a different first-position candidate.
+
+    At the first generated position every beam holds the same prompt and the same all-``[MASK]``
+    suffix, so a per-group ranking would pick the same tokens in every group and the groups would
+    stay identical forever. Instead take one global ``topk`` over the whole beam here and deal the
+    results out **round-robin**: group *g* receives ranks ``g, g + G, g + 2G, ...``. Each group's
+    best hypothesis is therefore a distinct token (rank *g*), which is what makes the partition
+    mean anything.
+
+    Round-robin rather than contiguous blocks for two reasons. Only ``branching_factor`` candidates
+    are finite at this position (they all descend from the single live beam), so contiguous blocks
+    would hand the last groups nothing but ``-inf`` — and because groups never interact, such a
+    group could never revive. Round-robin instead needs only ``branching_factor >= num_groups``, and
+    it spreads the ranks evenly rather than giving one group every good candidate.
+
+    With ``num_groups == 1`` the deal is the identity permutation, so single-group search is exactly
+    the classic global ``topk``.
+    """
+    batch_size, beam_size, branching_factor = candidate_scores.shape
+    next_scores, selected_flat = torch.topk(candidate_scores.flatten(1), k=beam_size, dim=-1)
+    parent_indices = torch.div(selected_flat, branching_factor, rounding_mode="floor")
+    selected_tokens = torch.gather(candidate_tokens.flatten(1), dim=1, index=selected_flat)
+
+    if num_groups > 1:
+        # Beam slot g * Kg + s must hold rank s * G + g.
+        beams_per_group = beam_size // num_groups
+        device = candidate_scores.device
+        order = (
+            torch.arange(beams_per_group, device=device).unsqueeze(0) * num_groups
+            + torch.arange(num_groups, device=device).unsqueeze(1)
+        ).reshape(-1)
+        parent_indices = parent_indices[:, order]
+        selected_tokens = selected_tokens[:, order]
+        next_scores = next_scores[:, order]
+
+    return parent_indices, selected_tokens, next_scores
+
+
 @torch.inference_mode()
 def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
     model: nn.Module,
@@ -124,6 +228,7 @@ def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
     beam_size: int,
     branching_factor: int | None = None,
     eos_token_ids: tuple[int, ...] = (),
+    num_groups: int = 1,
 ) -> tuple[torch.LongTensor, torch.FloatTensor, int]:
     """Forced left-to-right beam search using a bidirectional masked-language model.
 
@@ -137,6 +242,14 @@ def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
     zero added log probability, so a completed short hypothesis is neither penalised nor perturbed
     by post-EOS continuations. Decoding stops once every beam is finished.
 
+    ``num_groups > 1`` partitions the beam into that many equal groups: the first generated position
+    is one global top-k handed out across groups in rank order, and from then on each group is
+    ranked only against itself. So the groups are ``num_groups`` searches started from different
+    first tokens, each locally maximising, rather than a single global ranking that may spend every
+    slot on one prefix. ``num_groups=1`` is exactly classic beam search. Each executed position has
+    the same model-forward shape for partitioned and unpartitioned search, although either can stop
+    early once all of its beams emit EOS.
+
     Returns ``(sequences, scores, forward_passes)``. ``scores`` are per-generated-token mean log
     probabilities (cumulative sum divided by the length up to and including EOS), which keeps them
     comparable in kind with the diffusion sampler's internal scores and removes beam search's
@@ -149,6 +262,7 @@ def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
         generation_length,
         beam_size,
         branching_factor,
+        num_groups,
     )
     if any(token_id == mask_token_id for token_id in eos_token_ids):
         raise ValueError("eos_token_ids must not contain the mask token")
@@ -175,6 +289,10 @@ def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
     full_attention = torch.cat((prompt_attention, generation_attention), dim=-1)
     beam_attention = full_attention.unsqueeze(1).expand(batch_size, beam_size, seq_len)
 
+    # A single live hypothesis, as in classic beam search. Groups are not seeded separately here:
+    # every beam holds the same prompt and all-[MASK] suffix, so per-group seeds would be identical
+    # and the groups would never diverge. The split happens at the first generated position instead
+    # (`_split_seed_groups`).
     scores = torch.full((batch_size, beam_size), -torch.inf, dtype=torch.float32, device=device)
     scores[:, 0] = 0.0
     finished = torch.zeros((batch_size, beam_size), dtype=torch.bool, device=device)
@@ -228,10 +346,14 @@ def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
         )
         candidate_scores = scores.unsqueeze(-1) + candidate_log_probs
 
-        flat_candidate_scores = candidate_scores.flatten(1)
-        next_scores, selected_flat = torch.topk(flat_candidate_scores, k=beam_size, dim=-1)
-        parent_indices = torch.div(selected_flat, branching_factor, rounding_mode="floor")
-        selected_tokens = torch.gather(candidate_tokens.flatten(1), dim=1, index=selected_flat)
+        # First generated position: one global top-k laid out across the groups, so each group
+        # starts from a different token. Afterwards each group is ranked only against itself.
+        select = _split_seed_groups if pos == generation_start else _select_next_beams
+        parent_indices, selected_tokens, next_scores = select(
+            candidate_scores,
+            candidate_tokens,
+            num_groups,
+        )
 
         gather_indices = parent_indices.unsqueeze(-1).expand(batch_size, beam_size, seq_len)
         beams = torch.gather(beams, dim=1, index=gather_indices)
@@ -497,6 +619,11 @@ class LLADASampler(nn.Module):
                 "classic_beam decoding is single-process only; set standalone_job=true or use one process",
             )
 
+        # `transversal` carries the same meaning as for the diffusion selectors: partition the
+        # population of batch_size into n_groups groups of group_size. Unset, the beam is one
+        # unpartitioned search of width batch_size.
+        num_groups = self.config.n_groups if self.config.transversal else 1
+
         prompt_tokens = self._preprocess_prompt(prompt)
         attention_mask = torch.ones_like(prompt_tokens)
         branching_factor = self.config.classic_beam_branching_factor
@@ -509,6 +636,7 @@ class LLADASampler(nn.Module):
                 beam_size=self.config.batch_size,
                 branching_factor=branching_factor,
                 eos_token_ids=self._eos_token_ids(),
+                num_groups=num_groups,
             )
 
         self.last_forward_count = forward_passes

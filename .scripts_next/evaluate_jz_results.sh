@@ -138,7 +138,7 @@ while IFS= read -r dir; do
 
   OVERSAMPLE_BASELINE_PATH="${tmp_src_dir}" \
   OVERSAMPLE_BASELINE_SAVE_SAMPLES="false" \
-  OVERSAMPLE_BASELINE_METHOD="baseline" \
+  OVERSAMPLE_BASELINE_METHOD="baseline,ltr_beam" \
   OVERSAMPLE_BASELINE_METRICS="${BON_METRICS}" \
   uv run python -m d5p4._oversample_baseline \
     config="${SRC_ROOT}/_default.yaml" \
@@ -171,7 +171,7 @@ while IFS= read -r dir; do
 
   OVERSAMPLE_MATH_BASELINE_PATH="${tmp_src_dir}" \
   OVERSAMPLE_MATH_BASELINE_SAVE_RAW="false" \
-  OVERSAMPLE_MATH_BASELINE_METHOD="baseline" \
+  OVERSAMPLE_MATH_BASELINE_METHOD="baseline,ltr_beam" \
   OVERSAMPLE_MATH_BASELINE_METRICS="${BON_METRICS}" \
   OVERSAMPLE_MATH_BASELINE_TRANSVERSAL="false" \
   uv run python -m d5p4._oversample_baseline_math \

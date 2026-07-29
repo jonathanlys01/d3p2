@@ -10,7 +10,17 @@ from omegaconf import OmegaConf
 if TYPE_CHECKING:
     import torch
 
-AVAIL = ["dpp", "exhaustive", "greedy_map", "greedy_beam", "diverse_beam", "random", "baseline", "_greedy_map"]
+AVAIL = [
+    "dpp",
+    "exhaustive",
+    "greedy_map",
+    "greedy_beam",
+    "diverse_beam",
+    "random",
+    "baseline",
+    "ltr_beam",
+    "_greedy_map",
+]
 
 
 SEQUENCE_LENGTH = 1_024
@@ -91,7 +101,9 @@ class Config:
     llada_steps: int = 128
     gen_length: int = 128
     block_length: int = 32
-    llada_decoder: str = "diffusion"  # "diffusion" or forced left-to-right "classic_beam"
+    # "diffusion" or forced left-to-right "classic_beam". With classic_beam, `transversal=true`
+    # partitions the beam into n_groups groups of group_size, each searched independently.
+    llada_decoder: str = "diffusion"
     classic_beam_branching_factor: int | None = None
     # Force the diffusion sampler to unmask strictly left-to-right (implicit for classic_beam).
     force_left_to_right: bool = False
@@ -255,6 +267,10 @@ class Config:
         assert self.model in MODEL_CHOICES, (
             f"Model {self.model} not recognized. Available models: {sorted(MODEL_CHOICES)}"
         )
+        if self.method == "ltr_beam":
+            assert self.model == "llada" and self.llada_decoder == "classic_beam", (
+                "method=ltr_beam requires model=llada and llada_decoder=classic_beam"
+            )
         assert 0 < self.initial_mask_ratio <= 1.0, "initial_mask_ratio must be in (0, 1]"
         assert self.eval_selection_metric in EVAL_SELECTION_METRIC_CHOICES, (
             f"eval_selection_metric must be one of {sorted(EVAL_SELECTION_METRIC_CHOICES)}, "
@@ -293,9 +309,25 @@ class Config:
             assert self.classic_beam_branching_factor > 0, "classic_beam_branching_factor must be positive"
         if self.llada_decoder == "classic_beam":
             assert self.cfg_scale == 1.0, "classic_beam requires conditional-only cfg_scale=1.0"
-            assert self.method == "baseline", "classic_beam requires method=baseline"
+            assert self.method == "ltr_beam", "classic_beam requires method=ltr_beam"
             assert not self.logits_eos_inf, "classic_beam requires logits_eos_inf=false so beams can terminate"
             assert not self.force_left_to_right, "classic_beam is already left-to-right; unset force_left_to_right"
+            # beam_size comes from n_groups * group_size; beam search at width 1 is greedy decoding,
+            # which is almost never what was intended and is otherwise silent.
+            assert self.batch_size > 1, "classic_beam requires batch_size=n_groups*group_size > 1, got 1"
+            if self.transversal:
+                # Partitioned beam search: n_groups independent beams of group_size, the same
+                # partition the D5P4 arm gets from transversal selection.
+                assert self.n_groups > 1, "transversal classic_beam needs n_groups > 1"
+                assert self.group_size > 1, (
+                    "transversal classic_beam with group_size=1 is n_groups independent greedy "
+                    "chains; set group_size > 1 for a real beam per group"
+                )
+            else:
+                assert self.group_size == 1, (
+                    "non-transversal classic_beam requires group_size=1; "
+                    "encode the full global beam width in n_groups"
+                )
 
         assert self.remasking in REMASKING_CHOICES, f"Remasking method {self.remasking} not recognized."
         if self.eval_transversal_group_representatives:

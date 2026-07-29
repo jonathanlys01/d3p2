@@ -18,6 +18,7 @@ from d5p4.llada_math import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".scripts_next" / "gsm8k_classic_beam_comparison.sh"
 LOCAL_CLUSTER_SCRIPT = REPO_ROOT / ".scripts" / "gsm8k_block1_sweep.sbatch"
+JZ_LTR_SCRIPT = REPO_ROOT / ".jz_next" / "llada_ltr_beam_comparison.slurm"
 
 
 def test_ranked_metrics_use_internal_score_order():
@@ -60,7 +61,10 @@ def test_generation_metadata_aggregation_and_score_metadata():
         model="llada",
         llada_decoder="classic_beam",
         cfg_scale=1.0,
-        method="baseline",
+        method="ltr_beam",
+        transversal=False,
+        n_groups=4,
+        group_size=1,
     )
     assert _internal_score_metadata(diffusion)["method"] == "final_step_mean_token_logprob"
     assert _internal_score_metadata(classic)["method"] == "length_normalized_left_to_right_token_logprob"
@@ -112,7 +116,8 @@ def test_llada_math_classic_beam_reports_pass_and_generation_metrics(monkeypatch
             model="llada",
             llada_decoder="classic_beam",
             cfg_scale=1.0,
-            method="baseline",
+            method="ltr_beam",
+            transversal=False,
             gen_length=2,
             n_groups=2,
             group_size=1,
@@ -184,7 +189,8 @@ def test_gsm8k_classic_beam_comparison_dry_run_has_three_equal_population_arms()
 
     assert "llada_decoder=classic_beam" in classic
     assert "classic_beam_branching_factor=5" in classic
-    assert "method=baseline" in classic
+    assert "method=ltr_beam" in classic
+    assert "transversal=false" in classic
     assert "n_groups=12" in classic
     assert "group_size=1" in classic
 
@@ -192,6 +198,41 @@ def test_gsm8k_classic_beam_comparison_dry_run_has_three_equal_population_arms()
         assert "cfg_scale=1.0" in command
         assert "standalone_job=true" in command
         assert "gen_length=256" in command
+
+
+def test_jz_ltr_comparison_distinguishes_global_and_transversal_beam_methods():
+    env = os.environ.copy()
+    env.update(
+        {
+            "WORK_ejh": "/tmp/work",
+            "DRY_RUN": "1",
+        },
+    )
+    commands = []
+    for task_id in range(4):
+        env["SLURM_ARRAY_TASK_ID"] = str(task_id)
+        completed = subprocess.run(
+            ["bash", str(JZ_LTR_SCRIPT)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commands.extend(line for line in completed.stdout.splitlines() if "llada_math.py" in line)
+
+    assert len(commands) == 4
+    independent, classic, d5p4, transversal = commands
+    assert "method=baseline" in independent
+    assert "method=ltr_beam" in classic
+    assert "transversal=false" in classic
+    assert "n_groups=9" in classic
+    assert "group_size=1" in classic
+    assert "method=greedy_map" in d5p4
+    assert "method=ltr_beam" in transversal
+    assert "transversal=true" in transversal
+    assert "n_groups=3" in transversal
+    assert "group_size=3" in transversal
 
 
 def test_local_cluster_block1_sweep_uses_one_group_of_three_per_gpu():

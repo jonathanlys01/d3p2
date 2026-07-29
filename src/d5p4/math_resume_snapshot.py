@@ -21,7 +21,7 @@ from d5p4.result_schema import build_generation_result_payload
 WORKFLOW_ID = "math_generation:llada"
 MODE = "math_generation"
 DEFAULT_ARMS = ("independent_lr", "classic_beam", "d5p4")
-SUPPORTED_ARMS = (*DEFAULT_ARMS, "greedy_beam")
+SUPPORTED_ARMS = (*DEFAULT_ARMS, "greedy_beam", "transversal_beam")
 
 
 class SnapshotError(RuntimeError):
@@ -79,8 +79,14 @@ def _arm_from_config(config: dict[str, Any]) -> str | None:
     method = str(config.get("method", "baseline"))
     force_left_to_right = bool(config.get("force_left_to_right", False))
     block_length = int(config.get("block_length", 0))
+    transversal = bool(config.get("transversal", False))
 
-    if decoder == "classic_beam" and method == "baseline":
+    # `method=ltr_beam` is the boundary where transversal became meaningful
+    # to classic beam. Historical method=baseline runs keep their old global
+    # classification even though their then-inert transversal default was true.
+    if decoder == "classic_beam" and method == "ltr_beam" and transversal:
+        return "transversal_beam"
+    if decoder == "classic_beam" and method in {"baseline", "ltr_beam"}:
         return "classic_beam"
     if decoder == "diffusion" and method == "greedy_beam" and block_length == 1:
         return "greedy_beam"
@@ -476,7 +482,10 @@ def _parser() -> argparse.ArgumentParser:
         "--arm",
         action="append",
         choices=SUPPORTED_ARMS,
-        help="Arm to export; repeat as needed. Defaults to all three comparison arms.",
+        help=(
+            "Arm to export; repeat as needed. Defaults to the legacy three comparison arms; "
+            "request transversal_beam explicitly for the four-arm LTR comparison."
+        ),
     )
     parser.add_argument(
         "--experiment-hash",

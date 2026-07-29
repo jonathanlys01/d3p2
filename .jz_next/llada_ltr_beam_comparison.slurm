@@ -4,18 +4,31 @@
 #   0. independent forced-left-to-right diffusion
 #   1. classic left-to-right beam search
 #   2. forced-left-to-right D5P4 diffusion
+#   3. partitioned (transversal) left-to-right beam search, same 3x3 partition as the D5P4 arm
 #
-# Every arm uses the same population budget (9 candidates by default). The
-# independent arms are separate Slurm jobs, so the complete comparison runs in
-# parallel without using distributed sampling.
+# The four arms fill a 2x2 of (partitioned?) x (how candidates are coupled), so a D5P4 win can be
+# attributed to its kernel rather than merely to having a partition:
 #
-# Submit all three arms from the repository root:
+#                    | unpartitioned          | partitioned (3 groups of 3)
+#   -----------------+------------------------+----------------------------
+#   i.i.d. sampling  | 0. independent_lr      | 2. d5p4 (cosine kernel)
+#   likelihood beam  | 1. classic_beam        | 3. transversal_beam
+#
+# Arm 3 is arm 1 with transversal=true: the first generated token is split across the three groups
+# by rank, then each group beam-searches on its own instead of sharing one global ranking.
+#
+# Every arm uses the same population budget (9 candidates by default) and the same maximum
+# forward-pass budget per prompt. Beam arms may stop early once all beams emit EOS. The arms are
+# separate Slurm jobs, so the complete comparison runs in parallel without distributed sampling.
+#
+# Submit all four arms from the repository root:
 #   sbatch .jz_next/llada_ltr_beam_comparison.slurm
 #
 # Submit one arm only:
 #   sbatch --array=0 .jz_next/llada_ltr_beam_comparison.slurm  # independent LR
 #   sbatch --array=1 .jz_next/llada_ltr_beam_comparison.slurm  # classic beam
 #   sbatch --array=2 .jz_next/llada_ltr_beam_comparison.slurm  # D5P4 LR
+#   sbatch --array=3 .jz_next/llada_ltr_beam_comparison.slurm  # transversal beam
 #
 # Override experiment settings through the submission environment, for example:
 #   sbatch --export=ALL,QA_DATASET_LEN=10 .jz_next/llada_ltr_beam_comparison.slurm
@@ -41,7 +54,7 @@
 # runtime differences.
 #SBATCH --time=17:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --array=0-2
+#SBATCH --array=0-3
 
 set -euo pipefail
 
@@ -102,6 +115,7 @@ ARMS=(
   "independent_lr"
   "classic_beam"
   "d5p4"
+  "transversal_beam"
 )
 
 TOTAL_JOBS=${#ARMS[@]}
@@ -161,7 +175,8 @@ case "${PROFILE_TAG}" in
     METHOD_ARGS=(
       llada_decoder=classic_beam
       classic_beam_branching_factor="${CLASSIC_BEAM_BRANCHING_FACTOR}"
-      method=baseline
+      method=ltr_beam
+      transversal=false
       n_groups="${BEAM_SIZE}"
       group_size=1
       comment="LLaDA GSM8K classic beam K=${BEAM_SIZE} branch=${CLASSIC_BEAM_BRANCHING_FACTOR}"
@@ -182,6 +197,18 @@ case "${PROFILE_TAG}" in
       _kernel_method=additive
       _w_interaction="${D5P4_W_INTERACTION}"
       comment="LLaDA GSM8K D5P4 LR ${D5P4_N_GROUPS}x${D5P4_GROUP_SIZE} w=${D5P4_W_INTERACTION}"
+    )
+    ;;
+  transversal_beam)
+    METHOD_LABEL="partitioned (transversal) left-to-right beam search"
+    METHOD_ARGS=(
+      llada_decoder=classic_beam
+      classic_beam_branching_factor="${CLASSIC_BEAM_BRANCHING_FACTOR}"
+      method=ltr_beam
+      transversal=true
+      n_groups="${D5P4_N_GROUPS}"
+      group_size="${D5P4_GROUP_SIZE}"
+      comment="LLaDA GSM8K transversal beam ${D5P4_N_GROUPS}x${D5P4_GROUP_SIZE} branch=${CLASSIC_BEAM_BRANCHING_FACTOR}"
     )
     ;;
   *)

@@ -70,6 +70,8 @@ def load_runs(db_path: Path) -> list[dict[str, Any]]:
 def arm_label(config: dict[str, Any]) -> str:
     decoder = config.get("llada_decoder") or "diffusion"
     if decoder == "classic_beam":
+        if config.get("method") == "ltr_beam" and config.get("transversal", False):
+            return "transversal_beam"
         return "classic_beam"
     if config.get("method") == "baseline":
         return "independent_lr" if config.get("force_left_to_right") else "independent"

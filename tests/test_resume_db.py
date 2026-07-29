@@ -191,14 +191,20 @@ def test_diffusion_hash_ignores_classic_beam_fields_but_classic_hash_includes_th
         llada_decoder="classic_beam",
         classic_beam_branching_factor=4,
         cfg_scale=1.0,
-        method="baseline",
+        method="ltr_beam",
+        transversal=False,
+        n_groups=4,
+        group_size=1,
     )
     classic_b = _cfg(
         "tmpdir",
         llada_decoder="classic_beam",
         classic_beam_branching_factor=8,
         cfg_scale=1.0,
-        method="baseline",
+        method="ltr_beam",
+        transversal=False,
+        n_groups=4,
+        group_size=1,
     )
 
     assert experiment_hash("math_generation:llada", diffusion_a, work_hash) == experiment_hash(

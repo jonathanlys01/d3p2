@@ -24,8 +24,8 @@ Environment flags
   Default: config.results_dir. Outputs are written next to the input file(s).
 - OVERSAMPLE_MATH_BASELINE_SAVE_RAW: include raw_results in outputs. Default:
   true. Selected results are always written as "results" to preserve math format.
-- OVERSAMPLE_MATH_BASELINE_METHOD: optional source config.method filter. Default:
-  unset (process every compatible source method).
+- OVERSAMPLE_MATH_BASELINE_METHOD: optional comma-separated source config.method
+  filter. Default: unset (process every compatible source method).
 - OVERSAMPLE_MATH_BASELINE_METRICS: optional comma-separated metric filter, e.g.
   "acc,f1,ppl,int,random". Default: all available selectors for each source file.
 - OVERSAMPLE_MATH_BASELINE_TRANSVERSAL: when true, pick one representative from
@@ -306,7 +306,7 @@ if __name__ == "__main__":
     math_evaluator = MathEvaluator()
 
     save_raw = _env_flag("OVERSAMPLE_MATH_BASELINE_SAVE_RAW", default=True)
-    method_filter = os.getenv("OVERSAMPLE_MATH_BASELINE_METHOD")
+    method_filters = _env_list("OVERSAMPLE_MATH_BASELINE_METHOD")
     requested_metrics = _env_list("OVERSAMPLE_MATH_BASELINE_METRICS")
     transversal = _env_flag("OVERSAMPLE_MATH_BASELINE_TRANSVERSAL", default=False)
     group_size_override = os.getenv("OVERSAMPLE_MATH_BASELINE_GROUP_SIZE")
@@ -344,8 +344,11 @@ if __name__ == "__main__":
         for output_stem, file_config_dict, results in grouped_sources:
             current_config = _config_from_dict(config, file_config_dict)
 
-            if method_filter is not None and current_config.method != method_filter:
-                print(f"Skipping {output_stem}.json: method={current_config.method!r}, expected {method_filter!r}")
+            if method_filters is not None and current_config.method not in method_filters:
+                print(
+                    f"Skipping {output_stem}.json: method={current_config.method!r}, "
+                    f"expected one of {method_filters!r}",
+                )
                 continue
 
             group_size = (

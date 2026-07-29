@@ -3,6 +3,8 @@
 
 Classification uses only the stored result config:
 - config.method == "baseline" marks independent baseline runs.
+- config.method == "ltr_beam" uses config.transversal to distinguish global
+  best-of-N from grouped one-per-subgroup evaluation.
 - config.qa_dataset == "gsm8k" marks math/GSM8K-shaped result files.
 - other methods are treated as subsample/search runs.
 
@@ -50,6 +52,7 @@ class DiscoveryConfig(BaseModel):
 
     method: str
     qa_dataset: str | None = None
+    transversal: bool = False
 
 
 class ResultEnvelope(BaseModel):
@@ -230,8 +233,9 @@ def _validate_for_manifest(data: Any, *, require_text_baseline_internal_scores: 
     envelope = ResultEnvelope.model_validate(data)
     method = envelope.config.method
     is_math = envelope.config.qa_dataset == "gsm8k"
+    is_global_ltr_beam = method == "ltr_beam" and not envelope.config.transversal
 
-    if method == "baseline":
+    if method == "baseline" or is_global_ltr_beam:
         if is_math:
             MathResult.model_validate(data)
             return "math_baseline"

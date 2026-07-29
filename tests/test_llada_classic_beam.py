@@ -12,6 +12,7 @@ from d5p4.diffusion_llada import (
     left_to_right_beam_sample,
 )
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
+from d5p4.subsample import get_subsample_selector
 
 
 MASK_TOKEN_ID = 6
@@ -320,16 +321,16 @@ def test_classic_beam_rejects_invalid_sizes(kwargs, error):
         left_to_right_beam_sample(RecordingMaskedLM(), prompt, torch.ones_like(prompt), **kwargs)
 
 
-def test_classic_beam_config_requires_conditional_baseline():
+def test_classic_beam_config_requires_conditional_ltr_beam_method():
     with pytest.raises(AssertionError, match="cfg_scale=1.0"):
         Config(
             disable_sys_args=True,
             model="llada",
             llada_decoder="classic_beam",
             cfg_scale=2.0,
-            method="baseline",
+            method="ltr_beam",
         )
-    with pytest.raises(AssertionError, match="method=baseline"):
+    with pytest.raises(AssertionError, match="method=ltr_beam"):
         Config(
             disable_sys_args=True,
             model="llada",
@@ -343,7 +344,7 @@ def test_classic_beam_config_requires_conditional_baseline():
             model="llada",
             llada_decoder="classic_beam",
             cfg_scale=1.0,
-            method="baseline",
+            method="ltr_beam",
             logits_eos_inf=True,
         )
     with pytest.raises(AssertionError, match="already left-to-right"):
@@ -352,8 +353,15 @@ def test_classic_beam_config_requires_conditional_baseline():
             model="llada",
             llada_decoder="classic_beam",
             cfg_scale=1.0,
-            method="baseline",
+            method="ltr_beam",
             force_left_to_right=True,
+        )
+    with pytest.raises(AssertionError, match="requires model=llada and llada_decoder=classic_beam"):
+        Config(
+            disable_sys_args=True,
+            model="llada",
+            llada_decoder="diffusion",
+            method="ltr_beam",
         )
 
 
@@ -377,7 +385,8 @@ def test_llada_sampler_routes_classic_beam_and_reports_forward_count():
         model="llada",
         llada_decoder="classic_beam",
         cfg_scale=1.0,
-        method="baseline",
+        method="ltr_beam",
+        transversal=False,
         gen_length=3,
         n_groups=2,
         group_size=1,
@@ -431,3 +440,164 @@ def test_tiny_llada_model_runs_classic_beam_forward():
     assert scores.shape == (1, 2)
     assert not torch.any(sequences[:, :, 2:] == config.mask_token_id)
     assert torch.isfinite(scores).all()
+
+
+# ── partitioned beam search (llada_decoder="classic_beam" + transversal) ────────────────────
+
+
+def test_single_group_partition_is_bit_identical_to_classic_beam():
+    """The partitioned path must reduce exactly, so classic_beam results stay reproducible."""
+    prompt = torch.tensor([[7, 8]], dtype=torch.long)
+    attention = torch.ones_like(prompt)
+    plain = left_to_right_beam_sample(
+        RecordingMaskedLM(), prompt, attention, generation_length=3, beam_size=3, branching_factor=2,
+    )
+    grouped = left_to_right_beam_sample(
+        RecordingMaskedLM(), prompt, attention, generation_length=3, beam_size=3, branching_factor=2,
+        num_groups=1,
+    )
+    assert torch.equal(plain[0], grouped[0])
+    torch.testing.assert_close(plain[1], grouped[1])
+    assert plain[2] == grouped[2]
+
+
+def test_partitioned_beam_seeds_each_group_from_a_different_token():
+    """Groups only diverge because the first position is split across them by rank.
+
+    Every beam starts holding the same prompt and all-[MASK] suffix, so per-group seeding would
+    give identical groups forever. The split at the first generated position is what makes the
+    partition mean anything.
+    """
+    prompt = torch.tensor([[9]], dtype=torch.long)
+    groups, per_group = 3, 2
+    sequences, scores, forwards = left_to_right_beam_sample(
+        RecordingMaskedLM(), prompt, torch.ones_like(prompt),
+        generation_length=4, beam_size=groups * per_group, branching_factor=3,
+        num_groups=groups,
+    )
+    assert torch.isfinite(scores).all(), "every group must own a live hypothesis"
+    group_leads = [row[0] for row in sequences[0, :, 1].view(groups, per_group).tolist()]
+    assert len(set(group_leads)) == groups, f"groups share a lead token: {group_leads}"
+    assert forwards == 4
+
+
+def test_partition_changes_the_search_not_the_objective():
+    """A partition can only lose likelihood: the global top-k is the unconstrained optimum."""
+    prompt = torch.tensor([[9]], dtype=torch.long)
+    kwargs = {"generation_length": 4, "beam_size": 6, "branching_factor": 3}
+    _, global_scores, global_forwards = left_to_right_beam_sample(
+        RecordingMaskedLM(), prompt, torch.ones_like(prompt), **kwargs,
+    )
+    _, split_scores, split_forwards = left_to_right_beam_sample(
+        RecordingMaskedLM(), prompt, torch.ones_like(prompt), **kwargs, num_groups=3,
+    )
+    assert global_scores.max() >= split_scores.max()
+    # Partitioning is free: identical forward count, so the arms stay compute-matched.
+    assert global_forwards == split_forwards == kwargs["generation_length"]
+
+
+def test_partitioned_beam_keeps_runner_up_prefixes_a_global_beam_would_drop():
+    def logits_fn(input_ids: torch.Tensor, pos: int) -> torch.Tensor:
+        del pos
+        # One dominant token, so a global beam piles onto its continuations while a partition is
+        # forced to keep the runners-up alive inside their own groups.
+        logits = torch.full((input_ids.shape[0], VOCAB_SIZE), -8.0)
+        logits[:, 0] = 4.0
+        logits[:, 1] = 1.0
+        logits[:, 2] = 0.5
+        return logits
+
+    kwargs = {"generation_length": 3, "beam_size": 6, "branching_factor": 3}
+    prompt = torch.tensor([[9]], dtype=torch.long)
+    global_seqs, _, _ = left_to_right_beam_sample(
+        RecordingMaskedLM(logits_fn), prompt, torch.ones_like(prompt), **kwargs,
+    )
+    split_seqs, _, _ = left_to_right_beam_sample(
+        RecordingMaskedLM(logits_fn), prompt, torch.ones_like(prompt), **kwargs, num_groups=3,
+    )
+    global_leads = {row[0] for row in global_seqs[0, :, 1:].tolist()}
+    split_leads = {row[0] for row in split_seqs[0, :, 1:].tolist()}
+    assert len(split_leads) >= len(global_leads)
+    assert len({tuple(row) for row in split_seqs[0, :, 1:].tolist()}) == kwargs["beam_size"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    [
+        ({"generation_length": 2, "beam_size": 4, "num_groups": 0}, "num_groups"),
+        ({"generation_length": 2, "beam_size": 4, "num_groups": 3}, "divisible"),
+        ({"generation_length": 2, "beam_size": 4, "num_groups": 2, "branching_factor": 1}, "cannot populate"),
+        # Only branching_factor candidates exist at the first position, and each group needs one.
+        ({"generation_length": 4, "beam_size": 4, "num_groups": 4, "branching_factor": 2}, "cannot seed"),
+    ],
+)
+def test_partitioned_beam_rejects_invalid_group_settings(kwargs, error):
+    prompt = torch.tensor([[1]])
+    with pytest.raises(ValueError, match=error):
+        left_to_right_beam_sample(RecordingMaskedLM(), prompt, torch.ones_like(prompt), **kwargs)
+
+
+def test_transversal_classic_beam_config_mirrors_the_d5p4_partition():
+    config = Config(
+        disable_sys_args=True,
+        model="llada",
+        llada_decoder="classic_beam",
+        cfg_scale=1.0,
+        method="ltr_beam",
+        transversal=True,
+        n_groups=3,
+        group_size=3,
+    )
+    # n_groups beam groups of group_size beams each: the same 3x3 population as the D5P4 arm.
+    assert config.batch_size == 9
+    assert type(get_subsample_selector(config)).__name__ == "LTRBeamSelection"
+
+    with pytest.raises(AssertionError, match="n_groups > 1"):
+        Config(
+            disable_sys_args=True, model="llada", llada_decoder="classic_beam", cfg_scale=1.0,
+            method="ltr_beam", transversal=True, n_groups=1, group_size=9,
+        )
+    with pytest.raises(AssertionError, match="group_size > 1"):
+        Config(
+            disable_sys_args=True, model="llada", llada_decoder="classic_beam", cfg_scale=1.0,
+            method="ltr_beam", transversal=True, n_groups=9, group_size=1,
+        )
+    with pytest.raises(AssertionError, match="batch_size"):
+        Config(
+            disable_sys_args=True, model="llada", llada_decoder="classic_beam", cfg_scale=1.0,
+            method="ltr_beam", transversal=False, n_groups=1, group_size=1,
+        )
+    with pytest.raises(AssertionError, match="full global beam width in n_groups"):
+        Config(
+            disable_sys_args=True, model="llada", llada_decoder="classic_beam", cfg_scale=1.0,
+            method="ltr_beam", transversal=False, n_groups=3, group_size=3,
+        )
+
+
+def test_llada_sampler_routes_transversal_classic_beam_with_group_partition():
+    config = Config(
+        disable_sys_args=True,
+        model="llada",
+        llada_decoder="classic_beam",
+        cfg_scale=1.0,
+        method="ltr_beam",
+        gen_length=3,
+        transversal=True,
+        n_groups=2,
+        group_size=2,
+    )
+    sampler = LLADASampler.__new__(LLADASampler)
+    nn.Module.__init__(sampler)
+    sampler.config = config
+    sampler.device = "cpu"
+    sampler.model = RecordingMaskedLM()
+    sampler.distributed_utils = None
+    sampler.mask_index = MASK_TOKEN_ID
+    sampler.tokenizer = SimpleNamespace(eos_token_id=EOS_TOKEN_ID, get_added_vocab=dict)
+    sampler._preprocess_prompt = lambda _prompt: torch.tensor([[1, 2]], dtype=torch.long)
+
+    sequences, scores = sampler.sample("prompt", return_internal_scores=True)
+
+    assert sequences.shape == (4, 5)
+    assert scores.shape == (4,)
+    assert sampler.last_forward_count == config.gen_length

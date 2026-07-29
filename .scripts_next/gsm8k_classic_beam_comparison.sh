@@ -126,7 +126,8 @@ run_arm d5p4 \
 run_arm classic_beam \
   llada_decoder=classic_beam \
   classic_beam_branching_factor="${CLASSIC_BEAM_BRANCHING_FACTOR}" \
-  method=baseline \
+  method=ltr_beam \
+  transversal=false \
   n_groups="${BEAM_SIZE}" \
   group_size=1 \
   comment="GSM8K classic left-to-right beam K=${BEAM_SIZE} branch=${CLASSIC_BEAM_BRANCHING_FACTOR}" \

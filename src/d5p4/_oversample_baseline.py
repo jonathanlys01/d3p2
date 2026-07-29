@@ -25,8 +25,8 @@ Environment flags
   config.results_dir. Outputs are written next to the input file(s).
 - OVERSAMPLE_BASELINE_SAVE_SAMPLES: include selected/raw samples in outputs.
   Default: true. When false, write metrics/metadata only.
-- OVERSAMPLE_BASELINE_METHOD: optional source config.method filter. Default: unset
-  (process every compatible source method).
+- OVERSAMPLE_BASELINE_METHOD: optional comma-separated source config.method
+  filter. Default: unset (process every compatible source method).
 - OVERSAMPLE_BASELINE_METRICS: optional comma-separated metric filter, e.g.
   "f1,ppl,int,random". Default: all available selectors for each source file.
 """
@@ -184,7 +184,7 @@ if __name__ == "__main__":
         cos_model_id=config.cos_model_id,
     )
     save_samples = _env_flag("OVERSAMPLE_BASELINE_SAVE_SAMPLES", default=True)
-    method_filter = os.getenv("OVERSAMPLE_BASELINE_METHOD")
+    method_filters = _env_list("OVERSAMPLE_BASELINE_METHOD")
     requested_metrics = _env_list("OVERSAMPLE_BASELINE_METRICS")
 
     path = os.path.abspath(os.path.expanduser(os.getenv("OVERSAMPLE_BASELINE_PATH", config.results_dir)))
@@ -218,8 +218,11 @@ if __name__ == "__main__":
                 filtered_config.pop("disable_sys_args", None)
                 current_config = Config(disable_sys_args=True, **filtered_config)
 
-            if method_filter is not None and current_config.method != method_filter:
-                print(f"Skipping {output_stem}.json: method={current_config.method!r}, expected {method_filter!r}")
+            if method_filters is not None and current_config.method not in method_filters:
+                print(
+                    f"Skipping {output_stem}.json: method={current_config.method!r}, "
+                    f"expected one of {method_filters!r}",
+                )
                 continue
 
             references = _load_references(current_config, len(texts))

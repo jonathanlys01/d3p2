@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .dpp_selector import DPP
     from .exhaustive import Exhaustive
     from .greedy_map import GreedyMAP
+    from .ltr_beam import LTRBeamSelection
     from .random_selector import RandomSelection
 
 AVAIL = {
@@ -25,12 +26,13 @@ AVAIL = {
     "diverse_beam": ("d5p4.subsample.beam", "DiverseBeamSearch"),
     "random": ("d5p4.subsample.random_selector", "RandomSelection"),
     "baseline": ("d5p4.subsample.baseline", "BaselineSelection"),
+    "ltr_beam": ("d5p4.subsample.ltr_beam", "LTRBeamSelection"),
 }
 
 
 def get_subsample_selector(
     config: Config,
-) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | _GreedyMAP | RandomSelection | BaselineSelection":  # noqa: E501
+) -> "GreedyBeamSearch | BaseSelector | DiverseBeamSearch | DPP | Exhaustive | GreedyMAP | LTRBeamSelection | _GreedyMAP | RandomSelection | BaselineSelection":  # noqa: E501
     """
     Factory function to dynamically load and instantiate a subset selector.
     """

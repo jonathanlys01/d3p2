@@ -10,6 +10,7 @@ import torch
 from d5p4.config import Config
 from d5p4.math_resume_snapshot import (
     SnapshotThresholdNotMet,
+    _arm_from_config,
     build_snapshot_payload,
     discover_resume_runs,
     export_run_snapshot,
@@ -206,6 +207,72 @@ def test_snapshot_recognizes_block1_sweep_arms(tmp_path, method, expected_arm):
         run = inspect_resume_db(store.db_path)
         assert run is not None
         assert run.arm == expected_arm
+
+
+def test_snapshot_distinguishes_new_ltr_beam_modes_without_relabeling_legacy_runs():
+    common = {
+        "llada_decoder": "classic_beam",
+        "qa_dataset": "gsm8k",
+    }
+    assert _arm_from_config({**common, "method": "ltr_beam", "transversal": False}) == "classic_beam"
+    assert _arm_from_config({**common, "method": "ltr_beam", "transversal": True}) == "transversal_beam"
+    # Before method=ltr_beam, classic beam ignored the default-true transversal field.
+    assert _arm_from_config({**common, "method": "baseline", "transversal": True}) == "classic_beam"
+
+
+def test_discovery_routes_global_and_transversal_ltr_beam_to_different_math_paths(tmp_path):
+    results_root = tmp_path / "results"
+    global_dir = results_root / "classic_beam"
+    transversal_dir = results_root / "transversal_beam"
+    global_dir.mkdir(parents=True)
+    transversal_dir.mkdir(parents=True)
+
+    row = {
+        "question": "What is 1 + 1?",
+        "gold_answer": "2",
+        "answer_str": "2",
+        "generations": ["2"] * 9,
+    }
+    for directory, transversal, n_groups, group_size in (
+        (global_dir, False, 9, 1),
+        (transversal_dir, True, 3, 3),
+    ):
+        payload = {
+            "config": {
+                "method": "ltr_beam",
+                "llada_decoder": "classic_beam",
+                "qa_dataset": "gsm8k",
+                "transversal": transversal,
+                "n_groups": n_groups,
+                "group_size": group_size,
+            },
+            "results": [row],
+        }
+        (directory / "result.json").write_text(json.dumps(payload))
+
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / ".scripts_next" / "discover_jz_eval_inputs.py"),
+            "--root",
+            str(results_root),
+            "--baseline-dirs",
+            str(manifests / "text-baseline.txt"),
+            "--math-baseline-dirs",
+            str(manifests / "math-baseline.txt"),
+            "--subsample-files",
+            str(manifests / "text-subsample.txt"),
+            "--math-subsample-dirs",
+            str(manifests / "math-subsample.txt"),
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+    assert (manifests / "math-baseline.txt").read_text().strip() == str(global_dir)
+    assert (manifests / "math-subsample.txt").read_text().strip() == str(transversal_dir)
 
 
 def test_read_only_inspection_does_not_create_or_migrate_schema(tmp_path):
