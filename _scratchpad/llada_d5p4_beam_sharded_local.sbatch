@@ -184,6 +184,10 @@ cd "${ROOT}"
 export HF_HOME="${BRAIN_ROOT}/.cache/huggingface"
 export UV_PROJECT_ENVIRONMENT="${SROOT}/d3p2/.venv"
 export UV_PYTHON_INSTALL_DIR="${SROOT}/python"
+# Equivalent scoped redirect to the HOME convention in .scripts/run.sbatch:
+# configuration and cache discovery must not touch the expired /homes mount.
+export XDG_CONFIG_HOME="${BRAIN_ROOT}/.config"
+export XDG_CACHE_HOME="${BRAIN_ROOT}/.cache"
 export TORCHINDUCTOR_CACHE_DIR="${SROOT}/torchinductor"
 export TRITON_CACHE_DIR="${SROOT}/triton"
 export PATH="/usr/bin:/bin:${PATH:-}"

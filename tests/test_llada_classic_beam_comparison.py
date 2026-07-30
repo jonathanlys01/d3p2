@@ -299,6 +299,9 @@ def test_d5p4_beam_scratch_launchers_keep_weight_and_layout_namespaces_distinct(
     assert "global_w0p5" in local
     assert "--expected-transversal=false" in local
     assert "--expected-weight=0.5" in local
+    launcher_text = LOCAL_D5P4_BEAM_SCRIPT.read_text()
+    assert 'export XDG_CONFIG_HOME="${BRAIN_ROOT}/.config"' in launcher_text
+    assert 'export XDG_CACHE_HOME="${BRAIN_ROOT}/.cache"' in launcher_text
 
 
 def test_local_cluster_block1_sweep_uses_one_group_of_three_per_gpu():
