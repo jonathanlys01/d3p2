@@ -39,8 +39,12 @@ def _slurm_int(name: str) -> int:
 
 
 def _worker() -> None:
-    rank = _slurm_int("SLURM_PROCID")
-    world_size = _slurm_int("SLURM_NTASKS")
+    if "SLURM_ARRAY_TASK_ID" in os.environ:
+        rank = int(os.environ["SLURM_ARRAY_TASK_ID"])
+        world_size = int(os.environ.get("SLURM_ARRAY_TASK_COUNT", os.environ.get("NUM_WORKERS", "1")))
+    else:
+        rank = _slurm_int("SLURM_PROCID")
+        world_size = _slurm_int("SLURM_NTASKS")
     if world_size < 1:
         raise RuntimeError(f"Expected at least one Slurm task, got {world_size}.")
     if not 0 <= rank < world_size:
