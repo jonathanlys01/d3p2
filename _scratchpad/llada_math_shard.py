@@ -1,4 +1,4 @@
-"""Run one contiguous GSM8K shard, or merge the three resulting JSON files.
+"""Run one contiguous GSM8K shard, or merge the resulting JSON files.
 
 This is intentionally a scratchpad helper for
 ``llada_transversal_beam_sharded.slurm``. Classic beam search is single-process,
@@ -16,6 +16,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+import torch
+
+from d5p4 import llada_math
+from d5p4.config import Config
+from d5p4.llada_math import _aggregate_generation_metadata, _ranked_pass_metrics
+from d5p4.result_schema import build_generation_result_payload
+
 
 SHARD_PREFIX = "shard_"
 
@@ -23,7 +31,7 @@ SHARD_PREFIX = "shard_"
 def _slurm_int(name: str) -> int:
     value = os.environ.get(name)
     if value is None:
-        raise RuntimeError(f"{name} is required; launch this helper through the three-task srun step.")
+        raise RuntimeError(f"{name} is required; launch this helper through the sharded srun step.")
     try:
         return int(value)
     except ValueError as error:
@@ -62,8 +70,6 @@ def _worker() -> None:
         ],
     )
 
-    import torch
-
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
     visible_count = torch.cuda.device_count()
     if visible_count != 1:
@@ -72,12 +78,10 @@ def _worker() -> None:
             f"rank {rank} sees {visible_count} with CUDA_VISIBLE_DEVICES={visible_devices!r}.",
         )
 
-    from d5p4 import llada_math
-
     load_full_gsm8k = llada_math.gsm8k
 
-    def load_gsm8k_shard(config):
-        full_dataset = load_full_gsm8k(config)
+    def load_gsm8k_shard(cfg: Config) -> pd.DataFrame:
+        full_dataset = load_full_gsm8k(cfg)
         total = len(full_dataset)
         if total < world_size:
             raise RuntimeError(f"Cannot divide {total} GSM8K rows among {world_size} workers.")
@@ -88,7 +92,9 @@ def _worker() -> None:
             f"({visible_devices}), GSM8K rows [{start}, {stop}) of {total}.",
             flush=True,
         )
-        return full_dataset.iloc[start:stop].reset_index(drop=True)
+        shard = full_dataset.iloc[start:stop].reset_index(drop=True)
+        assert isinstance(shard, pd.DataFrame)
+        return shard
 
     llada_math.gsm8k = load_gsm8k_shard
     llada_math.main()
@@ -156,9 +162,6 @@ def _merge(argv: list[str]) -> None:
     payloads = [json.loads(path.read_text()) for path in source_paths]
     _validate_payloads(payloads)
 
-    from d5p4.llada_math import _aggregate_generation_metadata, _ranked_pass_metrics
-    from d5p4.result_schema import build_generation_result_payload
-
     text_samples = _concatenate(payloads, "text_samples")
     references = _concatenate(payloads, "references")
     internal_scores = _concatenate(payloads, "internal_scores")
@@ -172,9 +175,7 @@ def _merge(argv: list[str]) -> None:
     config = dict(payloads[0]["config"])
     config["results_dir"] = str(args.output_dir)
     config["resume_db_dir"] = str(args.shard_root)
-    config["comment"] = (
-        f"LLaDA GSM8K transversal beam 3x3, {args.world_size} contiguous GPU shards"
-    )
+    config["comment"] = f"LLaDA GSM8K transversal beam 3x3, {args.world_size} contiguous GPU shards"
     ranked_metrics = _ranked_pass_metrics(results, internal_scores)
     overall_accuracy = sum(float(result["accuracy"]) for result in results) / len(results)
     generation_stats = _aggregate_generation_metadata(generation_metadata)
