@@ -279,6 +279,8 @@ def test_d5p4_beam_scratch_launchers_keep_weight_and_layout_namespaces_distinct(
             "NUM_WORKERS": "4",
             "D5P4_W_INTERACTION": "0.5",
             "BEAM_LAYOUT": "global",
+            "SHARD_RESULTS_ROOT": "/tmp/shared-d5p4-shards",
+            "RESUME_DB_DIR": "/tmp/shared-d5p4-resume",
             "DRY_RUN": "1",
         },
     )
@@ -297,6 +299,8 @@ def test_d5p4_beam_scratch_launchers_keep_weight_and_layout_namespaces_distinct(
     assert "transversal=false" in local
     assert "n_groups=9 group_size=1" in local
     assert "global_w0p5" in local
+    assert "/tmp/shared-d5p4-shards/global_w0p5/4gpu" in local
+    assert "/tmp/shared-d5p4-resume/global_w0p5/4gpu" in local
     assert "--expected-transversal=false" in local
     assert "--expected-weight=0.5" in local
     launcher_text = LOCAL_D5P4_BEAM_SCRIPT.read_text()
