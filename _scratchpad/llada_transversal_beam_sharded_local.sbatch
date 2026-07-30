@@ -4,11 +4,11 @@
 # It follows .scripts/run.sbatch storage/environment conventions while splitting
 # GSM8K across independent one-GPU workers (not torch.distributed).
 #
-# Default: four A100 workers. Submit from the repository root:
+# Default: four A100 workers with eight CPUs per GPU. Submit from the repository root:
 #   sbatch _scratchpad/llada_transversal_beam_sharded_local.sbatch
 #
-# Override the shard/GPU count through the Slurm allocation, for example:
-#   sbatch --ntasks=3 --gres=gpu:a100:3 \
+# Override resources using the same shape as .scripts/run.sbatch, for example:
+#   sbatch --gres=gpu:a100:2 --cpus-per-gpu=8 --mem-per-cpu=4G \
 #     _scratchpad/llada_transversal_beam_sharded_local.sbatch
 #
 # Deliberately no #SBATCH --time directive.
@@ -18,9 +18,8 @@
 #SBATCH --account=mee
 #SBATCH --qos=mee_short
 #SBATCH --nodes=1
-#SBATCH --ntasks=4
 #SBATCH --gres=gpu:a100:4
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-cpu=4G
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%j.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%j.err
@@ -36,8 +35,8 @@ BRAIN_ROOT="${BRAIN_ROOT:-/Brain/private/j21lys}"
 BUV="${BUV:-${BRAIN_ROOT}/.local/bin/uv}"
 SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
 
-ALLOCATED_TASKS="${SLURM_NTASKS:-4}"
-NUM_WORKERS="${NUM_WORKERS:-${ALLOCATED_TASKS}}"
+ALLOCATED_GPUS="${SLURM_GPUS_ON_NODE:-4}"
+NUM_WORKERS="${NUM_WORKERS:-${ALLOCATED_GPUS}}"
 RESULTS_ROOT="${RESULTS_ROOT:-${BRAIN_ROOT}/results/llada_ltr_beam_comparison_local}"
 FINAL_OUTPUT_DIR="${RESULTS_ROOT}/transversal_beam"
 SHARD_RESULTS_ROOT="${SHARD_RESULTS_ROOT:-${BRAIN_ROOT}/results/llada_ltr_beam_transversal_shards/${NUM_WORKERS}gpu}"
@@ -52,16 +51,16 @@ SEED="${SEED:-42}"
 COMPILE_MODEL="${COMPILE_MODEL:-true}"
 DRY_RUN="${DRY_RUN:-0}"
 
-if ! [[ "${ALLOCATED_TASKS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "SLURM_NTASKS must be a positive integer, got ${ALLOCATED_TASKS}" >&2
+if ! [[ "${ALLOCATED_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "SLURM_GPUS_ON_NODE must be a positive integer, got ${ALLOCATED_GPUS}" >&2
   exit 1
 fi
 if ! [[ "${NUM_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "NUM_WORKERS must be a positive integer, got ${NUM_WORKERS}" >&2
   exit 1
 fi
-if (( NUM_WORKERS > ALLOCATED_TASKS )); then
-  echo "NUM_WORKERS=${NUM_WORKERS} exceeds the ${ALLOCATED_TASKS} allocated Slurm tasks" >&2
+if (( NUM_WORKERS > ALLOCATED_GPUS )); then
+  echo "NUM_WORKERS=${NUM_WORKERS} exceeds the ${ALLOCATED_GPUS} allocated GPUs" >&2
   exit 1
 fi
 
@@ -103,7 +102,6 @@ WORKER_COMMAND=(
   --exclusive
   --nodes=1
   --ntasks="${NUM_WORKERS}"
-  --cpus-per-task=8
   --gpus-per-task=1
   --gpu-bind=single:1
   --kill-on-bad-exit=1
