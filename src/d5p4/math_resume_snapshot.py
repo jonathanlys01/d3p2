@@ -21,7 +21,13 @@ from d5p4.result_schema import build_generation_result_payload
 WORKFLOW_ID = "math_generation:llada"
 MODE = "math_generation"
 DEFAULT_ARMS = ("independent_lr", "classic_beam", "d5p4")
-SUPPORTED_ARMS = (*DEFAULT_ARMS, "greedy_beam", "transversal_beam")
+SUPPORTED_ARMS = (
+    *DEFAULT_ARMS,
+    "greedy_beam",
+    "transversal_beam",
+    "d5p4_beam",
+    "transversal_d5p4_beam",
+)
 
 
 class SnapshotError(RuntimeError):
@@ -74,7 +80,7 @@ def _json_list(value: str, *, field: str, db_path: Path) -> list[Any]:
     return parsed
 
 
-def _arm_from_config(config: dict[str, Any]) -> str | None:
+def _arm_from_config(config: dict[str, Any]) -> str | None:  # noqa: PLR0911
     decoder = str(config.get("llada_decoder", "diffusion"))
     method = str(config.get("method", "baseline"))
     force_left_to_right = bool(config.get("force_left_to_right", False))
@@ -84,6 +90,8 @@ def _arm_from_config(config: dict[str, Any]) -> str | None:
     # `method=ltr_beam` is the boundary where transversal became meaningful
     # to classic beam. Historical method=baseline runs keep their old global
     # classification even though their then-inert transversal default was true.
+    if decoder == "classic_beam" and method == "greedy_map":
+        return "transversal_d5p4_beam" if transversal else "d5p4_beam"
     if decoder == "classic_beam" and method == "ltr_beam" and transversal:
         return "transversal_beam"
     if decoder == "classic_beam" and method in {"baseline", "ltr_beam"}:
@@ -484,7 +492,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_ARMS,
         help=(
             "Arm to export; repeat as needed. Defaults to the legacy three comparison arms; "
-            "request transversal_beam explicitly for the four-arm LTR comparison."
+            "request transversal_beam, d5p4_beam, or transversal_d5p4_beam explicitly."
         ),
     )
     parser.add_argument(

@@ -216,11 +216,17 @@ def test_snapshot_distinguishes_new_ltr_beam_modes_without_relabeling_legacy_run
     }
     assert _arm_from_config({**common, "method": "ltr_beam", "transversal": False}) == "classic_beam"
     assert _arm_from_config({**common, "method": "ltr_beam", "transversal": True}) == "transversal_beam"
+    assert _arm_from_config({**common, "method": "greedy_map", "transversal": False}) == "d5p4_beam"
+    assert (
+        _arm_from_config({**common, "method": "greedy_map", "transversal": True})
+        == "transversal_d5p4_beam"
+    )
     # Before method=ltr_beam, classic beam ignored the default-true transversal field.
     assert _arm_from_config({**common, "method": "baseline", "transversal": True}) == "classic_beam"
 
 
-def test_discovery_routes_global_and_transversal_ltr_beam_to_different_math_paths(tmp_path):
+@pytest.mark.parametrize("method", ["ltr_beam", "greedy_map"])
+def test_discovery_routes_global_and_transversal_classic_beam_to_different_math_paths(tmp_path, method):
     results_root = tmp_path / "results"
     global_dir = results_root / "classic_beam"
     transversal_dir = results_root / "transversal_beam"
@@ -239,7 +245,7 @@ def test_discovery_routes_global_and_transversal_ltr_beam_to_different_math_path
     ):
         payload = {
             "config": {
-                "method": "ltr_beam",
+                "method": method,
                 "llada_decoder": "classic_beam",
                 "qa_dataset": "gsm8k",
                 "transversal": transversal,

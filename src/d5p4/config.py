@@ -301,7 +301,7 @@ class Config:
         elif self.model == "dream":
             self._validate_dream()
 
-    def _validate_llada(self):
+    def _validate_llada(self):  # noqa: C901
         assert self.llada_decoder in LLADA_DECODER_CHOICES, (
             f"llada_decoder must be one of {sorted(LLADA_DECODER_CHOICES)}, got {self.llada_decoder!r}"
         )
@@ -309,9 +309,20 @@ class Config:
             assert self.classic_beam_branching_factor > 0, "classic_beam_branching_factor must be positive"
         if self.llada_decoder == "classic_beam":
             assert self.cfg_scale == 1.0, "classic_beam requires conditional-only cfg_scale=1.0"
-            assert self.method == "ltr_beam", "classic_beam requires method=ltr_beam"
+            assert self.method in {"ltr_beam", "greedy_map"}, (
+                "classic_beam requires method=ltr_beam or method=greedy_map"
+            )
             assert not self.logits_eos_inf, "classic_beam requires logits_eos_inf=false so beams can terminate"
             assert not self.force_left_to_right, "classic_beam is already left-to-right; unset force_left_to_right"
+            if self.method == "greedy_map":
+                assert self._w_interaction >= 0.0, "classic-beam greedy_map requires _w_interaction >= 0"
+                assert self._kernel_method == "additive", (
+                    "classic-beam greedy_map requires _kernel_method=additive"
+                )
+                assert self._kernel_type == "cosine", "classic-beam greedy_map requires _kernel_type=cosine"
+                assert self._kernel_power == 1, "classic-beam greedy_map requires _kernel_power=1"
+                assert self._w_split == 0.0, "classic-beam greedy_map requires _w_split=0"
+                assert self._temperature == 0.0, "classic-beam greedy_map requires _temperature=0"
             # beam_size comes from n_groups * group_size; beam search at width 1 is greedy decoding,
             # which is almost never what was intended and is otherwise silent.
             assert self.batch_size > 1, "classic_beam requires batch_size=n_groups*group_size > 1, got 1"

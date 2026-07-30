@@ -8,11 +8,16 @@ from torch import nn
 from d5p4.config import Config
 from d5p4.diffusion_llada import (
     LLADASampler,
+    _classic_beam_position_log_probs,
+    _d5p4_beam_position_outputs,
+    _select_d5p4_pool,
     leftmost_transfer_mask,
     left_to_right_beam_sample,
+    left_to_right_d5p4_beam_sample,
 )
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from d5p4.subsample import get_subsample_selector
+from d5p4.subsample.greedy_map import GreedyMAPKernelSelector
 
 
 MASK_TOKEN_ID = 6
@@ -26,6 +31,21 @@ class RecordingMaskedLM(nn.Module):
         self.config = SimpleNamespace(mask_token_id=MASK_TOKEN_ID, vocab_size=VOCAB_SIZE)
         self.logits_fn = logits_fn or self._default_logits
         self.calls: list[tuple[torch.Tensor, torch.Tensor, int]] = []
+        self.hidden_state_requests: list[bool] = []
+        self.input_embeddings = nn.Embedding(VOCAB_SIZE, 4)
+        with torch.no_grad():
+            token_ids = torch.arange(VOCAB_SIZE, dtype=torch.float32)
+            self.input_embeddings.weight.copy_(
+                torch.stack(
+                    (
+                        token_ids,
+                        token_ids.remainder(2),
+                        token_ids.remainder(3),
+                        torch.ones_like(token_ids),
+                    ),
+                    dim=1,
+                ),
+            )
 
     @staticmethod
     def _default_logits(input_ids: torch.Tensor, pos: int) -> torch.Tensor:
@@ -47,13 +67,29 @@ class RecordingMaskedLM(nn.Module):
         logits_slice,
     ):
         assert return_dict
-        assert not output_hidden_states
         assert last_hidden_state_only
         assert logits_slice.stop == logits_slice.start + 1
         pos = logits_slice.start
         self.calls.append((input_ids.clone(), attention_mask.clone(), pos))
+        self.hidden_state_requests.append(output_hidden_states)
         logits = self.logits_fn(input_ids, pos)
-        return SimpleNamespace(logits=logits.unsqueeze(1))
+        hidden_states = None
+        if output_hidden_states:
+            values = input_ids.float()
+            hidden = torch.stack(
+                (
+                    values,
+                    values.remainder(2),
+                    values.remainder(3),
+                    torch.ones_like(values),
+                ),
+                dim=-1,
+            )
+            hidden_states = (hidden,)
+        return SimpleNamespace(logits=logits.unsqueeze(1), hidden_states=hidden_states)
+
+    def get_input_embeddings(self):
+        return self.input_embeddings
 
 
 def _expected_score(model: RecordingMaskedLM, sequence: torch.Tensor, generation_start: int) -> float:
@@ -330,13 +366,13 @@ def test_classic_beam_config_requires_conditional_ltr_beam_method():
             cfg_scale=2.0,
             method="ltr_beam",
         )
-    with pytest.raises(AssertionError, match="method=ltr_beam"):
+    with pytest.raises(AssertionError, match="method=ltr_beam or method=greedy_map"):
         Config(
             disable_sys_args=True,
             model="llada",
             llada_decoder="classic_beam",
             cfg_scale=1.0,
-            method="greedy_map",
+            method="baseline",
         )
     with pytest.raises(AssertionError, match="logits_eos_inf"):
         Config(
@@ -363,6 +399,34 @@ def test_classic_beam_config_requires_conditional_ltr_beam_method():
             llada_decoder="diffusion",
             method="ltr_beam",
         )
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ({"_w_interaction": -1.0}, "_w_interaction >= 0"),
+        ({"_kernel_method": "multiplicative"}, "_kernel_method=additive"),
+        ({"_kernel_type": "rbf"}, "_kernel_type=cosine"),
+        ({"_kernel_power": 2}, "_kernel_power=1"),
+        ({"_w_split": 1.0}, "_w_split=0"),
+        ({"_temperature": 0.5}, "_temperature=0"),
+    ],
+)
+def test_classic_beam_greedy_map_rejects_unsupported_settings(override, error):
+    kwargs = {
+        "disable_sys_args": True,
+        "model": "llada",
+        "llada_decoder": "classic_beam",
+        "cfg_scale": 1.0,
+        "method": "greedy_map",
+        "transversal": False,
+        "n_groups": 3,
+        "group_size": 1,
+        "_kernel_type": "cosine",
+        **override,
+    }
+    with pytest.raises(AssertionError, match=error):
+        Config(**kwargs)
 
 
 def test_forced_left_to_right_relaxes_nothing_else_in_llada_validation():
@@ -440,6 +504,331 @@ def test_tiny_llada_model_runs_classic_beam_forward():
     assert scores.shape == (1, 2)
     assert not torch.any(sequences[:, :, 2:] == config.mask_token_id)
     assert torch.isfinite(scores).all()
+
+
+@pytest.mark.parametrize(
+    ("num_groups", "beam_size", "branching_factor", "generation_length"),
+    [
+        (1, 3, 3, 1),
+        (1, 6, 3, 4),
+        (3, 6, 3, 2),
+        (3, 9, 3, 4),
+    ],
+)
+@pytest.mark.parametrize("batched", [False, True])
+def test_zero_weight_d5p4_beam_is_bit_identical_to_ltr_beam(
+    num_groups,
+    beam_size,
+    branching_factor,
+    generation_length,
+    batched,
+):
+    prompts = torch.tensor([[8, 4], [9, 3]], dtype=torch.long)
+    if not batched:
+        prompts = prompts[:1]
+    attention = torch.ones_like(prompts)
+    kwargs = {
+        "generation_length": generation_length,
+        "beam_size": beam_size,
+        "branching_factor": branching_factor,
+        "num_groups": num_groups,
+    }
+
+    classic = left_to_right_beam_sample(RecordingMaskedLM(), prompts, attention, **kwargs)
+    quality_model = RecordingMaskedLM()
+    quality_only = left_to_right_d5p4_beam_sample(
+        quality_model,
+        prompts,
+        attention,
+        diversity_weight=0.0,
+        **kwargs,
+    )
+
+    assert torch.equal(quality_only[0], classic[0])
+    assert torch.equal(quality_only[1], classic[1])
+    assert quality_only[2] == classic[2]
+    generated = classic[0][:, :, 1:]
+    has_eos = (generated == EOS_TOKEN_ID).any(dim=-1)
+    first_eos = (generated == EOS_TOKEN_ID).long().argmax(dim=-1) + 1
+    lengths = torch.where(has_eos, first_eos, torch.full_like(first_eos, generated.shape[-1]))
+    assert torch.equal(quality_only[1] * lengths, classic[1] * lengths)
+    # The two best live continuations share their parent: D5P4 does not impose
+    # a one-child-per-parent constraint at the quality-only boundary.
+    assert quality_only[0][0, 1, 1] == quality_only[0][0, 2, 1]
+    assert not any(quality_model.hidden_state_requests)
+
+
+def test_zero_weight_d5p4_beam_preserves_eos_and_parent_branching_exactly():
+    def logits_fn(input_ids: torch.Tensor, pos: int) -> torch.Tensor:
+        logits = torch.full((input_ids.shape[0], VOCAB_SIZE), -20.0)
+        if pos == 1:
+            logits[:, EOS_TOKEN_ID] = 0.0
+            logits[:, 1] = -0.1
+        else:
+            parent_is_one = input_ids[:, 1] == 1
+            logits[:, EOS_TOKEN_ID] = -0.2
+            logits[parent_is_one, 2] = 8.0
+            logits[parent_is_one, 3] = 7.9
+        return logits
+
+    prompt = torch.tensor([[4]])
+    attention = torch.ones_like(prompt)
+    kwargs = {
+        "generation_length": 4,
+        "beam_size": 3,
+        "branching_factor": 3,
+        "eos_token_ids": (EOS_TOKEN_ID,),
+    }
+    classic = left_to_right_beam_sample(RecordingMaskedLM(logits_fn), prompt, attention, **kwargs)
+    quality_only = left_to_right_d5p4_beam_sample(
+        RecordingMaskedLM(logits_fn),
+        prompt,
+        attention,
+        diversity_weight=0.0,
+        **kwargs,
+    )
+
+    assert torch.equal(quality_only[0], classic[0])
+    assert torch.equal(quality_only[1], classic[1])
+    assert quality_only[2] == classic[2]
+
+
+def test_zero_weight_d5p4_beam_delegates_without_positive_weight_path(monkeypatch):
+    expected = (
+        torch.tensor([[[1, 2]]]),
+        torch.tensor([[0.25]]),
+        7,
+    )
+    calls = []
+
+    def fake_classic(*args, **kwargs):
+        calls.append((args, kwargs))
+        return expected
+
+    class ForbiddenMAPSelector:
+        def __init__(self):
+            raise AssertionError("zero-weight path initialized frontier MAP selection")
+
+    monkeypatch.setattr("d5p4.diffusion_llada.left_to_right_beam_sample", fake_classic)
+    monkeypatch.setattr(
+        "d5p4.subsample.greedy_map.GreedyMAPKernelSelector",
+        ForbiddenMAPSelector,
+    )
+    got = left_to_right_d5p4_beam_sample(
+        RecordingMaskedLM(),
+        torch.tensor([[1]]),
+        torch.ones((1, 1), dtype=torch.long),
+        generation_length=1,
+        beam_size=1,
+        diversity_weight=0.0,
+    )
+
+    assert got is expected
+    assert len(calls) == 1
+
+
+def test_tiny_llada_zero_weight_d5p4_beam_is_bit_identical():
+    config = LLaDAConfig(
+        d_model=16,
+        n_heads=4,
+        n_layers=1,
+        vocab_size=11,
+        embedding_size=16,
+        max_sequence_length=8,
+        mask_token_id=10,
+        rope=True,
+        alibi=False,
+        flash_attention=False,
+        attention_dropout=0.0,
+        residual_dropout=0.0,
+        embedding_dropout=0.0,
+        weight_tying=True,
+        init_device="cpu",
+    )
+    model = LLaDAModelLM(config, init_params=True).eval()
+    prompt = torch.tensor([[1, 2]], dtype=torch.long)
+    attention = torch.ones_like(prompt)
+    kwargs = {"generation_length": 2, "beam_size": 3, "branching_factor": 3}
+
+    classic = left_to_right_beam_sample(model, prompt, attention, **kwargs)
+    quality_only = left_to_right_d5p4_beam_sample(
+        model,
+        prompt,
+        attention,
+        diversity_weight=0.0,
+        **kwargs,
+    )
+
+    assert torch.equal(quality_only[0], classic[0])
+    assert torch.equal(quality_only[1], classic[1])
+    assert quality_only[2] == classic[2]
+
+
+def test_tiny_llada_model_runs_positive_weight_d5p4_beam_without_extra_forward():
+    config = LLaDAConfig(
+        d_model=16,
+        n_heads=4,
+        n_layers=1,
+        vocab_size=11,
+        embedding_size=16,
+        max_sequence_length=8,
+        mask_token_id=10,
+        rope=True,
+        alibi=False,
+        flash_attention=False,
+        attention_dropout=0.0,
+        residual_dropout=0.0,
+        embedding_dropout=0.0,
+        weight_tying=True,
+        init_device="cpu",
+    )
+    model = LLaDAModelLM(config, init_params=True).eval()
+    masked = torch.tensor([[1, 2, config.mask_token_id, config.mask_token_id]], dtype=torch.long)
+    masked_attention = torch.ones_like(masked)
+    classic_pool = _classic_beam_position_log_probs(
+        model,
+        masked,
+        masked_attention,
+        pos=2,
+        mask_token_id=config.mask_token_id,
+        branching_factor=3,
+    )
+    d5p4_pool, _ = _d5p4_beam_position_outputs(
+        model,
+        masked,
+        masked_attention,
+        pos=2,
+        mask_token_id=config.mask_token_id,
+        branching_factor=3,
+    )
+    assert torch.equal(d5p4_pool, classic_pool)
+
+    sequences, scores, forwards = left_to_right_d5p4_beam_sample(
+        model,
+        torch.tensor([[1, 2]], dtype=torch.long),
+        torch.ones((1, 2), dtype=torch.long),
+        generation_length=2,
+        beam_size=3,
+        branching_factor=3,
+        diversity_weight=1.0,
+    )
+
+    assert sequences.shape == (1, 3, 4)
+    assert scores.shape == (1, 3)
+    assert forwards == 2
+    assert torch.isfinite(scores).all()
+    assert not torch.any(sequences[:, :, 2:] == config.mask_token_id)
+
+
+def test_increasing_d5p4_weight_changes_selection_from_the_same_candidate_pool():
+    scores = torch.tensor([0.0, -0.01, -0.02])
+    representations = torch.tensor(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ],
+    )
+
+    quality_dominated = _select_d5p4_pool(
+        scores,
+        representations,
+        selection_count=2,
+        diversity_weight=0.01,
+        selector=GreedyMAPKernelSelector(),
+    )
+    diversity_dominated = _select_d5p4_pool(
+        scores,
+        representations,
+        selection_count=2,
+        diversity_weight=10.0,
+        selector=GreedyMAPKernelSelector(),
+    )
+
+    assert quality_dominated.tolist() == [0, 1]
+    assert diversity_dominated.tolist() == [0, 2]
+
+
+@pytest.mark.parametrize("num_groups", [1, 3])
+def test_positive_weight_d5p4_beam_preserves_forward_count_and_population(num_groups):
+    model = RecordingMaskedLM()
+    beam_size = 6
+    sequences, scores, forwards = left_to_right_d5p4_beam_sample(
+        model,
+        torch.tensor([[9]], dtype=torch.long),
+        torch.ones((1, 1), dtype=torch.long),
+        generation_length=4,
+        beam_size=beam_size,
+        branching_factor=3,
+        num_groups=num_groups,
+        diversity_weight=2.0,
+    )
+
+    assert sequences.shape == (1, beam_size, 5)
+    assert scores.shape == (1, beam_size)
+    assert forwards == 4
+    assert len(model.calls) == forwards
+    assert all(model.hidden_state_requests)
+    assert not torch.any(sequences[:, :, 1:] == MASK_TOKEN_ID)
+
+
+@pytest.mark.parametrize(
+    ("transversal", "n_groups", "group_size"),
+    [(False, 4, 1), (True, 2, 2)],
+)
+def test_llada_sampler_zero_weight_d5p4_route_is_bit_identical(
+    transversal,
+    n_groups,
+    group_size,
+):
+    common = {
+        "disable_sys_args": True,
+        "model": "llada",
+        "llada_decoder": "classic_beam",
+        "cfg_scale": 1.0,
+        "transversal": transversal,
+        "gen_length": 3,
+        "n_groups": n_groups,
+        "group_size": group_size,
+        "classic_beam_branching_factor": 3,
+    }
+    classic_config = Config(method="ltr_beam", **common)
+    d5p4_config = Config(
+        method="greedy_map",
+        _kernel_method="additive",
+        _kernel_type="cosine",
+        _w_interaction=0.0,
+        **common,
+    )
+
+    def make_sampler(config):
+        sampler = LLADASampler.__new__(LLADASampler)
+        nn.Module.__init__(sampler)
+        sampler.config = config
+        sampler.device = "cpu"
+        sampler.model = RecordingMaskedLM()
+        sampler.distributed_utils = None
+        sampler.mask_index = MASK_TOKEN_ID
+        sampler.tokenizer = SimpleNamespace(
+            eos_token_id=EOS_TOKEN_ID,
+            get_added_vocab=dict,
+            decode=lambda tokens, **_kwargs: " ".join(str(int(token)) for token in tokens),
+        )
+        sampler._preprocess_prompt = lambda _prompt: torch.tensor([[1, 2]], dtype=torch.long)
+        return sampler
+
+    classic_sampler = make_sampler(classic_config)
+    d5p4_sampler = make_sampler(d5p4_config)
+    classic = classic_sampler.sample("prompt", return_internal_scores=True)
+    d5p4 = d5p4_sampler.sample("prompt", return_internal_scores=True)
+
+    assert torch.equal(d5p4[0], classic[0])
+    assert torch.equal(d5p4[1], classic[1])
+    classic_group = [classic_sampler.tokenizer.decode(tokens) for tokens in classic[0]]
+    d5p4_group = [d5p4_sampler.tokenizer.decode(tokens) for tokens in d5p4[0]]
+    assert d5p4_group == classic_group
+    assert d5p4_sampler.last_forward_count == classic_sampler.last_forward_count
+    assert not any(d5p4_sampler.model.hidden_state_requests)
 
 
 # ── partitioned beam search (llada_decoder="classic_beam" + transversal) ────────────────────

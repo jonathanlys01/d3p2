@@ -22,6 +22,7 @@ from d5p4.config import Cache, Config
 from d5p4.data import get_qa_dataset
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from d5p4.subsample import get_subsample_selector
+from d5p4.subsample.base import BaseSelector
 from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
@@ -368,6 +369,353 @@ def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
     return cast(torch.LongTensor, beams), cast(torch.FloatTensor, mean_scores), forward_passes
 
 
+def _d5p4_beam_position_outputs(  # noqa: PLR0913
+    model: nn.Module,
+    flat_beams: torch.Tensor,
+    flat_attention: torch.Tensor,
+    pos: int,
+    mask_token_id: int,
+    branching_factor: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return next-token log probabilities and the existing forward's context."""
+    outputs = model.forward(
+        input_ids=flat_beams,
+        attention_mask=flat_attention,
+        return_dict=True,
+        output_hidden_states=True,
+        last_hidden_state_only=True,
+        logits_slice=slice(pos, pos + 1),
+    )
+    logits = getattr(outputs, "logits", None)
+    hidden_states = getattr(outputs, "hidden_states", None)
+    if logits is None or logits.ndim != 3 or logits.shape[1] != 1:
+        shape = None if logits is None else tuple(logits.shape)
+        raise ValueError(f"Expected model logits with shape [batch * beam, 1, vocab], got {shape}")
+    if not hidden_states:
+        raise ValueError("D5P4 beam pruning requires the existing model forward's final hidden state")
+    final_hidden = hidden_states[-1]
+    if final_hidden.ndim != 3 or final_hidden.shape[:2] != flat_beams.shape:
+        raise ValueError(
+            "Expected final hidden state with shape [batch * beam, sequence, hidden], "
+            f"got {tuple(final_hidden.shape)} for beams {tuple(flat_beams.shape)}",
+        )
+
+    next_log_probs = F.log_softmax(logits[:, 0].float(), dim=-1)
+    if mask_token_id >= next_log_probs.shape[-1]:
+        raise ValueError(
+            f"mask_token_id={mask_token_id} is outside model vocabulary size {next_log_probs.shape[-1]}",
+        )
+    if branching_factor > next_log_probs.shape[-1] - 1:
+        raise ValueError(
+            f"branching_factor={branching_factor} exceeds the "
+            f"{next_log_probs.shape[-1] - 1} non-mask vocabulary entries",
+        )
+    next_log_probs[:, mask_token_id] = -torch.inf
+    return next_log_probs, final_hidden[:, pos].float()
+
+
+def _input_embedding_layer(model: nn.Module) -> nn.Module:
+    getter = getattr(model, "get_input_embeddings", None)
+    if callable(getter):
+        layer = getter()
+        if isinstance(layer, nn.Module):
+            return layer
+    original_model = getattr(model, "_orig_mod", None)
+    getter = getattr(original_model, "get_input_embeddings", None)
+    if callable(getter):
+        layer = getter()
+        if isinstance(layer, nn.Module):
+            return layer
+    raise ValueError("D5P4 beam pruning requires model.get_input_embeddings()")
+
+
+def _d5p4_candidate_representations(
+    model: nn.Module,
+    parent_context: torch.Tensor,
+    candidate_tokens: torch.Tensor,
+) -> torch.Tensor:
+    """Combine contextual parent state with each proposed token embedding."""
+    batch_size, beam_size, branching_factor = candidate_tokens.shape
+    hidden_size = parent_context.shape[-1]
+    parent = parent_context.reshape(batch_size, beam_size, hidden_size)
+    parent = F.normalize(parent, dim=-1, eps=1e-12).unsqueeze(2).expand(-1, -1, branching_factor, -1)
+
+    token_embeddings = _input_embedding_layer(model)(candidate_tokens).float()
+    token_embeddings = F.normalize(token_embeddings, dim=-1, eps=1e-12)
+    return torch.cat((parent, token_embeddings), dim=-1) * (2.0**-0.5)
+
+
+def _select_d5p4_pool(
+    candidate_scores: torch.Tensor,
+    candidate_representations: torch.Tensor,
+    selection_count: int,
+    diversity_weight: float,
+    selector,
+) -> torch.Tensor:
+    """Select a quality-ordered D5P4 subset from one flattened candidate pool."""
+    if candidate_scores.ndim != 1:
+        raise ValueError(f"candidate_scores must be one-dimensional, got {tuple(candidate_scores.shape)}")
+    if candidate_representations.ndim != 2 or candidate_representations.shape[0] != candidate_scores.shape[0]:
+        raise ValueError(
+            "candidate_representations must have one row per score, got "
+            f"{tuple(candidate_representations.shape)} and {tuple(candidate_scores.shape)}",
+        )
+    if not 0 < selection_count <= candidate_scores.numel():
+        raise ValueError(f"Invalid selection_count={selection_count} for {candidate_scores.numel()} candidates")
+
+    quality_order = torch.topk(candidate_scores, k=selection_count).indices
+    valid_indices = torch.nonzero(torch.isfinite(candidate_scores), as_tuple=False).squeeze(-1)
+    if valid_indices.numel() <= selection_count:
+        return quality_order
+
+    finite_scores = candidate_scores[valid_indices].float()
+    finite_representations = F.normalize(
+        candidate_representations[valid_indices].float(),
+        dim=-1,
+        eps=1e-12,
+    )
+    quality = torch.exp(finite_scores - finite_scores.max())
+    similarity = finite_representations @ finite_representations.T
+    kernel = torch.diag(quality) + diversity_weight * similarity
+    selected_finite = selector.select(kernel, selection_count)
+    selected = valid_indices[selected_finite]
+    # A DPP selects a set. Keep the beam slots ordered by the same cumulative
+    # quality used by classic beam so downstream scores remain easy to inspect.
+    order = torch.topk(candidate_scores[selected], k=selection_count).indices
+    return selected[order]
+
+
+def _select_d5p4_frontier(  # noqa: PLR0913
+    candidate_scores: torch.Tensor,
+    candidate_tokens: torch.Tensor,
+    candidate_representations: torch.Tensor,
+    num_groups: int,
+    diversity_weight: float,
+    selector,
+    *,
+    split_seed: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Select the next global or partitioned D5P4 beam frontier."""
+    batch_size, beam_size, branching_factor = candidate_scores.shape
+    beams_per_group = beam_size // num_groups
+
+    parent_rows: list[torch.Tensor] = []
+    token_rows: list[torch.Tensor] = []
+    score_rows: list[torch.Tensor] = []
+    for batch_index in range(batch_size):
+        if split_seed or num_groups == 1:
+            flat_scores = candidate_scores[batch_index].flatten()
+            flat_tokens = candidate_tokens[batch_index].flatten()
+            flat_representations = candidate_representations[batch_index].flatten(0, 1)
+            selected = _select_d5p4_pool(
+                flat_scores,
+                flat_representations,
+                beam_size,
+                diversity_weight,
+                selector,
+            )
+            if split_seed and num_groups > 1:
+                order = (
+                    torch.arange(beams_per_group, device=selected.device).unsqueeze(0) * num_groups
+                    + torch.arange(num_groups, device=selected.device).unsqueeze(1)
+                ).reshape(-1)
+                selected = selected[order]
+            parents = torch.div(selected, branching_factor, rounding_mode="floor")
+            parent_rows.append(parents)
+            token_rows.append(flat_tokens[selected])
+            score_rows.append(flat_scores[selected])
+            continue
+
+        grouped_scores = candidate_scores[batch_index].view(
+            num_groups,
+            beams_per_group,
+            branching_factor,
+        )
+        grouped_tokens = candidate_tokens[batch_index].view(
+            num_groups,
+            beams_per_group,
+            branching_factor,
+        )
+        grouped_representations = candidate_representations[batch_index].view(
+            num_groups,
+            beams_per_group,
+            branching_factor,
+            -1,
+        )
+        batch_parents: list[torch.Tensor] = []
+        batch_tokens: list[torch.Tensor] = []
+        batch_scores: list[torch.Tensor] = []
+        for group in range(num_groups):
+            flat_scores = grouped_scores[group].flatten()
+            flat_tokens = grouped_tokens[group].flatten()
+            flat_representations = grouped_representations[group].flatten(0, 1)
+            selected = _select_d5p4_pool(
+                flat_scores,
+                flat_representations,
+                beams_per_group,
+                diversity_weight,
+                selector,
+            )
+            local_parents = torch.div(selected, branching_factor, rounding_mode="floor")
+            batch_parents.append(local_parents + group * beams_per_group)
+            batch_tokens.append(flat_tokens[selected])
+            batch_scores.append(flat_scores[selected])
+        parent_rows.append(torch.cat(batch_parents))
+        token_rows.append(torch.cat(batch_tokens))
+        score_rows.append(torch.cat(batch_scores))
+
+    return torch.stack(parent_rows), torch.stack(token_rows), torch.stack(score_rows)
+
+
+@torch.inference_mode()
+def left_to_right_d5p4_beam_sample(  # noqa: C901, PLR0913, PLR0915
+    model: nn.Module,
+    input_ids: torch.LongTensor,
+    attention_mask: torch.Tensor,
+    generation_length: int,
+    beam_size: int,
+    diversity_weight: float,
+    branching_factor: int | None = None,
+    eos_token_ids: tuple[int, ...] = (),
+    num_groups: int = 1,
+) -> tuple[torch.LongTensor, torch.FloatTensor, int]:
+    """D5P4-guided LTR beam search.
+
+    The zero-diversity boundary deliberately delegates to the established LTR beam
+    implementation. This is the compatibility contract: quality-only D5P4 must return
+    the exact same candidates, ordering, scores, EOS behavior, and forward count.
+    """
+    if diversity_weight < 0.0:
+        raise ValueError(f"diversity_weight must be non-negative, got {diversity_weight}")
+    if diversity_weight == 0.0:
+        return left_to_right_beam_sample(
+            model,
+            input_ids,
+            attention_mask,
+            generation_length,
+            beam_size,
+            branching_factor,
+            eos_token_ids,
+            num_groups,
+        )
+
+    from d5p4.subsample.greedy_map import GreedyMAPKernelSelector
+
+    branching_factor, mask_token_id = _validate_classic_beam_inputs(
+        model,
+        input_ids,
+        attention_mask,
+        generation_length,
+        beam_size,
+        branching_factor,
+        num_groups,
+    )
+    if any(token_id == mask_token_id for token_id in eos_token_ids):
+        raise ValueError("eos_token_ids must not contain the mask token")
+
+    batch_size, generation_start = input_ids.shape
+    seq_len = generation_start + generation_length
+    device = input_ids.device
+    beams_per_group = beam_size // num_groups
+
+    prompt = input_ids.unsqueeze(1).expand(batch_size, beam_size, generation_start)
+    masked_suffix = torch.full(
+        (batch_size, beam_size, generation_length),
+        mask_token_id,
+        dtype=torch.long,
+        device=device,
+    )
+    beams = torch.cat((prompt, masked_suffix), dim=-1)
+
+    prompt_attention = attention_mask.to(device=device)
+    generation_attention = torch.ones(
+        (batch_size, generation_length),
+        dtype=prompt_attention.dtype,
+        device=device,
+    )
+    full_attention = torch.cat((prompt_attention, generation_attention), dim=-1)
+    beam_attention = full_attention.unsqueeze(1).expand(batch_size, beam_size, seq_len)
+
+    scores = torch.full((batch_size, beam_size), -torch.inf, dtype=torch.float32, device=device)
+    scores[:, 0] = 0.0
+    finished = torch.zeros((batch_size, beam_size), dtype=torch.bool, device=device)
+    lengths = torch.zeros((batch_size, beam_size), dtype=torch.long, device=device)
+    eos_tensor = torch.tensor(eos_token_ids, dtype=torch.long, device=device)
+    pad_token_id = eos_token_ids[0] if eos_token_ids else mask_token_id
+    forward_passes = 0
+    selector = GreedyMAPKernelSelector()
+
+    for pos in range(generation_start, seq_len):
+        if bool(finished.all()):
+            beams[:, :, pos:] = pad_token_id
+            break
+
+        flat_beams = beams.reshape(batch_size * beam_size, seq_len)
+        flat_attention = beam_attention.reshape(batch_size * beam_size, seq_len)
+        next_log_probs, parent_context = _d5p4_beam_position_outputs(
+            model,
+            flat_beams,
+            flat_attention,
+            pos,
+            mask_token_id,
+            branching_factor,
+        )
+        forward_passes += 1
+
+        candidate_log_probs, candidate_tokens = torch.topk(
+            next_log_probs,
+            k=branching_factor,
+            dim=-1,
+        )
+        candidate_log_probs = candidate_log_probs.reshape(batch_size, beam_size, branching_factor)
+        candidate_tokens = candidate_tokens.reshape(batch_size, beam_size, branching_factor)
+        candidate_log_probs = torch.where(
+            finished.unsqueeze(-1),
+            torch.full_like(candidate_log_probs, -torch.inf),
+            candidate_log_probs,
+        )
+        candidate_tokens = torch.where(
+            finished.unsqueeze(-1),
+            torch.full_like(candidate_tokens, pad_token_id),
+            candidate_tokens,
+        )
+        candidate_log_probs[:, :, 0] = torch.where(
+            finished,
+            torch.zeros_like(candidate_log_probs[:, :, 0]),
+            candidate_log_probs[:, :, 0],
+        )
+        candidate_scores = scores.unsqueeze(-1) + candidate_log_probs
+        candidate_representations = _d5p4_candidate_representations(
+            model,
+            parent_context,
+            candidate_tokens,
+        )
+
+        parent_indices, selected_tokens, next_scores = _select_d5p4_frontier(
+            candidate_scores,
+            candidate_tokens,
+            candidate_representations,
+            num_groups,
+            diversity_weight,
+            selector,
+            split_seed=pos == generation_start,
+        )
+
+        gather_indices = parent_indices.unsqueeze(-1).expand(batch_size, beam_size, seq_len)
+        beams = torch.gather(beams, dim=1, index=gather_indices)
+        beams[:, :, pos] = selected_tokens
+        scores = next_scores
+
+        was_finished = torch.gather(finished, dim=1, index=parent_indices)
+        lengths = torch.gather(lengths, dim=1, index=parent_indices) + (~was_finished).long()
+        finished = was_finished | torch.isin(selected_tokens, eos_tensor)
+
+    if num_groups > 1:
+        assert beams.shape[1] == num_groups * beams_per_group
+    mean_scores = scores / lengths.clamp(min=1)
+    return cast(torch.LongTensor, beams), cast(torch.FloatTensor, mean_scores), forward_passes
+
+
 def topk_row_transfer_mask(confidence: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
     """Boolean mask selecting, per row j, the counts[j] highest-confidence positions.
 
@@ -421,7 +769,16 @@ class LLADASampler(nn.Module):
 
         model_args = process_model_args(config.llada_model_path, cache_dir=config.cache_dir, dtype="auto")
         self.model = LLaDAModelLM.from_pretrained(**model_args)
-        self.selector = get_subsample_selector(config)
+        self.selector: BaseSelector
+        if config.llada_decoder == "classic_beam" and config.method == "greedy_map":
+            # D5P4 frontier state is created lazily only for positive weights.
+            # At w=0 this lightweight runtime placeholder preserves the strict
+            # delegation boundary without constructing the diffusion MAP selector.
+            from d5p4.subsample.ltr_beam import LTRBeamSelection
+
+            self.selector = LTRBeamSelection(config)
+        else:
+            self.selector = get_subsample_selector(config)
         self.config: Config = config
         self.tokenizer = get_tokenizer(config, "llada")
 
@@ -445,6 +802,7 @@ class LLADASampler(nn.Module):
         configure_runtime(config)
         rebuild_selector = (
             config.method != self.config.method
+            or config.llada_decoder != self.config.llada_decoder
             or config.n_groups != self.config.n_groups
             or config.group_size != self.config.group_size
             or config.transversal != self.config.transversal
@@ -452,7 +810,12 @@ class LLADASampler(nn.Module):
         )
         self.config = config
         if rebuild_selector:
-            self.selector = get_subsample_selector(config)
+            if config.llada_decoder == "classic_beam" and config.method == "greedy_map":
+                from d5p4.subsample.ltr_beam import LTRBeamSelection
+
+                self.selector = LTRBeamSelection(config)
+            else:
+                self.selector = get_subsample_selector(config)
         else:
             self.selector.config = config
         self.distributed_utils = self.selector.distributed_utils if self.selector.distributed_utils else None
@@ -628,16 +991,28 @@ class LLADASampler(nn.Module):
         attention_mask = torch.ones_like(prompt_tokens)
         branching_factor = self.config.classic_beam_branching_factor
         with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):  # type: ignore
-            sequences, scores, forward_passes = left_to_right_beam_sample(
-                self.model,
-                cast(torch.LongTensor, prompt_tokens),
-                attention_mask,
-                generation_length=self.config.gen_length,
-                beam_size=self.config.batch_size,
-                branching_factor=branching_factor,
-                eos_token_ids=self._eos_token_ids(),
-                num_groups=num_groups,
-            )
+            common_kwargs = {
+                "generation_length": self.config.gen_length,
+                "beam_size": self.config.batch_size,
+                "branching_factor": branching_factor,
+                "eos_token_ids": self._eos_token_ids(),
+                "num_groups": num_groups,
+            }
+            if self.config.method == "greedy_map":
+                sequences, scores, forward_passes = left_to_right_d5p4_beam_sample(
+                    self.model,
+                    cast(torch.LongTensor, prompt_tokens),
+                    attention_mask,
+                    diversity_weight=self.config._w_interaction,
+                    **common_kwargs,
+                )
+            else:
+                sequences, scores, forward_passes = left_to_right_beam_sample(
+                    self.model,
+                    cast(torch.LongTensor, prompt_tokens),
+                    attention_mask,
+                    **common_kwargs,
+                )
 
         self.last_forward_count = forward_passes
         sequences = sequences.squeeze(0)

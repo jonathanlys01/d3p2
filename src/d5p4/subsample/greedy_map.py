@@ -169,6 +169,75 @@ def _run_triton_greedy_map(
     return selected[best_traj, :]
 
 
+class GreedyMAPKernelSelector:
+    """Reusable full-exploration greedy MAP selector for a supplied PSD kernel.
+
+    Unlike :class:`GreedyMAP`, this helper does not build a kernel from diffusion
+    cache state. It is used by the separate D5P4 beam frontier, whose quality and
+    candidate representations come directly from beam expansion.
+    """
+
+    def __init__(self):
+        self._signature: tuple[int, int, str, str] | None = None
+        self._item_to_group: torch.Tensor | None = None
+        self._group_member_table: torch.Tensor | None = None
+        self._start_items: torch.Tensor | None = None
+        self._bufs: list[torch.Tensor] = []
+
+    def _prepare(self, kernel: torch.Tensor, selection_count: int) -> None:
+        n_items = kernel.size(0)
+        signature = (n_items, selection_count, str(kernel.device), str(kernel.dtype))
+        if self._signature == signature:
+            return
+
+        device = kernel.device
+        self._item_to_group = torch.arange(n_items, device=device)
+        self._group_member_table = torch.arange(n_items, device=device).view(n_items, 1)
+        self._start_items = torch.arange(n_items, device=device)
+        if HAS_TRITON and device.type == "cuda":
+            self._bufs = [
+                torch.empty(n_items, dtype=kernel.dtype, device=device),
+                torch.empty((n_items, selection_count), dtype=torch.long, device=device),
+                torch.empty(n_items, dtype=kernel.dtype, device=device),
+                torch.empty(
+                    (n_items, max(1, selection_count - 1), n_items),
+                    dtype=kernel.dtype,
+                    device=device,
+                ),
+            ]
+        else:
+            self._bufs = []
+        self._signature = signature
+
+    def select(self, kernel: torch.Tensor, selection_count: int) -> torch.Tensor:
+        """Select ``selection_count`` unique items from ``kernel``."""
+        if kernel.ndim != 2 or kernel.shape[0] != kernel.shape[1]:
+            raise ValueError(f"kernel must be square, got {tuple(kernel.shape)}")
+        if not 0 < selection_count <= kernel.size(0):
+            raise ValueError(
+                f"selection_count must be in [1, {kernel.size(0)}], got {selection_count}",
+            )
+        self._prepare(kernel, selection_count)
+        assert self._item_to_group is not None
+        assert self._group_member_table is not None
+        assert self._start_items is not None
+
+        if HAS_TRITON and kernel.device.type == "cuda":
+            return _run_triton_greedy_map(
+                kernel,
+                selection_count,
+                self._item_to_group,
+                self._bufs,
+            )
+        return _greedy_map_cpu(
+            kernel,
+            selection_count,
+            self._item_to_group,
+            self._group_member_table,
+            self._start_items,
+        )
+
+
 class GreedyMAP(BaseSelector):
     """Greedy MAP-DPP selector maximizing log-determinant of the kernel submatrix."""
 

@@ -1,9 +1,9 @@
 """Run one contiguous GSM8K shard, or merge the resulting JSON files.
 
-This is intentionally a scratchpad helper for
-``llada_transversal_beam_sharded.slurm``. Classic beam search is single-process,
-so the Slurm launcher starts independent processes and this module gives each
-process a disjoint contiguous shard of the shuffled/truncated GSM8K frame.
+This is intentionally a scratchpad helper for the LTR and D5P4 classic-beam
+launchers. Classic beam search is single-process, so each launcher starts
+independent processes and this module gives each process a disjoint contiguous
+shard of the shuffled/truncated GSM8K frame.
 """
 
 from __future__ import annotations
@@ -70,7 +70,12 @@ def _worker() -> None:
         [
             f"results_dir={shard_results}",
             f"resume_db_dir={shard_resume}",
-            f"comment=LLaDA GSM8K transversal beam 3x3 shard {rank + 1}/{world_size}",
+            "comment="
+            + os.environ.get(
+                "D5P4_SHARD_COMMENT",
+                "LLaDA GSM8K transversal beam 3x3",
+            )
+            + f" shard {rank + 1}/{world_size}",
         ],
     )
 
@@ -124,7 +129,13 @@ def _concatenate(payloads: list[dict[str, Any]], key: str) -> list[Any]:
     return merged
 
 
-def _validate_payloads(payloads: list[dict[str, Any]]) -> None:
+def _validate_payloads(  # noqa: C901
+    payloads: list[dict[str, Any]],
+    *,
+    expected_method: str | None = None,
+    expected_transversal: bool | None = None,
+    expected_weight: float | None = None,
+) -> None:
     ignored_config_keys = {"comment", "results_dir", "resume_db_dir"}
     reference_config = {key: value for key, value in payloads[0]["config"].items() if key not in ignored_config_keys}
     shard_lengths: list[int] = []
@@ -152,19 +163,56 @@ def _validate_payloads(payloads: list[dict[str, Any]]) -> None:
     if max(shard_lengths) - min(shard_lengths) > 1:
         raise RuntimeError(f"Unexpectedly imbalanced contiguous shards: {shard_lengths}.")
 
+    if expected_method is not None and reference_config.get("method") != expected_method:
+        raise RuntimeError(
+            f"Expected method={expected_method!r}, got {reference_config.get('method')!r}.",
+        )
+    if expected_transversal is not None and bool(reference_config.get("transversal")) != expected_transversal:
+        raise RuntimeError(
+            f"Expected transversal={expected_transversal}, got {reference_config.get('transversal')!r}.",
+        )
+    if expected_weight is not None and float(reference_config.get("_w_interaction", 0.0)) != expected_weight:
+        raise RuntimeError(
+            f"Expected _w_interaction={expected_weight}, got {reference_config.get('_w_interaction')!r}.",
+        )
+
 
 def _merge(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description="Merge completed LLaDA GSM8K shard JSONs.")
     parser.add_argument("--shard-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--world-size", type=int, required=True)
+    parser.add_argument(
+        "--output-name",
+        default=None,
+        help="Merged JSON basename (defaults to the original LTR-beam name).",
+    )
+    parser.add_argument(
+        "--comment",
+        default=None,
+        help="Merged config comment (defaults to the original LTR-beam comment).",
+    )
+    parser.add_argument("--expected-method")
+    parser.add_argument("--expected-transversal", choices=("true", "false"))
+    parser.add_argument("--expected-weight", type=float)
     args = parser.parse_args(argv)
     if args.world_size < 1:
         parser.error("--world-size must be positive")
+    output_name = args.output_name or f"math-transversal-beam-{args.world_size}gpu.json"
+    if Path(output_name).name != output_name or not output_name.endswith(".json"):
+        parser.error("--output-name must be a .json basename")
+    expected_transversal = (
+        None if args.expected_transversal is None else args.expected_transversal == "true"
+    )
 
     source_paths = [_result_path(args.shard_root / f"{SHARD_PREFIX}{rank}") for rank in range(args.world_size)]
     payloads = [json.loads(path.read_text()) for path in source_paths]
-    _validate_payloads(payloads)
+    _validate_payloads(
+        payloads,
+        expected_method=args.expected_method,
+        expected_transversal=expected_transversal,
+        expected_weight=args.expected_weight,
+    )
 
     text_samples = _concatenate(payloads, "text_samples")
     references = _concatenate(payloads, "references")
@@ -179,7 +227,9 @@ def _merge(argv: list[str]) -> None:
     config = dict(payloads[0]["config"])
     config["results_dir"] = str(args.output_dir)
     config["resume_db_dir"] = str(args.shard_root)
-    config["comment"] = f"LLaDA GSM8K transversal beam 3x3, {args.world_size} contiguous GPU shards"
+    config["comment"] = args.comment or (
+        f"LLaDA GSM8K transversal beam 3x3, {args.world_size} contiguous GPU shards"
+    )
     ranked_metrics = _ranked_pass_metrics(results, internal_scores)
     overall_accuracy = sum(float(result["accuracy"]) for result in results) / len(results)
     generation_stats = _aggregate_generation_metadata(generation_metadata)
@@ -208,7 +258,7 @@ def _merge(argv: list[str]) -> None:
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = args.output_dir / f"math-transversal-beam-{args.world_size}gpu.json"
+    output_path = args.output_dir / output_name
     temporary_path = output_path.with_suffix(".json.tmp")
     temporary_path.write_text(json.dumps(payload, indent=4))
     os.replace(temporary_path, output_path)

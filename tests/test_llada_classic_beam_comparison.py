@@ -19,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".scripts_next" / "gsm8k_classic_beam_comparison.sh"
 LOCAL_CLUSTER_SCRIPT = REPO_ROOT / ".scripts" / "gsm8k_block1_sweep.sbatch"
 JZ_LTR_SCRIPT = REPO_ROOT / ".jz_next" / "llada_ltr_beam_comparison.slurm"
+JZ_D5P4_BEAM_SCRIPT = REPO_ROOT / "_scratchpad" / "llada_d5p4_beam_sharded.slurm"
+LOCAL_D5P4_BEAM_SCRIPT = REPO_ROOT / "_scratchpad" / "llada_d5p4_beam_sharded_local.sbatch"
 
 
 def test_ranked_metrics_use_internal_score_order():
@@ -233,6 +235,70 @@ def test_jz_ltr_comparison_distinguishes_global_and_transversal_beam_methods():
     assert "transversal=true" in transversal
     assert "n_groups=3" in transversal
     assert "group_size=3" in transversal
+
+
+def test_d5p4_beam_scratch_launchers_keep_weight_and_layout_namespaces_distinct():
+    jz_env = os.environ.copy()
+    jz_env.update(
+        {
+            "WORK_ejh": "/tmp/work",
+            "SCRATCH_ejh": "/tmp/scratch",
+            "SLURM_JOB_ID": "123",
+            "SLURM_ARRAY_JOB_ID": "123",
+            "SLURM_ARRAY_TASK_ID": "0",
+            "SLURM_ARRAY_TASK_COUNT": "4",
+            "NUM_WORKERS": "4",
+            "D5P4_W_INTERACTION": "0",
+            "BEAM_LAYOUT": "transversal",
+            "DRY_RUN": "1",
+        },
+    )
+    jz = subprocess.run(
+        ["bash", str(JZ_D5P4_BEAM_SCRIPT)],
+        cwd=REPO_ROOT,
+        env=jz_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "method=greedy_map" in jz
+    assert "_w_interaction=0" in jz
+    assert "transversal=true" in jz
+    assert "n_groups=3 group_size=3" in jz
+    assert "transversal_w0" in jz
+    assert "--expected-method=greedy_map" in jz
+    assert "--expected-transversal=true" in jz
+    assert "--expected-weight=0" in jz
+
+    local_env = os.environ.copy()
+    local_env.update(
+        {
+            "ROOT": str(REPO_ROOT),
+            "SLURM_JOB_ID": "123",
+            "SLURM_GPUS_ON_NODE": "4",
+            "NUM_WORKERS": "4",
+            "D5P4_W_INTERACTION": "0.5",
+            "BEAM_LAYOUT": "global",
+            "DRY_RUN": "1",
+        },
+    )
+    local = subprocess.run(
+        ["bash", str(LOCAL_D5P4_BEAM_SCRIPT)],
+        cwd=REPO_ROOT,
+        env=local_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "--ntasks=4" in local
+    assert "--gpus-per-task=1" in local
+    assert "method=greedy_map" in local
+    assert "_w_interaction=0.5" in local
+    assert "transversal=false" in local
+    assert "n_groups=9 group_size=1" in local
+    assert "global_w0p5" in local
+    assert "--expected-transversal=false" in local
+    assert "--expected-weight=0.5" in local
 
 
 def test_local_cluster_block1_sweep_uses_one_group_of_three_per_gpu():

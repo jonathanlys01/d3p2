@@ -70,6 +70,8 @@ def load_runs(db_path: Path) -> list[dict[str, Any]]:
 def arm_label(config: dict[str, Any]) -> str:
     decoder = config.get("llada_decoder") or "diffusion"
     if decoder == "classic_beam":
+        if config.get("method") == "greedy_map":
+            return "transversal_d5p4_beam" if config.get("transversal", False) else "d5p4_beam"
         if config.get("method") == "ltr_beam" and config.get("transversal", False):
             return "transversal_beam"
         return "classic_beam"
