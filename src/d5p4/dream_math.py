@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from datetime import datetime
+from time import perf_counter
 
 from d5p4.config import Config
 from d5p4.data.math_ds import gsm8k
@@ -148,6 +149,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 assert generation is not None
                 raw_samples = generation["tokens"]
                 scores = generation["internal_scores"] or []
+                generation_metadata = generation["generation_metadata"]
+                sample_time_s = (
+                    float(generation_metadata["wall_time_s"])
+                    if generation_metadata is not None
+                    else None
+                )
                 decoded = generation["decoded"] or _decode_generations(
                     model,
                     prompt,
@@ -162,7 +169,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             else:
                 if preflight.master:
                     print(f"Sampling {i + 1}/{len(prompts)}...")
+                sampling_start = perf_counter()
                 raw_samples, internal_scores = model.sample(prompt=prompt, return_internal_scores=True)
+                sample_time_s = perf_counter() - sampling_start
+                generation_metadata = {"wall_time_s": sample_time_s}
                 if not preflight.master:
                     continue
                 prompt_len = raw_samples.shape[1] - config.gen_length
@@ -173,6 +183,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         token_ids=raw_samples,
                         prompt_len=prompt_len,
                         internal_scores=scores,
+                        generation_metadata=generation_metadata,
                     )
                 decoded = _decode_generations(model, prompt, raw_samples, prompt_len)
                 result = None if config.skip_eval else score_generations(i, prompt, decoded)
@@ -190,9 +201,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     cur_passk = 1.0 if any(score > 0 for score in result["scores"]) else 0.0
                     run_pass1 = sum(row["accuracy"] for row in results) / len(results)
                     run_passk = sum(any(s > 0 for s in row["scores"]) for row in results) / len(results)
+                    sample_time = f"{sample_time_s:.3f}s" if sample_time_s is not None else "n/a"
                     print(
                         f"  cur_acc: {cur_pass1:.2%} | cur_pass@k: {cur_passk:.2%} | "
-                        f"run_acc: {run_pass1:.2%} | run_pass@k: {run_passk:.2%}",
+                        f"run_acc: {run_pass1:.2%} | run_pass@k: {run_passk:.2%} | "
+                        f"time/sample: {sample_time}",
                     )
     finally:
         if store is not None:
