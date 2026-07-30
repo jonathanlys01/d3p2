@@ -31,6 +31,7 @@
 set -euo pipefail
 
 export WORK="${WORK_ejh:?WORK_ejh must be defined on Jean Zay}"
+export SCRATCH="${SCRATCH_ejh:?SCRATCH_ejh must be defined on Jean Zay}"
 
 ROOT="${WORK}/projects/d3p2"
 SRC_ROOT="${ROOT}/src/d5p4"
@@ -39,10 +40,10 @@ RESULTS_ROOT="${RESULTS_ROOT:-${ROOT}/results/llada_ltr_beam_comparison}"
 FINAL_OUTPUT_DIR="${RESULTS_ROOT}/transversal_beam"
 ALLOCATED_TASKS="${SLURM_NTASKS:-4}"
 NUM_WORKERS="${NUM_WORKERS:-${ALLOCATED_TASKS}}"
-SHARD_RESULTS_ROOT="${SHARD_RESULTS_ROOT:-${WORK}/d3p2/sharded_results/llada_ltr_beam_transversal/${NUM_WORKERS}gpu}"
-RESUME_DB_DIR="${RESUME_DB_DIR:-${WORK}/d3p2/resume_db/llada_ltr_beam_transversal/${NUM_WORKERS}gpu}"
+SHARD_RESULTS_ROOT="${SHARD_RESULTS_ROOT:-${ROOT}/sharded_results/llada_ltr_beam_transversal/${NUM_WORKERS}gpu}"
+RESUME_DB_DIR="${RESUME_DB_DIR:-${ROOT}/resume_db/llada_ltr_beam_transversal/${NUM_WORKERS}gpu}"
 CACHE_DIR="${CACHE_DIR:-${ROOT}/.cache}"
-SCRATCH_ROOT="${SCRATCH_ROOT:-/SCRATCH/${USER:?USER must be defined}}"
+SCRATCH_ROOT="${SCRATCH_ROOT:-${SCRATCH}/temp}"
 LLADA_MODEL_PATH="${LLADA_MODEL_PATH:-${WORK}/models/GSAI-ML/LLaDA-8B-Instruct}"
 LLADA_TOKENIZER="${LLADA_TOKENIZER:-${LLADA_MODEL_PATH}}"
 
@@ -136,7 +137,7 @@ mkdir -p \
   "${SHARD_RESULTS_ROOT}" \
   "${RESUME_DB_DIR}" \
   "${CACHE_DIR}" \
-  "${SCRATCH_ROOT}/d3p2/ltr_beam_sharded/${NUM_WORKERS}gpu/${SLURM_JOB_ID:?SLURM_JOB_ID must be defined}"
+  "${SCRATCH_ROOT}/ltr_beam_sharded/${NUM_WORKERS}gpu/${SLURM_JOB_ID:?SLURM_JOB_ID must be defined}"
 
 module purge
 module load arch/h100
@@ -149,7 +150,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export D5P4_SHARD_RESULTS_ROOT="${SHARD_RESULTS_ROOT}"
 export D5P4_SHARD_RESUME_ROOT="${RESUME_DB_DIR}"
-export D5P4_WORKER_CACHE_ROOT="${SCRATCH_ROOT}/d3p2/ltr_beam_sharded/${NUM_WORKERS}gpu/${SLURM_JOB_ID}"
+export D5P4_WORKER_CACHE_ROOT="${SCRATCH_ROOT}/ltr_beam_sharded/${NUM_WORKERS}gpu/${SLURM_JOB_ID}"
 
 "${WORKER_COMMAND[@]}"
 "${MERGE_COMMAND[@]}"
