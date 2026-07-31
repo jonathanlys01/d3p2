@@ -23,6 +23,8 @@ from d5p4.data import get_qa_dataset
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
 from d5p4.subsample import get_subsample_selector
 from d5p4.subsample.base import BaseSelector
+from d5p4.subsample.greedy_map import GreedyMAPKernelSelector
+from d5p4.subsample.ltr_beam import LTRBeamSelection
 from d5p4.utils import configure_runtime, get_tokenizer, process_model_args, sample_categorical, tqdm
 
 
@@ -86,8 +88,7 @@ def _validate_classic_beam_inputs(  # noqa: C901, PLR0912, PLR0913
         raise ValueError("model.config.mask_token_id must be an integer")
     if isinstance(vocab_size, int) and effective_branching_factor > vocab_size - 1:
         raise ValueError(
-            f"branching_factor={effective_branching_factor} exceeds the "
-            f"{vocab_size - 1} non-mask vocabulary entries",
+            f"branching_factor={effective_branching_factor} exceeds the {vocab_size - 1} non-mask vocabulary entries",
         )
     if torch.any(input_ids == mask_token_id):
         raise ValueError("input_ids must contain prompt tokens only, without mask tokens")
@@ -223,7 +224,7 @@ def _split_seed_groups(
 @torch.inference_mode()
 def left_to_right_beam_sample(  # noqa: C901, PLR0913, PLR0915
     model: nn.Module,
-    input_ids: torch.LongTensor,
+    input_ids: torch.LongTensor | torch.Tensor,
     attention_mask: torch.Tensor,
     generation_length: int,
     beam_size: int,
@@ -570,7 +571,7 @@ def _select_d5p4_frontier(  # noqa: PLR0913
 @torch.inference_mode()
 def left_to_right_d5p4_beam_sample(  # noqa: C901, PLR0913, PLR0915
     model: nn.Module,
-    input_ids: torch.LongTensor,
+    input_ids: torch.LongTensor | torch.Tensor,
     attention_mask: torch.Tensor,
     generation_length: int,
     beam_size: int,
@@ -598,8 +599,6 @@ def left_to_right_d5p4_beam_sample(  # noqa: C901, PLR0913, PLR0915
             eos_token_ids,
             num_groups,
         )
-
-    from d5p4.subsample.greedy_map import GreedyMAPKernelSelector
 
     branching_factor, mask_token_id = _validate_classic_beam_inputs(
         model,
@@ -774,7 +773,6 @@ class LLADASampler(nn.Module):
             # D5P4 frontier state is created lazily only for positive weights.
             # At w=0 this lightweight runtime placeholder preserves the strict
             # delegation boundary without constructing the diffusion MAP selector.
-            from d5p4.subsample.ltr_beam import LTRBeamSelection
 
             self.selector = LTRBeamSelection(config)
         else:
@@ -811,8 +809,6 @@ class LLADASampler(nn.Module):
         self.config = config
         if rebuild_selector:
             if config.llada_decoder == "classic_beam" and config.method == "greedy_map":
-                from d5p4.subsample.ltr_beam import LTRBeamSelection
-
                 self.selector = LTRBeamSelection(config)
             else:
                 self.selector = get_subsample_selector(config)
