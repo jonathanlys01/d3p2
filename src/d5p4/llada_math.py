@@ -280,7 +280,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     offset = preflight.offset
     master = preflight.master
-    seed_all(config.seed + offset + config.qa_shard_index)
+    seed_all(config.seed + offset)
 
     model = LLADASampler(config)
     model.model = compile_model(model.model, config, dynamic=True)
@@ -441,6 +441,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         experiment_id=str(unique_id),
         extra={
             "results": results,
+            "dataset_indices": dataset_indices,
             "overall_accuracy": overall_acc,
             "math_metrics": math_metrics,
             "ranked_metrics": ranked_metrics,

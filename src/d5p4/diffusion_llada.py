@@ -741,19 +741,31 @@ def leftmost_transfer_mask(mask_index: torch.Tensor, counts: torch.Tensor) -> to
     return mask_index & (masked_rank < counts.unsqueeze(1))
 
 
-def cfg_combine_logits(cond_logits: torch.Tensor, uncond_logits: torch.Tensor, cfg_scale: float) -> torch.Tensor:
+def cfg_is_active(cfg_scale: float, *, reference_convention: bool = False) -> bool:
+    """Whether sampling needs the unconditional branch for the selected CFG convention."""
+    return cfg_scale > 0.0 if reference_convention else cfg_scale != 1.0
+
+
+def cfg_combine_logits(
+    cond_logits: torch.Tensor,
+    uncond_logits: torch.Tensor,
+    cfg_scale: float,
+    *,
+    reference_convention: bool = False,
+) -> torch.Tensor:
     """Classifier-free guidance combination that preserves impossible-token masks.
 
     The usual `uncond + scale * (cond - uncond)` form produces NaNs when both
     branches contain the same infinity, e.g. `-inf - -inf`. That can happen with
     constrained logits. Treat indeterminate infinities conservatively as masked.
     """
-    if cfg_scale == 0.0:
+    effective_scale = cfg_scale + 1.0 if reference_convention else cfg_scale
+    if effective_scale == 0.0:
         return uncond_logits
-    if cfg_scale == 1.0:
+    if effective_scale == 1.0:
         return cond_logits
 
-    logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
+    logits = uncond_logits + effective_scale * (cond_logits - uncond_logits)
     same_pos_inf = torch.isposinf(cond_logits) & torch.isposinf(uncond_logits)
     logits = torch.where(same_pos_inf, torch.inf, logits)
     return torch.nan_to_num(logits, nan=-torch.inf)
@@ -1082,9 +1094,10 @@ class LLADASampler(nn.Module):
                     logits_slice = slice(prompt_len, None) if score_final_step else slice(start, end)
 
                     # Apply CFG only if step is within the guidance range
-                    apply_cfg = (
-                        self.config.cfg_scale != 1.0 and self.config.guidance_start <= step < self.config.guidance_end
-                    )
+                    apply_cfg = cfg_is_active(
+                        self.config.cfg_scale,
+                        reference_convention=self.config.llada_reference_cfg,
+                    ) and self.config.guidance_start <= step < self.config.guidance_end
 
                     if apply_cfg:
                         un_x = x.clone()
@@ -1098,7 +1111,12 @@ class LLADASampler(nn.Module):
                         )
 
                         cond_logits, uncond_logits = torch.chunk(logits_all, 2, dim=0)
-                        logits = cfg_combine_logits(cond_logits, uncond_logits, self.config.cfg_scale)
+                        logits = cfg_combine_logits(
+                            cond_logits,
+                            uncond_logits,
+                            self.config.cfg_scale,
+                            reference_convention=self.config.llada_reference_cfg,
+                        )
                         embeddings = None
                         if out_all is not None:
                             embeddings_all = out_all[-1]
