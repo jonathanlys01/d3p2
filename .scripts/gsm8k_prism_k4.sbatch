@@ -120,7 +120,6 @@ WORKER_COMMAND=(
   --nodes=1
   --ntasks=1
   --cpus-per-task=8
-  --gpus-per-task=1
   --kill-on-bad-exit=1
   python
   "${SRC_ROOT}/llada_math.py"

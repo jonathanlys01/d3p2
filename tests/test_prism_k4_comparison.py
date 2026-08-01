@@ -181,7 +181,7 @@ def test_local_array_launcher_dry_run_locks_question_sharded_prism_profile():
     )
     output = completed.stdout
 
-    assert "srun --nodes=1 --ntasks=1 --cpus-per-task=8 --gpus-per-task=1" in output
+    assert "srun --nodes=1 --ntasks=1 --cpus-per-task=8 --kill-on-bad-exit=1" in output
     assert "standalone_job=true" in output
     assert "qa_num_shards=4" in output
     assert "qa_shard_index=2" in output
