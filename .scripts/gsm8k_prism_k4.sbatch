@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# D5P4 comparison against PRISM K=4 on GSM8K.
+# D5P4 GSM8K question-sharded comparison launcher.
 #
-# Four independent one-GPU array elements shard questions, not particles.
-# Every question therefore has exactly one local 2-group x 2-particle
-# population. Every element attempts the merge after completing; the last
-# finisher finds all four shard outputs and writes the aggregate. Submit from
-# the repository root with:
+# Each one-GPU array element shards questions, not particles. Every element
+# attempts the merge after completing; the last finisher finds all shard
+# outputs and writes the aggregate. The default remains the original PRISM
+# K=4 / four-shard run. Submit from the repository root with:
 #
 #   sbatch .scripts/gsm8k_prism_k4.sbatch
 #
@@ -15,13 +14,15 @@
 #   sbatch --export=ALL,QA_DATASET_LEN=8 .scripts/gsm8k_prism_k4.sbatch
 #   sbatch --export=ALL,RESULTS_ROOT=/Brain/private/j21lys/results/my_run \
 #     .scripts/gsm8k_prism_k4.sbatch
+#   sbatch --array=0-7 .scripts/gsm8k_prism_k4.sbatch n_groups=2 group_size=4
 #
 # PRISM's paper declares low-confidence threshold 0.95, whereas its released
 # LLaDA execution path defaults to 0.85 because run_gsm8k.sh does not pass the
 # wrapper's threshold argument. D5P4 has no equivalent thresholded early-commit
 # operator: this launcher uses its supported low_confidence ranking throughout.
-# PRISM K=4 reports 509 denoising NFE + 29 SVF calls. Fixed-width D5P4 2x2 at
-# 256 steps costs 1024 trajectory NFE (512 per group; 256 batched forwards).
+# n_groups and group_size may be supplied as trailing Hydra overrides. The
+# array size is inferred from SLURM_ARRAY_TASK_COUNT, so command-line --array
+# overrides also update question sharding and merge validation.
 
 #SBATCH --job-name=gsm8k-prism-k4
 #SBATCH --partition=Mee_Global_GPU
@@ -45,7 +46,9 @@ BRAIN_ROOT="${BRAIN_ROOT:-/Brain/private/j21lys}"
 BUV="${BUV:-${BRAIN_ROOT}/.local/bin/uv}"
 SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
 
-NUM_WORKERS=4
+NUM_WORKERS="${NUM_WORKERS:-${SLURM_ARRAY_TASK_COUNT:-4}}"
+N_GROUPS="${N_GROUPS:-2}"
+GROUP_SIZE="${GROUP_SIZE:-2}"
 RESULTS_ROOT="${RESULTS_ROOT:-${BRAIN_ROOT}/results/gsm8k_prism_k4}"
 SHARD_RESULTS_ROOT="${SHARD_RESULTS_ROOT:-${RESULTS_ROOT}/shards}"
 RESUME_DB_ROOT="${RESUME_DB_ROOT:-${RESULTS_ROOT}/resume}"
@@ -59,13 +62,35 @@ SEED="${SEED:-42}"
 COMPILE_MODEL="${COMPILE_MODEL:-true}"
 DRY_RUN="${DRY_RUN:-0}"
 
+# Keep the launcher bookkeeping synchronized with trailing Hydra overrides.
+for arg in "$@"; do
+  case "${arg}" in
+    n_groups=*) N_GROUPS="${arg#n_groups=}" ;;
+    group_size=*) GROUP_SIZE="${arg#group_size=}" ;;
+  esac
+done
+
+if ! [[ "${NUM_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "NUM_WORKERS must be a positive integer, got ${NUM_WORKERS}" >&2
+  exit 1
+fi
+if ! [[ "${N_GROUPS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "n_groups must be a positive integer, got ${N_GROUPS}" >&2
+  exit 1
+fi
+if ! [[ "${GROUP_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "group_size must be a positive integer, got ${GROUP_SIZE}" >&2
+  exit 1
+fi
+CANDIDATE_COUNT=$((N_GROUPS * GROUP_SIZE))
+
 if [[ "${DRY_RUN}" == "1" ]]; then
   TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 else
   TASK_ID="${SLURM_ARRAY_TASK_ID:?Submit this launcher as its configured Slurm array}"
 fi
-if ! [[ "${TASK_ID}" =~ ^[0-3]$ ]]; then
-  echo "SLURM_ARRAY_TASK_ID=${TASK_ID} must be 0, 1, 2, or 3" >&2
+if ! [[ "${TASK_ID}" =~ ^[0-9]+$ ]] || (( TASK_ID < 0 || TASK_ID >= NUM_WORKERS )); then
+  echo "SLURM_ARRAY_TASK_ID=${TASK_ID} must be in [0, ${NUM_WORKERS})" >&2
   exit 1
 fi
 SHARD="shard_${TASK_ID}"
@@ -102,8 +127,8 @@ COMMON_ARGS=(
   resume_db_keep_completed=true
   cache_dir="${CACHE_DIR}"
   method=greedy_map
-  n_groups=2
-  group_size=2
+  n_groups="${N_GROUPS}"
+  group_size="${GROUP_SIZE}"
   transversal=true
   subsample_start=0
   subsample_end=1024
@@ -127,7 +152,7 @@ WORKER_COMMAND=(
   qa_shard_index="${TASK_ID}"
   results_dir="${SHARD_RESULTS_DIR}"
   resume_db_dir="${SHARD_RESUME_DB_DIR}"
-  comment="LLaDA GSM8K D5P4 PRISM K=4 shard $((TASK_ID + 1))/${NUM_WORKERS}"
+  comment="LLaDA GSM8K D5P4 ${N_GROUPS}x${GROUP_SIZE} shard $((TASK_ID + 1))/${NUM_WORKERS}"
   "$@"
 )
 
@@ -138,14 +163,16 @@ MERGE_COMMAND=(
   --shard-root="${SHARD_RESULTS_ROOT}"
   --output="${FINAL_OUTPUT}"
   --world-size="${NUM_WORKERS}"
+  --n-groups="${N_GROUPS}"
+  --group-size="${GROUP_SIZE}"
+  --expected-candidates="${CANDIDATE_COUNT}"
   --num-workers=8
 )
 
-echo "D5P4 PRISM K=4 comparison"
+echo "D5P4 GSM8K comparison"
 echo "Execution: array shard $((TASK_ID + 1))/${NUM_WORKERS} on one GPU; no particle all-gather"
-echo "Population: local n_groups=2, group_size=2, transversal=true"
+echo "Population: n_groups=${N_GROUPS}, group_size=${GROUP_SIZE}, K=${CANDIDATE_COUNT}, transversal=true"
 echo "Inference: 256 tokens/steps, block_length=32, temperature=0.7, low_confidence, no CFG"
-echo "NFE: 1024 trajectory evaluations/prompt; 512/group; 256 batched forwards"
 echo "Final output: ${FINAL_OUTPUT}"
 
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -182,7 +209,7 @@ nvidia-smi
 
 # Follow the existing sharded GSM8K launcher pattern: every array element
 # attempts this strict merge. Incomplete attempts fail harmlessly; the last
-# finisher sees four complete shards and writes the stable aggregate JSON.
+# finisher sees all complete shards and writes the stable aggregate JSON.
 if "${MERGE_COMMAND[@]}" 2>/dev/null; then
   echo "All ${NUM_WORKERS} shards merged successfully into ${FINAL_OUTPUT}"
 else

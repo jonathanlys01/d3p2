@@ -60,8 +60,14 @@ def _comparable_config(config: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in config.items() if key not in _IGNORED_CONFIG_KEYS}
 
 
-def _validate_locked_config(config: dict[str, Any], *, world_size: int, shard_index: int) -> None:
-    for key, expected in _PRISM_K4_CONFIG.items():
+def _validate_locked_config(
+    config: dict[str, Any],
+    *,
+    world_size: int,
+    shard_index: int,
+    expected_config: dict[str, Any],
+) -> None:
+    for key, expected in expected_config.items():
         actual = config.get(key)
         if isinstance(expected, float):
             matches = isinstance(actual, (float, int)) and float(actual) == expected
@@ -79,19 +85,38 @@ def _validate_locked_config(config: dict[str, Any], *, world_size: int, shard_in
         )
 
 
-def merge_payloads(  # noqa: C901, PLR0912, PLR0915
+def merge_payloads(  # noqa: C901, PLR0912, PLR0913, PLR0915
     payloads: list[dict[str, Any]],
     *,
     world_size: int,
+    n_groups: int | None = None,
+    group_size: int | None = None,
+    expected_candidates: int | None = None,
     source_files: list[str] | None = None,
     output_dir: str | None = None,
+    comment: str | None = None,
     num_workers: int = 1,
 ) -> dict[str, Any]:
     """Validate, order, and aggregate one completed payload per question shard."""
-    if world_size != 4:
+    dynamic_profile = n_groups is not None or group_size is not None or expected_candidates is not None
+    if not dynamic_profile and world_size != 4:
         raise ShardMergeError(f"The PRISM K=4 launcher requires exactly 4 shards, got {world_size}")
     if len(payloads) != world_size:
         raise ShardMergeError(f"Expected {world_size} shard payloads, got {len(payloads)}")
+
+    expected_config = dict(_PRISM_K4_CONFIG)
+    if n_groups is not None:
+        expected_config["n_groups"] = n_groups
+    if group_size is not None:
+        expected_config["group_size"] = group_size
+    config_candidate_count = int(expected_config["n_groups"]) * int(expected_config["group_size"])
+    if expected_candidates is None:
+        expected_candidates = config_candidate_count
+    if expected_candidates != config_candidate_count:
+        raise ShardMergeError(
+            f"Expected candidate count {expected_candidates} disagrees with "
+            f"n_groups*group_size={config_candidate_count}",
+        )
 
     reference_config: dict[str, Any] | None = None
     records: list[dict[str, Any]] = []
@@ -100,7 +125,12 @@ def merge_payloads(  # noqa: C901, PLR0912, PLR0915
         config = payload.get("config")
         if not isinstance(config, dict):
             raise ShardMergeError(f"Shard {shard_index} has no config dictionary")
-        _validate_locked_config(config, world_size=world_size, shard_index=shard_index)
+        _validate_locked_config(
+            config,
+            world_size=world_size,
+            shard_index=shard_index,
+            expected_config=expected_config,
+        )
         comparable = _comparable_config(config)
         if reference_config is None:
             reference_config = comparable
@@ -134,14 +164,17 @@ def merge_payloads(  # noqa: C901, PLR0912, PLR0915
                 raise ShardMergeError(
                     f"dataset_index={dataset_index} belongs to shard {dataset_index % world_size}, not {shard_index}",
                 )
-            if not isinstance(texts, list) or len(texts) != 4:
-                raise ShardMergeError(f"dataset_index={dataset_index} has {len(texts)} candidates; expected 4")
+            if not isinstance(texts, list) or len(texts) != expected_candidates:
+                raise ShardMergeError(
+                    f"dataset_index={dataset_index} has {len(texts)} candidates; "
+                    f"expected {expected_candidates}",
+                )
             if result.get("generations") != texts:
                 raise ShardMergeError(f"dataset_index={dataset_index} result generations do not match text_samples")
-            if not isinstance(scores, list) or len(scores) != 4:
+            if not isinstance(scores, list) or len(scores) != expected_candidates:
                 raise ShardMergeError(f"dataset_index={dataset_index} has invalid internal-score cardinality")
             correctness = result.get("scores")
-            if not isinstance(correctness, list) or len(correctness) != 4:
+            if not isinstance(correctness, list) or len(correctness) != expected_candidates:
                 raise ShardMergeError(f"dataset_index={dataset_index} has invalid correctness cardinality")
             if not isinstance(references, list):
                 raise ShardMergeError(f"dataset_index={dataset_index} has invalid references")
@@ -180,7 +213,7 @@ def merge_payloads(  # noqa: C901, PLR0912, PLR0915
         text_samples,
         gold_answers,
         string_references=references,
-        k_values=[1, 2, 4],
+        k_values=sorted(k for k in {1, 2, 4, expected_candidates} if k <= expected_candidates),
         num_workers=num_workers,
     )
     ranked_metrics = _ranked_pass_metrics(results, internal_scores)
@@ -195,7 +228,10 @@ def merge_payloads(  # noqa: C901, PLR0912, PLR0915
     merged_config.pop("qa_shard_index", None)
     if output_dir is not None:
         merged_config["results_dir"] = output_dir
-    merged_config["comment"] = "LLaDA GSM8K D5P4 PRISM K=4 comparison, 4 question-sharded GPUs"
+    merged_config["comment"] = comment or (
+        f"LLaDA GSM8K D5P4 {merged_config['n_groups']}x{merged_config['group_size']} "
+        f"comparison, {world_size} question-sharded GPUs"
+    )
 
     candidate_count = int(merged_config["n_groups"]) * int(merged_config["group_size"])
     llada_steps = int(merged_config["llada_steps"])
@@ -244,6 +280,10 @@ def main() -> None:
     parser.add_argument("--shard-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--world-size", type=int, default=4)
+    parser.add_argument("--n-groups", type=int)
+    parser.add_argument("--group-size", type=int)
+    parser.add_argument("--expected-candidates", type=int)
+    parser.add_argument("--comment")
     parser.add_argument("--num-workers", type=int, default=8)
     args = parser.parse_args()
 
@@ -252,8 +292,12 @@ def main() -> None:
     payload = merge_payloads(
         payloads,
         world_size=args.world_size,
+        n_groups=args.n_groups,
+        group_size=args.group_size,
+        expected_candidates=args.expected_candidates,
         source_files=[str(path) for path in source_paths],
         output_dir=str(args.output.parent),
+        comment=args.comment,
         num_workers=args.num_workers,
     )
 

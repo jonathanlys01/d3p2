@@ -142,6 +142,31 @@ def test_merge_reports_internal_accuracy_pass_metrics_selection_and_nfe():
     assert payload["nfe_accounting"]["observed_mean_model_forward_calls_per_prompt"] == 256
 
 
+def test_merge_supports_eight_question_shards_and_dynamic_candidate_count():
+    payloads = []
+    for shard_index in range(8):
+        payload = _payload(shard_index, [1] * 8, [0.9 - shard_index * 0.01] * 8)
+        payload["config"]["qa_num_shards"] = 8
+        payload["config"]["n_groups"] = 2
+        payload["config"]["group_size"] = 4
+        payloads.append(payload)
+
+    merged = merge_payloads(
+        payloads,
+        world_size=8,
+        n_groups=2,
+        group_size=4,
+        expected_candidates=8,
+        num_workers=1,
+    )
+
+    assert len(merged["text_samples"]) == 8
+    assert len(merged["text_samples"][0]) == 8
+    assert merged["math_metrics"]["pass@8"] == 1.0
+    assert merged["config"]["n_groups"] == 2
+    assert merged["config"]["group_size"] == 4
+
+
 def test_merge_rejects_incomplete_or_incompatible_shards():
     missing_index = deepcopy(_four_payloads())
     missing_index[3]["results"][0]["dataset_index"] = 7
