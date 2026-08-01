@@ -31,8 +31,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --hint=nomultithread
 #SBATCH --job-name=llada-gsm8k-4x4
-#SBATCH --output=slurm-%x-%A_%a.out
-#SBATCH --error=slurm-%x-%A_%a.err
+#SBATCH --output=logs/%x-%A_%a.out
+#SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --time=17:00:00
 #SBATCH --qos=qos_gpu_h100-t3
 #SBATCH --array=0-15%16
@@ -165,7 +165,6 @@ WORKER_COMMAND=(
   srun
   --nodes=1
   --ntasks=1
-  --gpus-per-task=1
   python
   "${SRC_ROOT}/llada_math.py"
   "${COMMON_ARGS[@]}"
