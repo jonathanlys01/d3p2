@@ -39,6 +39,11 @@ HASH_EXCLUDED_CONFIG_KEYS = {
     "resume_db_keep_completed",
     "skip_eval",
     "legacy_config",
+    # Question sharding changes the work manifest, which already namespaces the
+    # resume DB. Excluding these operational fields preserves hashes for legacy
+    # unsharded runs while still keeping every shard disjoint.
+    "qa_num_shards",
+    "qa_shard_index",
 }
 
 # These fields were introduced by the Dream implementation.  They must be

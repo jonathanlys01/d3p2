@@ -148,6 +148,10 @@ def test_llada_math_classic_beam_reports_pass_and_generation_metrics(monkeypatch
     assert payload["math_metrics"]["pass@1"] == 0.5
     assert payload["math_metrics"]["pass@2"] == 1.0
     assert payload["ranked_metrics"] == {"ranked_pass@1": 1.0, "ranked_pass@2": 1.0}
+    assert payload["comparison_metrics"] == {"internal_accuracy": 1.0, "pass@1": 0.5, "pass@2": 1.0}
+    assert payload["selected_results"][0]["selected_index"] == 0
+    assert payload["selected_results"][0]["correct"] is True
+    assert payload["results"][0]["dataset_index"] == 0
     assert payload["generation_stats"]["total_model_forward_passes"] == 2
     assert payload["generation_stats"]["mean_model_forward_passes"] == 2.0
     assert payload["internal_score_metadata"]["method"] == "length_normalized_left_to_right_token_logprob"
@@ -329,7 +333,7 @@ def test_local_cluster_block1_sweep_uses_one_group_of_three_per_gpu():
         commands.extend(line for line in completed.stdout.splitlines() if "llada_math.py" in line)
 
     assert len(commands) == 3
-    independent, d5p4, greedy_beam = commands
+    independent, greedy_beam, d5p4 = commands
 
     for command in commands:
         assert "srun --exclusive --nodes=1 --ntasks=3 --cpus-per-task=8 --gres=gpu:3" in command
@@ -339,8 +343,8 @@ def test_local_cluster_block1_sweep_uses_one_group_of_three_per_gpu():
         assert "qa_n_shots=0" in command
         assert "compile_model=true" in command
         assert "cat_temperature=1.0" in command
-        assert "remasking=selection_temperature" in command
-        assert "selection_temperature=0.1" in command
+        assert "remasking=low_confidence" in command
+        assert "selection_temperature=0.0" in command
         assert "skip_eval=true" in command
         assert "cfg_scale=2.5" in command
         assert "block_length=1" in command

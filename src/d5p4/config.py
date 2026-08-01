@@ -187,6 +187,8 @@ class Config:
     qa_dataset: str = "truthful_qa"  # "truthful_qa", "commonsense_qa", "ai2_arc", or "gsm8k"
     qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
     qa_n_shots: int = 0  # number of few-shot examples for QA
+    qa_num_shards: int = 1  # number of disjoint question shards for standalone QA workers
+    qa_shard_index: int = 0  # zero-based shard handled by this standalone worker
     truthful_qa_path: str = "truthfulqa/truthful_qa"
     commonsense_qa_path: str = "tau/commonsense_qa"
     ai2_arc_path: str = "allenai/ai2_arc"
@@ -281,6 +283,10 @@ class Config:
         )
         assert self.code_n_shots >= 0, "code_n_shots must be non-negative"
         assert self.code_timeout_s > 0.0, "code_timeout_s must be positive"
+        assert self.qa_num_shards > 0, "qa_num_shards must be positive"
+        assert 0 <= self.qa_shard_index < self.qa_num_shards, (
+            f"qa_shard_index must be in [0, {self.qa_num_shards}), got {self.qa_shard_index}"
+        )
 
         if self.subsample_k > 0:
             assert self.method == "baseline", "subsample_k only makes sense for baseline method"

@@ -44,6 +44,8 @@ results_dir: results
 resume_db_dir: /Brain/private/${user:}/resume
 n_runs: 8
 qa_dataset_len: -1  # number of QA samples to use (-1 for all)
+qa_num_shards: 1
+qa_shard_index: 0
 eval_batch_size: 8  # batch size for evaluation (low to avoid OOM with llama 8B)
 compile_model: true
 mdlm_steps: 1024

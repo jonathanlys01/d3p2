@@ -76,6 +76,65 @@ def _ranked_pass_metrics(
     return metrics
 
 
+def _attach_internal_selections(
+    results: list[dict],
+    internal_scores: list[list[float]],
+) -> list[dict]:
+    """Attach the single highest-internal-score proposal to every result row."""
+    if len(results) != len(internal_scores):
+        raise ValueError(f"Expected score groups for {len(results)} results, got {len(internal_scores)}")
+
+    selected_results: list[dict] = []
+    for result, sequence_scores in zip(results, internal_scores, strict=True):
+        generations = result["generations"]
+        correctness = result["scores"]
+        if not generations or len(generations) != len(sequence_scores) or len(correctness) != len(sequence_scores):
+            raise ValueError("Every result must have aligned non-empty generations, correctness, and internal scores")
+
+        # max() returns the first matching index, giving stable lowest-index tie breaking.
+        selected_index = max(range(len(sequence_scores)), key=sequence_scores.__getitem__)
+        selection = {
+            "dataset_index": result.get("dataset_index"),
+            "question": result["question"],
+            "selected_index": selected_index,
+            "generation": generations[selected_index],
+            # pyrefly: ignore [unnecessary-type-conversion]
+            "internal_score": float(sequence_scores[selected_index]),
+            "correct": bool(correctness[selected_index] > 0),
+        }
+        result["internal_selection"] = selection
+        selected_results.append(selection)
+    return selected_results
+
+
+def _comparison_metrics(
+    math_metrics: dict[str, float | str],
+    ranked_metrics: dict[str, float],
+) -> dict[str, float]:
+    """Return the three headline metrics for internally ranked K-proposal math runs."""
+    required = ("pass@1", "pass@2")
+    missing = [key for key in required if key not in math_metrics]
+    if "ranked_pass@1" not in ranked_metrics:
+        missing.append("ranked_pass@1")
+    if missing:
+        raise ValueError(f"Cannot build comparison metrics; missing {', '.join(missing)}")
+    return {
+        # pyrefly: ignore [unnecessary-type-conversion]
+        "internal_accuracy": float(ranked_metrics["ranked_pass@1"]),
+        "pass@1": float(math_metrics["pass@1"]),
+        "pass@2": float(math_metrics["pass@2"]),
+    }
+
+
+def _shard_indexed_rows(rows: list, *, shard_index: int, num_shards: int) -> list[tuple[int, object]]:
+    """Return a deterministic strided shard while preserving global row positions."""
+    if num_shards <= 0:
+        raise ValueError(f"num_shards must be positive, got {num_shards}")
+    if not 0 <= shard_index < num_shards:
+        raise ValueError(f"shard_index must be in [0, {num_shards}), got {shard_index}")
+    return list(enumerate(rows))[shard_index::num_shards]
+
+
 def _aggregate_generation_metadata(metadata: list[dict[str, float | int] | None]) -> dict[str, float | int]:
     measured = [row for row in metadata if row is not None]
     total_wall_time_s = sum(float(row["wall_time_s"]) for row in measured)
@@ -110,16 +169,17 @@ def _decode_generations(model: LLADASampler, prompt: str, raw_samples, prompt_le
     return generations
 
 
-def _score_result(
+def _score_result(  # noqa: PLR0913
     evaluator: MathEvaluator,
     *,
     prompt: str,
     gold: str,
     answer_str: str,
     generations: list[str],
+    dataset_index: int | None = None,
 ) -> dict:
     scores = evaluator.score_group(generations, gold)
-    return {
+    result = {
         "question": prompt,
         "gold_answer": gold,
         "answer_str": answer_str,
@@ -127,6 +187,9 @@ def _score_result(
         "scores": scores,
         "accuracy": evaluator.accuracy(generations, gold),
     }
+    if dataset_index is not None:
+        result["dataset_index"] = dataset_index
+    return result
 
 
 def save(
@@ -161,18 +224,46 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     dataset = gsm8k(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
-    prompts: list[str] = [row.question for row in rows]  # type: ignore[union-attr]
-    answer_strings: list[str] = [row.answer_str for row in rows]  # type: ignore[union-attr]
-    answer_numbers: list[str] = [row.answer_number for row in rows]  # type: ignore[union-attr]
+    indexed_rows = _shard_indexed_rows(
+        rows,
+        shard_index=config.qa_shard_index,
+        num_shards=config.qa_num_shards,
+    )
+    if not indexed_rows:
+        raise ValueError(
+            f"GSM8K shard {config.qa_shard_index}/{config.qa_num_shards} is empty for {len(rows)} rows",
+        )
+    dataset_indices = [dataset_index for dataset_index, _ in indexed_rows]
+    shard_rows = [row for _, row in indexed_rows]
+    prompts: list[str] = [row.question for row in shard_rows]  # type: ignore[union-attr]
+    answer_strings: list[str] = [row.answer_str for row in shard_rows]  # type: ignore[union-attr]
+    answer_numbers: list[str] = [row.answer_number for row in shard_rows]  # type: ignore[union-attr]
+    print(
+        f"GSM8K shard {config.qa_shard_index + 1}/{config.qa_num_shards}: "
+        f"{len(prompts)} of {len(rows)} rows (strided after seeded shuffle).",
+    )
 
     # ── evaluator ────────────────────────────────────────────────────────────
     evaluator = MathEvaluator()
 
     # ── generation + evaluation loop ─────────────────────────────────────────
-    metadata = [
-        {"gold_answer": gold, "answer_str": answer_str, "item_key": f"gsm8k:{idx}"}
-        for idx, (gold, answer_str) in enumerate(zip(answer_numbers, answer_strings, strict=True))
-    ]
+    metadata = []
+    for dataset_index, gold, answer_str in zip(
+        dataset_indices,
+        answer_numbers,
+        answer_strings,
+        strict=True,
+    ):
+        item_metadata: dict[str, str | int] = {
+            "gold_answer": gold,
+            "answer_str": answer_str,
+            "item_key": f"gsm8k:{dataset_index}",
+        }
+        # Keep the legacy unsharded work manifest byte-for-byte compatible.
+        # Sharded manifests need the global position for auditability and merge checks.
+        if config.qa_num_shards > 1:
+            item_metadata["dataset_index"] = dataset_index
+        metadata.append(item_metadata)
     workflow_id = "math_generation:llada"
     string_references = [[answer_str] for answer_str in answer_strings]
     preflight = prepare_resumable_run(
@@ -189,7 +280,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     offset = preflight.offset
     master = preflight.master
-    seed_all(config.seed + offset)
+    seed_all(config.seed + offset + config.qa_shard_index)
 
     model = LLADASampler(config)
     model.model = compile_model(model.model, config, dynamic=True)
@@ -203,6 +294,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             gold=gold,
             answer_str=answer_str,
             generations=generations,
+            dataset_index=dataset_indices[i],
         )
 
     assert preflight.resume_state is not None
@@ -230,11 +322,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 raw_samples = generation["tokens"]
                 scores = generation["internal_scores"] or []
                 generation_metadata = generation["generation_metadata"]
-                sample_time_s = (
-                    float(generation_metadata["wall_time_s"])
-                    if generation_metadata is not None
-                    else None
-                )
+                sample_time_s = float(generation_metadata["wall_time_s"]) if generation_metadata is not None else None
                 decoded = generation["decoded"] or _decode_generations(
                     model,
                     prompt,
@@ -255,6 +343,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     "wall_time_s": perf_counter() - sampling_start,
                     "model_forward_passes": model.last_forward_count,
                 }
+                # pyrefly: ignore [unnecessary-type-conversion]
                 sample_time_s = float(generation_metadata["wall_time_s"])
                 if not master:
                     continue
@@ -304,6 +393,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         return
 
     # ── final aggregation ────────────────────────────────────────────────────
+    selected_results = _attach_internal_selections(results, internal_scores_all) if results else []
     overall_acc = sum(r["accuracy"] for r in results) / len(results) if results else 0.0
     print(f"\n acc: {overall_acc:.4%}  ({sum(r['accuracy'] > 0 for r in results)}/{len(results)} qs with ≥1 correct)")
 
@@ -314,14 +404,17 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             all_generations,
             answer_numbers,
             string_references=string_references,
-            k_values=sorted({1, config.batch_size}),
+            k_values=sorted({1, 2, config.batch_size}),
             num_workers=num_workers,
         )
         if results
         else {}
     )
-    ranked_metrics = _ranked_pass_metrics(results, internal_scores_all) if results else {}
+    ranked_metrics: dict[str, float] = _ranked_pass_metrics(results, internal_scores_all) if results else {}
     math_metrics.update(ranked_metrics)
+    comparison_metrics: dict[str, float] = (
+        _comparison_metrics(math_metrics, ranked_metrics) if config.batch_size >= 2 and results else {}
+    )
     generation_stats = _aggregate_generation_metadata(generation_metadata_all)
     math_metrics_summary = math_metrics.get("math_metrics_summary")
     if math_metrics_summary:
@@ -351,6 +444,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             "overall_accuracy": overall_acc,
             "math_metrics": math_metrics,
             "ranked_metrics": ranked_metrics,
+            "comparison_metrics": comparison_metrics,
+            "selected_results": selected_results,
             "generation_stats": generation_stats,
             "generation_metadata": generation_metadata_all,
         },
