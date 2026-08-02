@@ -28,6 +28,15 @@ def _references_from_results(results: list[dict]) -> list[list[str]]:
     return [[row["answer_str"] if row["answer_str"] else row["gold_answer"]] for row in results]
 
 
+def _shard_indexed_rows(rows: list, *, shard_index: int, num_shards: int) -> list[tuple[int, object]]:
+    """Return a deterministic strided shard while preserving global row positions."""
+    if num_shards <= 0:
+        raise ValueError(f"num_shards must be positive, got {num_shards}")
+    if not 0 <= shard_index < num_shards:
+        raise ValueError(f"shard_index must be in [0, {num_shards}), got {shard_index}")
+    return list(enumerate(rows))[shard_index::num_shards]
+
+
 def _print_generation_group(
     question_index: int,
     prompt: str,
@@ -41,16 +50,17 @@ def _print_generation_group(
     print("")
 
 
-def _score_result(
+def _score_result(  # noqa: PLR0913
     evaluator: MathEvaluator,
     *,
     prompt: str,
     gold: str,
     answer_str: str,
     generations: list[str],
+    dataset_index: int | None = None,
 ) -> dict:
     scores = evaluator.score_group(generations, gold)
-    return {
+    result = {
         "question": prompt,
         "gold_answer": gold,
         "answer_str": answer_str,
@@ -58,6 +68,9 @@ def _score_result(
         "scores": scores,
         "accuracy": evaluator.accuracy(generations, gold),
     }
+    if dataset_index is not None:
+        result["dataset_index"] = dataset_index
+    return result
 
 
 def save(
@@ -90,14 +103,39 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     dataset = gsm8k(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
     rows = list(dataset.itertuples())[:limit]
-    prompts = [row.question for row in rows]  # type: ignore[union-attr]
-    answer_strings = [row.answer_str for row in rows]  # type: ignore[union-attr]
-    answer_numbers = [row.answer_number for row in rows]  # type: ignore[union-attr]
+    indexed_rows = _shard_indexed_rows(
+        rows,
+        shard_index=config.qa_shard_index,
+        num_shards=config.qa_num_shards,
+    )
+    if not indexed_rows:
+        raise ValueError(
+            f"GSM8K shard {config.qa_shard_index}/{config.qa_num_shards} is empty for {len(rows)} rows",
+        )
+    dataset_indices = [dataset_index for dataset_index, _ in indexed_rows]
+    shard_rows = [row for _, row in indexed_rows]
+    prompts = [row.question for row in shard_rows]  # type: ignore[union-attr]
+    answer_strings = [row.answer_str for row in shard_rows]  # type: ignore[union-attr]
+    answer_numbers = [row.answer_number for row in shard_rows]  # type: ignore[union-attr]
+    print(
+        f"GSM8K shard {config.qa_shard_index + 1}/{config.qa_num_shards}: "
+        f"{len(prompts)} of {len(rows)} rows (strided after seeded shuffle).",
+    )
     evaluator = MathEvaluator()
 
     metadata = [
-        {"gold_answer": gold, "answer_str": answer_str, "item_key": f"gsm8k:{idx}"}
-        for idx, (gold, answer_str) in enumerate(zip(answer_numbers, answer_strings, strict=True))
+        {
+            "gold_answer": gold,
+            "answer_str": answer_str,
+            "item_key": f"gsm8k:{dataset_index}",
+            **({"dataset_index": dataset_index} if config.qa_num_shards > 1 else {}),
+        }
+        for dataset_index, gold, answer_str in zip(
+            dataset_indices,
+            answer_numbers,
+            answer_strings,
+            strict=True,
+        )
     ]
     string_references = [[answer_str] for answer_str in answer_strings]
     workflow_id = f"math_generation:dream:v{DREAM_WORKFLOW_VERSION}"
@@ -124,6 +162,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             gold=answer_numbers[i],
             answer_str=answer_strings[i],
             generations=generations,
+            dataset_index=dataset_indices[i],
         )
 
     assert preflight.resume_state is not None
@@ -242,7 +281,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         internal_score_metadata=DREAM_INTERNAL_SCORE_METADATA,
         metrics=math_metrics,
         experiment_id=str(unique_id),
-        extra={"results": results, "overall_accuracy": overall_acc, "math_metrics": math_metrics},
+        extra={
+            "results": results,
+            "dataset_indices": dataset_indices,
+            "overall_accuracy": overall_acc,
+            "math_metrics": math_metrics,
+        },
     )
     name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
     os.makedirs(config.results_dir, exist_ok=True)

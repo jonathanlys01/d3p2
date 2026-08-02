@@ -9,7 +9,7 @@ import torch
 from d5p4.config import Config
 from d5p4.data.math_ds import _format_dream_gsm8k_query
 from d5p4.diffusion_dream import DreamSampler
-from d5p4.dream_math import save as save_math
+from d5p4.dream_math import _shard_indexed_rows, save as save_math
 from d5p4.single_run_dream import _decode_generations
 
 
@@ -85,6 +85,19 @@ def test_dream_decode_drops_ids_the_tokenizer_cannot_map():
 
 def test_dream_gsm8k_prompt_matches_official_zero_shot_profile():
     assert _format_dream_gsm8k_query("What is 40 + 2?") == "Q: What is 40 + 2?\n\nA:"
+
+
+def test_dream_question_shards_preserve_global_indices():
+    rows = list(range(11))
+    shards = [_shard_indexed_rows(rows, shard_index=index, num_shards=4) for index in range(4)]
+
+    assert [[row for _, row in shard] for shard in shards] == [
+        [0, 4, 8],
+        [1, 5, 9],
+        [2, 6, 10],
+        [3, 7],
+    ]
+    assert sorted(index for shard in shards for index, _ in shard) == list(range(11))
 
 
 def test_dream_math_save_writes_canonical_payload():
