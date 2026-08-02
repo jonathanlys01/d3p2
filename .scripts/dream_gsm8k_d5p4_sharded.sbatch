@@ -13,6 +13,9 @@
 #   sbatch --export=ALL,QA_DATASET_LEN=8 .scripts/dream_gsm8k_d5p4_sharded.sbatch
 #   sbatch --export=ALL,RESULTS_ROOT=/Brain/private/j21lys/results/dream_w50_test \
 #     .scripts/dream_gsm8k_d5p4_sharded.sbatch
+#   N=16; sbatch --array=0-$((N - 1))%${N} \
+#     --export=ALL,NUM_SHARDS=${N},RESULTS_ROOT=/Brain/private/j21lys/results/dream_w50_n${N} \
+#     .scripts/dream_gsm8k_d5p4_sharded.sbatch
 #   sbatch --array=3 .scripts/dream_gsm8k_d5p4_sharded.sbatch  # retry one shard
 
 #SBATCH --job-name=dream-gsm8k-d5p4-w50
@@ -37,14 +40,24 @@ BUV="${BUV:-${BRAIN_ROOT}/.local/bin/uv}"
 SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
 UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-${SROOT}/d3p2/.venv}"
 
-NUM_SHARDS=8
+NUM_SHARDS="${NUM_SHARDS:-8}"
+if ! [[ "${NUM_SHARDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "NUM_SHARDS must be a positive integer, got ${NUM_SHARDS}" >&2
+  exit 1
+fi
 TASK_ID="${SLURM_ARRAY_TASK_ID:?Submit this launcher as its configured Slurm array}"
 if ! [[ "${TASK_ID}" =~ ^[0-9]+$ ]] || (( TASK_ID < 0 || TASK_ID >= NUM_SHARDS )); then
   echo "SLURM_ARRAY_TASK_ID=${TASK_ID} must be in [0, ${NUM_SHARDS})" >&2
   exit 1
 fi
 
-RESULTS_ROOT="${RESULTS_ROOT:-${BRAIN_ROOT}/results/dream_gsm8k_d5p4_w50_sharded}"
+if [[ -z "${RESULTS_ROOT:-}" ]]; then
+  if (( NUM_SHARDS == 8 )); then
+    RESULTS_ROOT="${BRAIN_ROOT}/results/dream_gsm8k_d5p4_w50_sharded"
+  else
+    RESULTS_ROOT="${BRAIN_ROOT}/results/dream_gsm8k_d5p4_w50_sharded_n${NUM_SHARDS}"
+  fi
+fi
 SHARD_RESULTS_ROOT="${SHARD_RESULTS_ROOT:-${RESULTS_ROOT}/shards}"
 RESUME_DB_ROOT="${RESUME_DB_ROOT:-${RESULTS_ROOT}/resume}"
 FINAL_OUTPUT="${FINAL_OUTPUT:-${RESULTS_ROOT}/math-dream-d5p4-w50-merged.json}"
