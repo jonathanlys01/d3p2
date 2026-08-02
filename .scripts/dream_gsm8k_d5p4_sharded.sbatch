@@ -175,6 +175,11 @@ cd "${ROOT}"
 "${BUV}" sync -n
 source "${UV_PROJECT_ENVIRONMENT}/bin/activate"
 
+echo "ROOT=${ROOT}"
+echo "Python=$(command -v python)"
+python -c 'import d5p4.dream_math; print(f"d5p4.dream_math={d5p4.dream_math.__file__}")'
+sha256sum "${SRC_ROOT}/dream_math.py"
+
 echo "Job started at $(date)"
 hostname
 nvidia-smi
