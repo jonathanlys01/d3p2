@@ -172,6 +172,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     results: list[dict] = []
     all_generations: list[list[str]] = []
     internal_scores_all: list[list[float]] = []
+    generation_metadata_all: list[dict | None] = []
 
     if preflight.master:
         print(f"Experiment ID: {unique_id}")
@@ -234,6 +235,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     _print_generation_group(i + 1, prompt, decoded, scores)
                 all_generations.append(decoded)
                 internal_scores_all.append(scores)
+                generation_metadata_all.append(generation_metadata)
                 if result is not None:
                     results.append(result)
                     cur_pass1 = result["accuracy"]
@@ -286,6 +288,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             "dataset_indices": dataset_indices,
             "overall_accuracy": overall_acc,
             "math_metrics": math_metrics,
+            "generation_metadata": generation_metadata_all,
         },
     )
     name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
