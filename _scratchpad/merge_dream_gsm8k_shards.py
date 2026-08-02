@@ -215,6 +215,14 @@ def _diagnose_shard(  # noqa: C901, PLR0912, PLR0913
             if not isinstance(metadata, list)
             else f"generation_metadata has {len(metadata)} rows, expected {row_count}",
         )
+    elif any(isinstance(row, dict) and "model_forward_passes" not in row for row in metadata):
+        missing_forward_count = sum(
+            isinstance(row, dict) and "model_forward_passes" not in row for row in metadata
+        )
+        issues.append(
+            f"{missing_forward_count}/{len(metadata)} generation_metadata rows lack "
+            "model_forward_passes (expected for Dream timing-only metadata)",
+        )
 
     status = "OK" if not issues else "ISSUES"
     print(

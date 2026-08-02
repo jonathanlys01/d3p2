@@ -72,6 +72,16 @@ def test_generation_metadata_aggregation_and_score_metadata():
     assert _internal_score_metadata(classic)["method"] == "length_normalized_left_to_right_token_logprob"
 
 
+def test_generation_metadata_aggregation_accepts_dream_timing_only_rows():
+    stats = _aggregate_generation_metadata([{"wall_time_s": 1.5}, None])
+
+    assert stats["total_wall_time_s"] == 1.5
+    assert stats["total_model_forward_passes"] == 0
+    assert stats["mean_model_forward_passes"] == 0.0
+    assert stats["forward_passes_available_prompt_count"] == 0
+    assert stats["forward_passes_missing_prompt_count"] == 1
+
+
 def test_llada_math_classic_beam_reports_pass_and_generation_metrics(monkeypatch):
     from d5p4 import llada_math
 

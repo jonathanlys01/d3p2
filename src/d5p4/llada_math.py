@@ -138,17 +138,22 @@ def _shard_indexed_rows(rows: list, *, shard_index: int, num_shards: int) -> lis
 def _aggregate_generation_metadata(metadata: list[dict[str, float | int] | None]) -> dict[str, float | int]:
     measured = [row for row in metadata if row is not None]
     total_wall_time_s = sum(float(row["wall_time_s"]) for row in measured)
-    total_forward_passes = sum(int(row["model_forward_passes"]) for row in measured)
+    forward_measured = [row for row in measured if "model_forward_passes" in row]
+    total_forward_passes = sum(int(row["model_forward_passes"]) for row in forward_measured)
     measured_count = len(measured)
-    return {
+    stats: dict[str, float | int] = {
         "prompt_count": len(metadata),
         "measured_prompt_count": measured_count,
         "missing_prompt_count": len(metadata) - measured_count,
         "total_wall_time_s": total_wall_time_s,
         "mean_wall_time_s": total_wall_time_s / measured_count if measured_count else 0.0,
         "total_model_forward_passes": total_forward_passes,
-        "mean_model_forward_passes": total_forward_passes / measured_count if measured_count else 0.0,
+        "mean_model_forward_passes": total_forward_passes / len(forward_measured) if forward_measured else 0.0,
     }
+    if len(forward_measured) != measured_count:
+        stats["forward_passes_available_prompt_count"] = len(forward_measured)
+        stats["forward_passes_missing_prompt_count"] = measured_count - len(forward_measured)
+    return stats
 
 
 def _text_samples_from_results(results: list[dict]) -> list[list[str]]:

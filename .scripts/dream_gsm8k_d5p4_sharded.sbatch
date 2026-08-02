@@ -185,9 +185,19 @@ hostname
 nvidia-smi
 "${WORKER_COMMAND[@]}"
 
-# Incomplete merge attempts are expected for the first seven tasks. The last
-# completed task writes the aggregate after all eight strict shard checks pass.
-if "${MERGE_COMMAND[@]}" 2>/dev/null; then
+# Do not run the merge until every shard JSON exists. If all inputs exist and
+# the merge itself fails, preserve the nonzero exit code so Slurm reports the
+# real aggregation failure instead of a successful fallback echo.
+ALL_SHARDS_READY=true
+for shard_index in $(seq 0 $((NUM_SHARDS - 1))); do
+  if ! compgen -G "${SHARD_RESULTS_ROOT}/shard_${shard_index}/math-*.json" >/dev/null; then
+    ALL_SHARDS_READY=false
+    break
+  fi
+done
+
+if [[ "${ALL_SHARDS_READY}" == true ]]; then
+  "${MERGE_COMMAND[@]}"
   echo "All ${NUM_SHARDS} Dream shards merged into ${FINAL_OUTPUT}"
 else
   echo "Shard ${TASK_ID} finished; merge will occur after all shards complete."
