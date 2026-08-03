@@ -93,6 +93,26 @@ class ResumeDistributedContext:
     @classmethod
     def from_config(cls, config: Config) -> ResumeDistributedContext | None:
         world_size = get_runtime_world_size(config)
+        expected_world_size_raw = os.getenv("D5P4_EXPECTED_WORLD_SIZE")
+        if expected_world_size_raw is not None:
+            try:
+                expected_world_size = int(expected_world_size_raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "D5P4_EXPECTED_WORLD_SIZE must be a positive integer, "
+                    f"got {expected_world_size_raw!r}.",
+                ) from exc
+            if expected_world_size < 1:
+                raise RuntimeError(
+                    "D5P4_EXPECTED_WORLD_SIZE must be a positive integer, "
+                    f"got {expected_world_size_raw!r}.",
+                )
+            if world_size != expected_world_size:
+                raise RuntimeError(
+                    "Distributed runtime world-size mismatch before model loading: "
+                    f"launcher allocated {expected_world_size} GPU(s), but the runtime detected "
+                    f"world_size={world_size}. Check the srun/torchrun environment.",
+                )
         if world_size <= 1:
             return None
 

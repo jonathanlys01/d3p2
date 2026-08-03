@@ -6,18 +6,20 @@ from dataclasses import asdict
 import pytest
 import torch
 
+from d5p4 import resume_db
 from d5p4.config import Config
 from d5p4.resume_db import (
+    DREAM_CONFIG_KEYS,
+    HASH_EXCLUDED_CONFIG_KEYS,
     LEFT_TO_RIGHT_CONFIG_DEFAULTS,
     ResumableRunStore,
+    ResumeDistributedContext,
     ResumeLockError,
     experiment_hash,
     make_work_items,
     manifest_hash,
     prepare_resumable_run,
     semantic_config_dict,
-    DREAM_CONFIG_KEYS,
-    HASH_EXCLUDED_CONFIG_KEYS,
 )
 
 
@@ -65,6 +67,15 @@ def test_experiment_hash_uses_workflow_config_and_manifest_only():
         work_hash,
     )
     assert experiment_hash("other", cfg_a, work_hash) != experiment_hash("prompt_generation:llada", cfg_a, work_hash)
+
+
+def test_resume_context_rejects_launcher_world_size_mismatch(monkeypatch):
+    config = Config(disable_sys_args=True, standalone_job=False)
+    monkeypatch.setenv("D5P4_EXPECTED_WORLD_SIZE", "4")
+    monkeypatch.setattr(resume_db, "get_runtime_world_size", lambda _config: 1)
+
+    with pytest.raises(RuntimeError, match=r"allocated 4 GPU\(s\).*world_size=1"):
+        ResumeDistributedContext.from_config(config)
 
 
 def test_legacy_config_hash_matches_pre_dream_schema():

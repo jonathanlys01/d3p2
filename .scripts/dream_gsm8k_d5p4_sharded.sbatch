@@ -73,8 +73,11 @@ if (( GPUS_PER_TASK == 1 )); then
   PYTHON_LAUNCHER=(python)
 else
   STANDALONE_JOB=false
-  PYTHON_LAUNCHER=(torchrun --standalone --nproc_per_node="${GPUS_PER_TASK}")
+  # srun exports a one-task SLURM_STEP_ID that idr_torch otherwise prefers
+  # over torchrun's rank environment, incorrectly collapsing WORLD_SIZE to 1.
+  PYTHON_LAUNCHER=(env -u SLURM_STEP_ID torchrun --standalone --nproc_per_node="${GPUS_PER_TASK}")
 fi
+export D5P4_EXPECTED_WORLD_SIZE="${GPUS_PER_TASK}"
 
 NUM_SHARDS="${NUM_SHARDS:-8}"
 if ! [[ "${NUM_SHARDS}" =~ ^[1-9][0-9]*$ ]]; then
