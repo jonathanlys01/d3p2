@@ -21,9 +21,15 @@ from d5p4.llada_ref.modeling_llada import LLaDAModelLM
 
 def test_legacy_settings_stay_separate_from_config_arguments():
     settings, remaining = parse_legacy_settings(
-        ["--legacy-num-items=12", "--legacy-output-prefix=test", "--config=experiment.yaml"],
+        [
+            "--legacy-datasets=truthful_qa,gsm8k",
+            "--legacy-num-items=12",
+            "--legacy-output-prefix=test",
+            "--config=experiment.yaml",
+        ],
     )
 
+    assert settings.datasets == "truthful_qa,gsm8k"
     assert settings.num_items == 12
     assert settings.output_prefix == "test"
     assert remaining == ["--config=experiment.yaml"]
@@ -97,14 +103,16 @@ def test_legacy_internal_score_averages_four_normalized_batches(monkeypatch):
 def test_legacy_summary_uses_ar_likelihood_higher_is_better():
     points = pd.DataFrame(
         {
-            "entropy_score": [0.0, 1.0, 2.0, 3.0],
-            "self_certainty_score": [3.0, 1.0, 2.0, 0.0],
-            "ar_mean_log_likelihood": [0.0, 1.0, 2.0, 3.0],
+            "dataset": ["truthful_qa"] * 4 + ["gsm8k"] * 4,
+            "entropy_score": [0.0, 1.0, 2.0, 3.0] * 2,
+            "self_certainty_score": [3.0, 1.0, 2.0, 0.0] * 2,
+            "ar_mean_log_likelihood": [0.0, 1.0, 2.0, 3.0] * 2,
         },
     )
 
-    summary = summarize(points).iloc[0]
+    summary = summarize(points)
 
-    assert summary["entropy_spearman_rho_vs_ar_ll"] == pytest.approx(1.0)
-    assert summary["self_certainty_spearman_rho_vs_ar_ll"] < 0.0
-    assert summary["entropy_advantage"] > 1.0
+    assert summary["dataset"].tolist() == ["truthful_qa", "gsm8k"]
+    assert summary["entropy_spearman_rho_vs_ar_ll"].tolist() == pytest.approx([1.0, 1.0])
+    assert (summary["self_certainty_spearman_rho_vs_ar_ll"] < 0.0).all()
+    assert (summary["entropy_advantage"] > 1.0).all()

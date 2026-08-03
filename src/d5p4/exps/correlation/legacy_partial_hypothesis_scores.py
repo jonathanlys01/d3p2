@@ -26,7 +26,7 @@ import json
 import math
 import os
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -38,7 +38,7 @@ from scipy.stats import spearmanr
 from transformers import AutoTokenizer, LlamaForCausalLM, PreTrainedTokenizerBase
 
 from d5p4.config import Config
-from d5p4.data.qa import get_qa_dataset
+from d5p4.exps.correlation.partial_hypothesis_scores import ReferenceItem, load_reference_items
 from d5p4.llada_ref.modeling_llada import LLaDAModelLM
 from d5p4.utils import configure_runtime, process_model_args, seed_all, tqdm
 
@@ -46,16 +46,19 @@ from d5p4.utils import configure_runtime, process_model_args, seed_all, tqdm
 LEGACY_MC_SAMPLES = 64
 LEGACY_BATCH_SIZE = 16
 LEGACY_MASK_TOKEN_ID = 126336
+SUPPORTED_DATASETS = ("truthful_qa", "ai2_arc", "gsm8k", "mbpp", "humaneval")
 
 
 @dataclass(frozen=True)
 class LegacySettings:
     """Script-only settings kept outside the global experiment Config."""
 
+    datasets: str = "truthful_qa"
     num_items: int = -1
     output_prefix: str = "legacy_score_method_results_llada"
 
     def validate(self) -> None:
+        parse_datasets(self.datasets)
         if self.num_items == 0 or self.num_items < -1:
             raise ValueError("--legacy-num-items must be -1 or a positive integer")
         if not self.output_prefix.strip():
@@ -64,15 +67,29 @@ class LegacySettings:
 
 def parse_legacy_settings(argv: list[str]) -> tuple[LegacySettings, list[str]]:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--legacy-datasets", default=LegacySettings.datasets)
     parser.add_argument("--legacy-num-items", type=int, default=LegacySettings.num_items)
     parser.add_argument("--legacy-output-prefix", default=LegacySettings.output_prefix)
     parsed, remaining = parser.parse_known_args(argv)
     settings = LegacySettings(
+        datasets=parsed.legacy_datasets,
         num_items=parsed.legacy_num_items,
         output_prefix=parsed.legacy_output_prefix,
     )
     settings.validate()
     return settings, remaining
+
+
+def parse_datasets(value: str) -> list[str]:
+    datasets = [part.strip() for part in value.split(",") if part.strip()]
+    if not datasets:
+        raise ValueError("--legacy-datasets must contain at least one dataset")
+    unknown = sorted(set(datasets) - set(SUPPORTED_DATASETS))
+    if unknown:
+        raise ValueError(f"Unknown legacy datasets {unknown}; expected a subset of {list(SUPPORTED_DATASETS)}")
+    if len(datasets) != len(set(datasets)):
+        raise ValueError(f"--legacy-datasets contains duplicates: {datasets}")
+    return datasets
 
 
 def config_from_remaining_args(remaining: list[str]) -> Config:
@@ -198,18 +215,25 @@ def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
     os.replace(temporary, path)
 
 
-def _signature(config: Config, rows: list[tuple[int, str, str]]) -> str:
+def _signature(config: Config, items: list[ReferenceItem], datasets: list[str]) -> str:
     payload = {
-        "version": 1,
+        "version": 2,
         "statistic": "january_2026_mixed_masks_answer_logits_batch_minmax",
         "seed": config.seed,
         "llada_model_path": config.llada_model_path,
         "ar_model_path": config.ar_model_path,
         "mc_samples": LEGACY_MC_SAMPLES,
         "batch_size": LEGACY_BATCH_SIZE,
+        "datasets": datasets,
         "items": [
-            [index, hashlib.sha256(question.encode()).hexdigest(), hashlib.sha256(answer.encode()).hexdigest()]
-            for index, question, answer in rows
+            [
+                item.dataset,
+                item.item_id,
+                item.dataset_index,
+                hashlib.sha256(item.prompt_text.encode()).hexdigest(),
+                hashlib.sha256(item.completion_text.encode()).hexdigest(),
+            ]
+            for item in items
         ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -224,20 +248,24 @@ def _load_existing_points(path: Path, signature: str) -> pd.DataFrame:
     signatures = set(points["experiment_signature"].dropna().astype(str))
     if signatures != {signature}:
         raise RuntimeError(f"Existing legacy points at {path} have a different experiment signature")
-    if points["dataset_index"].duplicated().any():
-        raise RuntimeError(f"Existing legacy points at {path} contain duplicate dataset indices")
+    key_columns = ["dataset", "item_id"]
+    if any(column not in points.columns for column in key_columns):
+        raise RuntimeError(f"Existing legacy points at {path} lack per-dataset item keys")
+    if points.duplicated(key_columns).any():
+        raise RuntimeError(f"Existing legacy points at {path} contain duplicate dataset/item keys")
     return points
 
 
 def summarize(points: pd.DataFrame) -> pd.DataFrame:
-    entropy = spearmanr(points["entropy_score"], points["ar_mean_log_likelihood"])
-    self_certainty = spearmanr(points["self_certainty_score"], points["ar_mean_log_likelihood"])
-    return pd.DataFrame(
-        [
+    rows = []
+    for dataset, group in points.groupby("dataset", sort=False):
+        entropy = spearmanr(group["entropy_score"], group["ar_mean_log_likelihood"])
+        self_certainty = spearmanr(group["self_certainty_score"], group["ar_mean_log_likelihood"])
+        rows.append(
             {
                 "model": "llada",
-                "dataset": "truthful_qa",
-                "n_items": len(points),
+                "dataset": str(dataset),
+                "n_items": len(group),
                 "mc_samples": LEGACY_MC_SAMPLES,
                 "batch_size": LEGACY_BATCH_SIZE,
                 "masking": "mixed_answer_relative_1_to_100pct",
@@ -249,8 +277,8 @@ def summarize(points: pd.DataFrame) -> pd.DataFrame:
                 "self_certainty_p_value": float(self_certainty.pvalue),
                 "entropy_advantage": float(entropy.statistic - self_certainty.statistic),
             },
-        ],
-    )
+        )
+    return pd.DataFrame(rows)
 
 
 def _load_models(
@@ -292,60 +320,57 @@ def _load_models(
     return llada, llada_tokenizer, ar_model, ar_tokenizer
 
 
-def main() -> None:  # noqa: PLR0915
+def main() -> None:  # noqa: C901, PLR0915
     settings, remaining = parse_legacy_settings(sys.argv[1:])
     config = config_from_remaining_args(remaining)
     configure_runtime(config)
+    datasets = parse_datasets(settings.datasets)
+    items: list[ReferenceItem] = []
+    for dataset in datasets:
+        source = load_reference_items(config, dataset)
+        selected = source if settings.num_items < 0 else source[: settings.num_items]
+        if len(selected) < 2:
+            raise RuntimeError(f"The legacy correlation needs at least two items from {dataset}")
+        if settings.num_items > 0 and len(selected) < settings.num_items:
+            raise RuntimeError(f"Dataset {dataset} has only {len(selected)} items; requested {settings.num_items}")
+        items.extend(selected)
 
-    dataset_config = replace(
-        config,
-        disable_sys_args=True,
-        qa_dataset="truthful_qa",
-        qa_dataset_len=-1,
-        qa_n_shots=0,
-    )
-    frame = get_qa_dataset(dataset_config).reset_index(drop=True)
-    source_rows = [
-        (index, str(row["question"]), str(row["correct_answers"][0]))
-        for index, (_, row) in enumerate(frame.iterrows())
-        if len(row["correct_answers"]) > 0
-    ]
-    rows = source_rows if settings.num_items < 0 else source_rows[: settings.num_items]
-    if len(rows) < 2:
-        raise RuntimeError("The legacy correlation needs at least two TruthfulQA items")
-
-    signature = _signature(config, rows)
+    signature = _signature(config, items, datasets)
     output_root = Path(config.results_dir)
     points_path = output_root / f"{settings.output_prefix}_points.csv"
     summary_path = output_root / f"{settings.output_prefix}_correlations.csv"
     npz_path = output_root / f"{settings.output_prefix}.npz"
     existing = _load_existing_points(points_path, signature)
     point_rows = existing.to_dict("records") if not existing.empty else []
-    completed = {int(row["dataset_index"]) for row in point_rows}
+    completed = {(str(row["dataset"]), str(row["item_id"])) for row in point_rows}
 
     print("Legacy January 2026 score baseline")
-    print(f"  TruthfulQA items: {len(rows)}")
+    for dataset in datasets:
+        print(f"  {dataset}: {sum(item.dataset == dataset for item in items)} items")
     print("  masks: four mixed-ratio batches of 16; prompt always visible")
     print("  scores: all answer logits, within-item per-batch min-max normalization")
     print("  reference: conditional Llama answer mean log-likelihood")
 
-    if len(completed) < len(rows):
+    if len(completed) < len(items):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         seed_all(config.seed)
         llada, llada_tokenizer, ar_model, ar_tokenizer = _load_models(config, device)
 
         pending_since_flush = 0
-        for dataset_index, question, answer in tqdm(rows, desc="Legacy score baseline"):
+        for item in tqdm(items, desc="Legacy score baseline"):
+            key = (item.dataset, item.item_id)
+            question = item.prompt_text
+            answer = item.completion_text
             prompt_ids = llada_tokenizer(question, add_special_tokens=False)["input_ids"]
             answer_ids = llada_tokenizer(answer, add_special_tokens=False)["input_ids"]
             prompt = torch.tensor(prompt_ids, dtype=torch.long, device=device)
             answer_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
             if answer_tensor.numel() == 0:
-                raise RuntimeError(f"TruthfulQA row {dataset_index} has an empty tokenized answer")
+                raise RuntimeError(f"{item.dataset} item {item.item_id} has an empty tokenized answer")
 
             # Advance both historical mask streams even when resuming a completed row.
             advance_discarded_likelihood_masks(prompt, answer_tensor)
-            if dataset_index in completed:
+            if key in completed:
                 repeated, prompt_length = _repeated_sequence(prompt, answer_tensor)
                 for _ in range(LEGACY_MC_SAMPLES // LEGACY_BATCH_SIZE):
                     legacy_mask_batch(repeated, prompt_length=prompt_length)
@@ -360,9 +385,11 @@ def main() -> None:  # noqa: PLR0915
             point_rows.append(
                 {
                     "experiment_signature": signature,
-                    "dataset_index": dataset_index,
-                    "question": question,
-                    "answer": answer,
+                    "dataset": item.dataset,
+                    "item_id": item.item_id,
+                    "dataset_index": item.dataset_index,
+                    "prompt_text": question,
+                    "completion_text": answer,
                     "answer_tokens": int(answer_tensor.numel()),
                     "entropy_score": entropy_score,
                     "self_certainty_score": self_certainty_score,
@@ -370,15 +397,15 @@ def main() -> None:  # noqa: PLR0915
                     "ar_ppl": math.exp(-ar_ll),
                 },
             )
-            completed.add(dataset_index)
+            completed.add(key)
             pending_since_flush += 1
             if pending_since_flush >= LEGACY_BATCH_SIZE:
                 _atomic_write_csv(pd.DataFrame(point_rows), points_path)
                 pending_since_flush = 0
 
-    points = pd.DataFrame(point_rows).sort_values("dataset_index").reset_index(drop=True)
-    if len(points) != len(rows):
-        raise RuntimeError(f"Legacy point coverage mismatch: expected {len(rows)}, found {len(points)}")
+    points = pd.DataFrame(point_rows).sort_values(["dataset", "dataset_index"]).reset_index(drop=True)
+    if len(points) != len(items):
+        raise RuntimeError(f"Legacy point coverage mismatch: expected {len(items)}, found {len(points)}")
     _atomic_write_csv(points, points_path)
     summary = summarize(points)
     _atomic_write_csv(summary, summary_path)
@@ -387,10 +414,13 @@ def main() -> None:  # noqa: PLR0915
         entropy_scores=points["entropy_score"].to_numpy(),
         self_certainty_scores=points["self_certainty_score"].to_numpy(),
         ar_ll=points["ar_mean_log_likelihood"].to_numpy(),
+        datasets=points["dataset"].to_numpy(),
+        item_ids=points["item_id"].to_numpy(),
     )
 
     print("\nLegacy correlation results")
     display_columns = [
+        "dataset",
         "n_items",
         "entropy_spearman_rho_vs_ar_ll",
         "self_certainty_spearman_rho_vs_ar_ll",
