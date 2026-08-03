@@ -24,7 +24,15 @@ class MathShardMergeError(RuntimeError):
     """Raised when shard outputs cannot form one complete math result."""
 
 
-_IGNORED_CONFIG_KEYS = {"comment", "qa_shard_index", "results_dir", "resume_db_dir"}
+_IGNORED_CONFIG_KEYS = {
+    "comment",
+    "qa_shard_index",
+    "results_dir",
+    "resume_db_dir",
+    # Runtime topology is operational: a partial one-GPU shard can be resumed
+    # with distributed ranks without changing its semantic experiment identity.
+    "standalone_job",
+}
 
 
 def _completed_result_path(shard_dir: Path) -> Path:

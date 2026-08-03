@@ -169,6 +169,21 @@ def test_generic_merge_orders_strided_rows_and_keeps_sixteen_candidates():
     assert payload["comparison_metrics"]["pass@1"] == pytest.approx(1 / 16)
 
 
+def test_generic_merge_accepts_mixed_single_and_distributed_runtime_topology():
+    payloads = [_payload(index) for index in range(4)]
+    payloads[2]["config"]["standalone_job"] = False
+
+    payload = merge_math_shards(
+        payloads,
+        world_size=4,
+        expected_method="baseline",
+        expected_candidates=16,
+        num_workers=1,
+    )
+
+    assert payload["dataset_indices"] == [0, 1, 2, 3]
+
+
 def test_generic_merge_rejects_wrong_method_and_missing_index():
     payloads = [_payload(index) for index in range(4)]
     with pytest.raises(MathShardMergeError, match="expected 'greedy_map'"):
