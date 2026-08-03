@@ -45,6 +45,8 @@ BUV="${BUV:-${BRAIN_ROOT}/.local/bin/uv}"
 SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
 UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-${SROOT}/d3p2/.venv}"
 
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-8}"
+
 NUM_SHARDS="${NUM_SHARDS:-8}"
 if ! [[ "${NUM_SHARDS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "NUM_SHARDS must be a positive integer, got ${NUM_SHARDS}" >&2
@@ -129,7 +131,6 @@ WORKER_COMMAND=(
   srun
   --nodes=1
   --ntasks=1
-  --cpus-per-task=8
   --kill-on-bad-exit=1
   python
   "${SRC_ROOT}/dream_math.py"
@@ -146,7 +147,7 @@ MERGE_COMMAND=(
   --expected-method=greedy_map
   --expected-candidates=16
   --comment="Dream GSM8K D5P4 4x4, w=${D5P4_W_INTERACTION}, ${NUM_SHARDS} question shards"
-  --num-workers=8
+  --num-workers="${CPUS_PER_TASK}"
 )
 
 echo "Dream GSM8K D5P4 question-sharded run"

@@ -32,7 +32,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=4G
+#SBATCH --mem=32G
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%A_%a.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%A_%a.err
 #SBATCH --array=0-3
@@ -45,6 +45,8 @@ SRC_ROOT="${ROOT}/src/d5p4"
 BRAIN_ROOT="${BRAIN_ROOT:-/Brain/private/j21lys}"
 BUV="${BUV:-${BRAIN_ROOT}/.local/bin/uv}"
 SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
+
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-8}"
 
 NUM_WORKERS="${NUM_WORKERS:-${SLURM_ARRAY_TASK_COUNT:-4}}"
 N_GROUPS="${N_GROUPS:-2}"
@@ -144,7 +146,6 @@ WORKER_COMMAND=(
   srun
   --nodes=1
   --ntasks=1
-  --cpus-per-task=8
   --kill-on-bad-exit=1
   python
   "${SRC_ROOT}/llada_math.py"
@@ -166,7 +167,7 @@ MERGE_COMMAND=(
   --n-groups="${N_GROUPS}"
   --group-size="${GROUP_SIZE}"
   --expected-candidates="${CANDIDATE_COUNT}"
-  --num-workers=8
+  --num-workers="${CPUS_PER_TASK}"
 )
 
 echo "D5P4 GSM8K comparison"
