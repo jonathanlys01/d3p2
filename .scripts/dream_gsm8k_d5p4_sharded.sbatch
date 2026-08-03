@@ -2,10 +2,11 @@
 
 # Question-sharded Dream GSM8K D5P4 run.
 #
-# One-GPU array tasks process disjoint strided question shards from the same
-# seeded GSM8K order. Each question gets 16 candidates (4x4 D5P4), with the
-# interaction weight configurable through D5P4_W_INTERACTION. The last task to
-# finish attempts a strict merge.
+# Array tasks process disjoint strided question shards from the same seeded
+# GSM8K order. Each task uses every GPU Slurm allocated to it; the default is
+# one GPU, while 2- or 4-GPU retries distribute the same global 4x4 D5P4 arm
+# across local ranks. The interaction weight is configurable through
+# D5P4_W_INTERACTION. The last task to finish attempts a strict merge.
 #
 # Submit from the repository root:
 #   sbatch .scripts/dream_gsm8k_d5p4_sharded.sbatch
@@ -21,6 +22,9 @@
 #     --export=ALL,NUM_SHARDS=11,D5P4_W_INTERACTION=10,RESULTS_ROOT=/Brain/private/j21lys/results/dream_gsm8k_d5p4_w10_sharded_n11 \
 #     .scripts/dream_gsm8k_d5p4_sharded.sbatch
 #   sbatch --array=3 .scripts/dream_gsm8k_d5p4_sharded.sbatch  # retry one shard
+#   sbatch --array=4 --gres=gpu:a100:4 \
+#     --export=ALL,NUM_SHARDS=8,RESULTS_ROOT=/Brain/private/j21lys/results/dream_gsm8k_d5p4_w50_sharded \
+#     .scripts/dream_gsm8k_d5p4_sharded.sbatch  # resume shard 4 on four GPUs
 
 #SBATCH --job-name=dream-gsm8k-d5p4-w50
 #SBATCH --partition=Mee_Global_GPU
@@ -46,6 +50,31 @@ SROOT="${SROOT:-/SCRATCH/${USER:?USER is not set}}"
 UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-${SROOT}/d3p2/.venv}"
 
 CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-8}"
+
+if [[ -n "${SLURM_GPUS_ON_NODE:-}" ]]; then
+  GPUS_PER_TASK="${SLURM_GPUS_ON_NODE}"
+elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  IFS=',' read -r -a VISIBLE_GPUS <<< "${CUDA_VISIBLE_DEVICES}"
+  GPUS_PER_TASK="${#VISIBLE_GPUS[@]}"
+else
+  GPUS_PER_TASK=1
+fi
+if ! [[ "${GPUS_PER_TASK}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Could not determine a positive GPU count from Slurm; got ${GPUS_PER_TASK}" >&2
+  exit 1
+fi
+if (( 4 % GPUS_PER_TASK != 0 )); then
+  echo "Dream's global n_groups=4 must be divisible by the allocated GPU count, got ${GPUS_PER_TASK}" >&2
+  exit 1
+fi
+
+if (( GPUS_PER_TASK == 1 )); then
+  STANDALONE_JOB=true
+  PYTHON_LAUNCHER=(python)
+else
+  STANDALONE_JOB=false
+  PYTHON_LAUNCHER=(torchrun --standalone --nproc_per_node="${GPUS_PER_TASK}")
+fi
 
 NUM_SHARDS="${NUM_SHARDS:-8}"
 if ! [[ "${NUM_SHARDS}" =~ ^[1-9][0-9]*$ ]]; then
@@ -118,7 +147,7 @@ COMMON_ARGS=(
   interactive=false
   minimal_log=true
   skip_eval=false
-  standalone_job=true
+  standalone_job="${STANDALONE_JOB}"
   resume_runs=true
   resume_db_keep_completed=true
   results_dir="${SHARD_RESULTS_DIR}"
@@ -132,7 +161,7 @@ WORKER_COMMAND=(
   --nodes=1
   --ntasks=1
   --kill-on-bad-exit=1
-  python
+  "${PYTHON_LAUNCHER[@]}"
   "${SRC_ROOT}/dream_math.py"
   "${COMMON_ARGS[@]}"
 )
@@ -152,6 +181,7 @@ MERGE_COMMAND=(
 
 echo "Dream GSM8K D5P4 question-sharded run"
 echo "Array task ${TASK_ID}: question shard $((TASK_ID + 1))/${NUM_SHARDS}"
+echo "Allocated GPUs: ${GPUS_PER_TASK}; launcher: ${PYTHON_LAUNCHER[*]}; standalone_job=${STANDALONE_JOB}"
 echo "Profile: Dream-v0-Instruct-7B, seed=${SEED}, 4x4=16 candidates, _w_interaction=${D5P4_W_INTERACTION}"
 echo "Final output: ${FINAL_OUTPUT}"
 
