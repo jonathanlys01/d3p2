@@ -47,6 +47,12 @@ LEGACY_MC_SAMPLES = 64
 LEGACY_BATCH_SIZE = 16
 LEGACY_MASK_TOKEN_ID = 126336
 SUPPORTED_DATASETS = ("truthful_qa", "ai2_arc", "gsm8k", "mbpp", "humaneval")
+MASK_BUCKETS: dict[str, tuple[float, float] | None] = {
+    "mixed": None,
+    "low": (0.05, 0.25),
+    "mid": (0.40, 0.60),
+    "high": (0.75, 0.95),
+}
 
 
 @dataclass(frozen=True)
@@ -54,11 +60,13 @@ class LegacySettings:
     """Script-only settings kept outside the global experiment Config."""
 
     datasets: str = "truthful_qa"
+    mask_buckets: str = "mixed"
     num_items: int = -1
     output_prefix: str = "legacy_score_method_results_llada"
 
     def validate(self) -> None:
         parse_datasets(self.datasets)
+        parse_mask_buckets(self.mask_buckets)
         if self.num_items == 0 or self.num_items < -1:
             raise ValueError("--legacy-num-items must be -1 or a positive integer")
         if not self.output_prefix.strip():
@@ -68,11 +76,13 @@ class LegacySettings:
 def parse_legacy_settings(argv: list[str]) -> tuple[LegacySettings, list[str]]:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--legacy-datasets", default=LegacySettings.datasets)
+    parser.add_argument("--legacy-mask-buckets", default=LegacySettings.mask_buckets)
     parser.add_argument("--legacy-num-items", type=int, default=LegacySettings.num_items)
     parser.add_argument("--legacy-output-prefix", default=LegacySettings.output_prefix)
     parsed, remaining = parser.parse_known_args(argv)
     settings = LegacySettings(
         datasets=parsed.legacy_datasets,
+        mask_buckets=parsed.legacy_mask_buckets,
         num_items=parsed.legacy_num_items,
         output_prefix=parsed.legacy_output_prefix,
     )
@@ -92,6 +102,20 @@ def parse_datasets(value: str) -> list[str]:
     return datasets
 
 
+def parse_mask_buckets(value: str) -> list[str]:
+    buckets = [part.strip() for part in value.split(",") if part.strip()]
+    if not buckets:
+        raise ValueError("--legacy-mask-buckets must contain at least one bucket")
+    unknown = sorted(set(buckets) - set(MASK_BUCKETS))
+    if unknown:
+        raise ValueError(f"Unknown legacy mask buckets {unknown}; expected a subset of {list(MASK_BUCKETS)}")
+    if len(buckets) != len(set(buckets)):
+        raise ValueError(f"--legacy-mask-buckets contains duplicates: {buckets}")
+    if "mixed" in buckets and len(buckets) > 1:
+        raise ValueError("The historical mixed range cannot be combined with low/mid/high buckets")
+    return buckets
+
+
 def config_from_remaining_args(remaining: list[str]) -> Config:
     original_argv = sys.argv
     try:
@@ -106,6 +130,7 @@ def legacy_mask_batch(
     *,
     prompt_length: int,
     mask_token_id: int = LEGACY_MASK_TOKEN_ID,
+    mask_ratio_range: tuple[float, float] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply the historical cyclic mask-count sweep to answer tokens."""
     batch_size, sequence_length = batch.shape
@@ -113,16 +138,25 @@ def legacy_mask_batch(
     if answer_length <= 0:
         raise ValueError("Legacy masking requires at least one answer token")
 
-    start_count = torch.randint(1, answer_length + 1, (), device=batch.device)
+    if mask_ratio_range is None:
+        minimum_count = 1
+        maximum_count = answer_length
+    else:
+        low, high = mask_ratio_range
+        minimum_count = max(1, math.ceil(low * answer_length))
+        maximum_count = min(answer_length, max(minimum_count, math.floor(high * answer_length)))
+    count_span = maximum_count - minimum_count + 1
+
+    start_count = torch.randint(minimum_count, maximum_count + 1, (), device=batch.device)
     mask_counts = torch.round(
         torch.linspace(
             float(start_count),
-            start_count + (batch_size - 1) * (answer_length / batch_size),
+            start_count + (batch_size - 1) * (count_span / batch_size),
             steps=batch_size,
             device=batch.device,
         ),
     ).long()
-    mask_counts = ((mask_counts - 1) % answer_length) + 1
+    mask_counts = ((mask_counts - minimum_count) % count_span) + minimum_count
 
     answer_mask = torch.arange(answer_length, device=batch.device).repeat(batch_size, 1)
     answer_mask = answer_mask < mask_counts.unsqueeze(1)
@@ -176,13 +210,19 @@ def compute_legacy_internal_scores(
     model: LLaDAModelLM,
     prompt: torch.Tensor,
     answer: torch.Tensor,
+    *,
+    mask_ratio_range: tuple[float, float] | None = None,
 ) -> tuple[float, float]:
     repeated, prompt_length = _repeated_sequence(prompt, answer)
     entropy_batch_means: list[float] = []
     self_batch_means: list[float] = []
 
     for _ in range(LEGACY_MC_SAMPLES // LEGACY_BATCH_SIZE):
-        masked, _ = legacy_mask_batch(repeated, prompt_length=prompt_length)
+        masked, _ = legacy_mask_batch(
+            repeated,
+            prompt_length=prompt_length,
+            mask_ratio_range=mask_ratio_range,
+        )
         output = model(masked, return_dict=True)
         log_probs = F.log_softmax(output.logits[:, prompt_length:, :], dim=-1)
         entropy, self_certainty = legacy_scores_from_log_probs(log_probs)
@@ -215,9 +255,14 @@ def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
     os.replace(temporary, path)
 
 
-def _signature(config: Config, items: list[ReferenceItem], datasets: list[str]) -> str:
+def _signature(
+    config: Config,
+    items: list[ReferenceItem],
+    datasets: list[str],
+    mask_buckets: list[str],
+) -> str:
     payload = {
-        "version": 2,
+        "version": 3,
         "statistic": "january_2026_mixed_masks_answer_logits_batch_minmax",
         "seed": config.seed,
         "llada_model_path": config.llada_model_path,
@@ -225,6 +270,7 @@ def _signature(config: Config, items: list[ReferenceItem], datasets: list[str]) 
         "mc_samples": LEGACY_MC_SAMPLES,
         "batch_size": LEGACY_BATCH_SIZE,
         "datasets": datasets,
+        "mask_buckets": {bucket: MASK_BUCKETS[bucket] for bucket in mask_buckets},
         "items": [
             [
                 item.dataset,
@@ -248,23 +294,32 @@ def _load_existing_points(path: Path, signature: str) -> pd.DataFrame:
     signatures = set(points["experiment_signature"].dropna().astype(str))
     if signatures != {signature}:
         raise RuntimeError(f"Existing legacy points at {path} have a different experiment signature")
-    key_columns = ["dataset", "item_id"]
+    key_columns = ["dataset", "item_id", "mask_bucket"]
     if any(column not in points.columns for column in key_columns):
-        raise RuntimeError(f"Existing legacy points at {path} lack per-dataset item keys")
+        raise RuntimeError(f"Existing legacy points at {path} lack per-dataset/bucket item keys")
     if points.duplicated(key_columns).any():
-        raise RuntimeError(f"Existing legacy points at {path} contain duplicate dataset/item keys")
+        raise RuntimeError(f"Existing legacy points at {path} contain duplicate dataset/item/bucket keys")
     return points
 
 
 def summarize(points: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for dataset, group in points.groupby("dataset", sort=False):
+    grouped = points.groupby(["dataset", "task_family", "mask_bucket", "mask_ratio_low", "mask_ratio_high"], sort=False)
+    for group_key, group in grouped:
+        dataset, task_family, mask_bucket, mask_ratio_low, mask_ratio_high = cast(
+            tuple[str, str, str, float, float],
+            group_key,
+        )
         entropy = spearmanr(group["entropy_score"], group["ar_mean_log_likelihood"])
         self_certainty = spearmanr(group["self_certainty_score"], group["ar_mean_log_likelihood"])
         rows.append(
             {
                 "model": "llada",
                 "dataset": str(dataset),
+                "task_family": str(task_family),
+                "mask_bucket": str(mask_bucket),
+                "mask_ratio_low": float(mask_ratio_low),
+                "mask_ratio_high": float(mask_ratio_high),
                 "n_items": len(group),
                 "mc_samples": LEGACY_MC_SAMPLES,
                 "batch_size": LEGACY_BATCH_SIZE,
@@ -325,6 +380,7 @@ def main() -> None:  # noqa: C901, PLR0915
     config = config_from_remaining_args(remaining)
     configure_runtime(config)
     datasets = parse_datasets(settings.datasets)
+    mask_buckets = parse_mask_buckets(settings.mask_buckets)
     items: list[ReferenceItem] = []
     for dataset in datasets:
         source = load_reference_items(config, dataset)
@@ -335,30 +391,40 @@ def main() -> None:  # noqa: C901, PLR0915
             raise RuntimeError(f"Dataset {dataset} has only {len(selected)} items; requested {settings.num_items}")
         items.extend(selected)
 
-    signature = _signature(config, items, datasets)
+    signature = _signature(config, items, datasets, mask_buckets)
     output_root = Path(config.results_dir)
     points_path = output_root / f"{settings.output_prefix}_points.csv"
     summary_path = output_root / f"{settings.output_prefix}_correlations.csv"
     npz_path = output_root / f"{settings.output_prefix}.npz"
     existing = _load_existing_points(points_path, signature)
     point_rows = existing.to_dict("records") if not existing.empty else []
-    completed = {(str(row["dataset"]), str(row["item_id"])) for row in point_rows}
+    completed = {
+        (str(row["dataset"]), str(row["item_id"]), str(row["mask_bucket"]))
+        for row in point_rows
+    }
 
     print("Legacy January 2026 score baseline")
     for dataset in datasets:
         print(f"  {dataset}: {sum(item.dataset == dataset for item in items)} items")
-    print("  masks: four mixed-ratio batches of 16; prompt always visible")
+    print(
+        "  mask ranges: "
+        + ", ".join(
+            f"{bucket}={MASK_BUCKETS[bucket] if MASK_BUCKETS[bucket] is not None else '1 token to 100%'}"
+            for bucket in mask_buckets
+        ),
+    )
+    print("  masks: four range-sweep batches of 16 per item and mask range; prompt always visible")
     print("  scores: all answer logits, within-item per-batch min-max normalization")
     print("  reference: conditional Llama answer mean log-likelihood")
 
-    if len(completed) < len(items):
+    expected_points = len(items) * len(mask_buckets)
+    if len(completed) < expected_points:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         seed_all(config.seed)
         llada, llada_tokenizer, ar_model, ar_tokenizer = _load_models(config, device)
 
         pending_since_flush = 0
         for item in tqdm(items, desc="Legacy score baseline"):
-            key = (item.dataset, item.item_id)
             question = item.prompt_text
             answer = item.completion_text
             prompt_ids = llada_tokenizer(question, add_special_tokens=False)["input_ids"]
@@ -370,42 +436,73 @@ def main() -> None:  # noqa: C901, PLR0915
 
             # Advance both historical mask streams even when resuming a completed row.
             advance_discarded_likelihood_masks(prompt, answer_tensor)
-            if key in completed:
-                repeated, prompt_length = _repeated_sequence(prompt, answer_tensor)
-                for _ in range(LEGACY_MC_SAMPLES // LEGACY_BATCH_SIZE):
-                    legacy_mask_batch(repeated, prompt_length=prompt_length)
-                continue
-
-            entropy_score, self_certainty_score = compute_legacy_internal_scores(
-                llada,
-                prompt,
-                answer_tensor,
+            item_has_pending_bucket = any(
+                (item.dataset, item.item_id, bucket) not in completed for bucket in mask_buckets
             )
-            ar_ll = compute_legacy_ar_likelihood(ar_model, ar_tokenizer, question, answer)
-            point_rows.append(
-                {
-                    "experiment_signature": signature,
-                    "dataset": item.dataset,
-                    "item_id": item.item_id,
-                    "dataset_index": item.dataset_index,
-                    "prompt_text": question,
-                    "completion_text": answer,
-                    "answer_tokens": int(answer_tensor.numel()),
-                    "entropy_score": entropy_score,
-                    "self_certainty_score": self_certainty_score,
-                    "ar_mean_log_likelihood": ar_ll,
-                    "ar_ppl": math.exp(-ar_ll),
-                },
+            ar_ll = (
+                compute_legacy_ar_likelihood(ar_model, ar_tokenizer, question, answer)
+                if item_has_pending_bucket
+                else float("nan")
             )
-            completed.add(key)
-            pending_since_flush += 1
-            if pending_since_flush >= LEGACY_BATCH_SIZE:
-                _atomic_write_csv(pd.DataFrame(point_rows), points_path)
-                pending_since_flush = 0
+            for bucket in mask_buckets:
+                key = (item.dataset, item.item_id, bucket)
+                mask_ratio_range = MASK_BUCKETS[bucket]
+                if key in completed:
+                    repeated, prompt_length = _repeated_sequence(prompt, answer_tensor)
+                    for _ in range(LEGACY_MC_SAMPLES // LEGACY_BATCH_SIZE):
+                        legacy_mask_batch(
+                            repeated,
+                            prompt_length=prompt_length,
+                            mask_ratio_range=mask_ratio_range,
+                        )
+                    continue
 
-    points = pd.DataFrame(point_rows).sort_values(["dataset", "dataset_index"]).reset_index(drop=True)
-    if len(points) != len(items):
-        raise RuntimeError(f"Legacy point coverage mismatch: expected {len(items)}, found {len(points)}")
+                entropy_score, self_certainty_score = compute_legacy_internal_scores(
+                    llada,
+                    prompt,
+                    answer_tensor,
+                    mask_ratio_range=mask_ratio_range,
+                )
+                low, high = mask_ratio_range if mask_ratio_range is not None else (0.0, 1.0)
+                point_rows.append(
+                    {
+                        "experiment_signature": signature,
+                        "dataset": item.dataset,
+                        "task_family": item.task_family,
+                        "item_id": item.item_id,
+                        "dataset_index": item.dataset_index,
+                        "mask_bucket": bucket,
+                        "mask_ratio_low": low,
+                        "mask_ratio_high": high,
+                        "prompt_text": question,
+                        "completion_text": answer,
+                        "answer_tokens": int(answer_tensor.numel()),
+                        "entropy_score": entropy_score,
+                        "self_certainty_score": self_certainty_score,
+                        "ar_mean_log_likelihood": ar_ll,
+                        "ar_ppl": math.exp(-ar_ll),
+                    },
+                )
+                completed.add(key)
+                pending_since_flush += 1
+                if pending_since_flush >= LEGACY_BATCH_SIZE:
+                    _atomic_write_csv(pd.DataFrame(point_rows), points_path)
+                    pending_since_flush = 0
+
+    points = pd.DataFrame(point_rows)
+    dataset_order = {dataset: index for index, dataset in enumerate(datasets)}
+    bucket_order = {bucket: index for index, bucket in enumerate(mask_buckets)}
+    dataset_values = cast(pd.Series, points["dataset"]).astype(str).tolist()
+    bucket_values = cast(pd.Series, points["mask_bucket"]).astype(str).tolist()
+    points["_dataset_order"] = [dataset_order[value] for value in dataset_values]
+    points["_bucket_order"] = [bucket_order[value] for value in bucket_values]
+    points = (
+        points.sort_values(["_dataset_order", "_bucket_order", "dataset_index"])
+        .drop(columns=["_dataset_order", "_bucket_order"])
+        .reset_index(drop=True)
+    )
+    if len(points) != expected_points:
+        raise RuntimeError(f"Legacy point coverage mismatch: expected {expected_points}, found {len(points)}")
     _atomic_write_csv(points, points_path)
     summary = summarize(points)
     _atomic_write_csv(summary, summary_path)
@@ -416,11 +513,16 @@ def main() -> None:  # noqa: C901, PLR0915
         ar_ll=points["ar_mean_log_likelihood"].to_numpy(),
         datasets=points["dataset"].to_numpy(),
         item_ids=points["item_id"].to_numpy(),
+        mask_buckets=points["mask_bucket"].to_numpy(),
     )
 
     print("\nLegacy correlation results")
     display_columns = [
         "dataset",
+        "task_family",
+        "mask_bucket",
+        "mask_ratio_low",
+        "mask_ratio_high",
         "n_items",
         "entropy_spearman_rho_vs_ar_ll",
         "self_certainty_spearman_rho_vs_ar_ll",

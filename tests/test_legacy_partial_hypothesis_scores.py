@@ -23,6 +23,7 @@ def test_legacy_settings_stay_separate_from_config_arguments():
     settings, remaining = parse_legacy_settings(
         [
             "--legacy-datasets=truthful_qa,gsm8k",
+            "--legacy-mask-buckets=low,mid,high",
             "--legacy-num-items=12",
             "--legacy-output-prefix=test",
             "--config=experiment.yaml",
@@ -30,6 +31,7 @@ def test_legacy_settings_stay_separate_from_config_arguments():
     )
 
     assert settings.datasets == "truthful_qa,gsm8k"
+    assert settings.mask_buckets == "low,mid,high"
     assert settings.num_items == 12
     assert settings.output_prefix == "test"
     assert remaining == ["--config=experiment.yaml"]
@@ -45,6 +47,19 @@ def test_legacy_mask_batch_keeps_prompt_and_sweeps_answer_counts():
     assert counts.min().item() >= 1
     assert counts.max().item() <= 8
     assert len(torch.unique(counts)) > 1
+
+
+@pytest.mark.parametrize(
+    ("ratio_range", "minimum", "maximum"),
+    [((0.05, 0.25), 1, 5), ((0.40, 0.60), 8, 12), ((0.75, 0.95), 15, 19)],
+)
+def test_legacy_mask_batch_respects_ratio_bucket(ratio_range, minimum, maximum):
+    torch.manual_seed(42)
+    source = torch.arange(22).repeat(LEGACY_BATCH_SIZE, 1)
+    _, counts = legacy_mask_batch(source, prompt_length=2, mask_ratio_range=ratio_range)
+
+    assert counts.min().item() == minimum
+    assert counts.max().item() == maximum
 
 
 def test_legacy_scores_apply_batch_minmax_to_each_proxy():
@@ -66,8 +81,8 @@ def test_legacy_scores_apply_batch_minmax_to_each_proxy():
 def test_legacy_internal_score_averages_four_normalized_batches(monkeypatch):
     calls = 0
 
-    def fake_mask(batch, *, prompt_length, mask_token_id=126336):
-        del prompt_length, mask_token_id
+    def fake_mask(batch, *, prompt_length, mask_token_id=126336, mask_ratio_range=None):
+        del prompt_length, mask_token_id, mask_ratio_range
         counts = torch.arange(1, batch.shape[0] + 1)
         return batch, counts
 
@@ -104,6 +119,10 @@ def test_legacy_summary_uses_ar_likelihood_higher_is_better():
     points = pd.DataFrame(
         {
             "dataset": ["truthful_qa"] * 4 + ["gsm8k"] * 4,
+            "task_family": ["qa"] * 4 + ["math"] * 4,
+            "mask_bucket": ["low"] * 8,
+            "mask_ratio_low": [0.05] * 8,
+            "mask_ratio_high": [0.25] * 8,
             "entropy_score": [0.0, 1.0, 2.0, 3.0] * 2,
             "self_certainty_score": [3.0, 1.0, 2.0, 0.0] * 2,
             "ar_mean_log_likelihood": [0.0, 1.0, 2.0, 3.0] * 2,
