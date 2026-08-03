@@ -10,6 +10,7 @@ import torch
 from d5p4.exps.correlation.legacy_partial_hypothesis_scores import (
     LEGACY_BATCH_SIZE,
     LEGACY_MC_SAMPLES,
+    build_compact_report,
     compute_legacy_internal_scores,
     legacy_mask_batch,
     legacy_scores_from_log_probs,
@@ -135,3 +136,14 @@ def test_legacy_summary_uses_ar_likelihood_higher_is_better():
     assert summary["entropy_spearman_rho_vs_ar_ll"].tolist() == pytest.approx([1.0, 1.0])
     assert (summary["self_certainty_spearman_rho_vs_ar_ll"] < 0.0).all()
     assert (summary["entropy_advantage"] > 1.0).all()
+
+    compact = build_compact_report(summary)
+    assert compact[["group", "value"]].values.tolist() == [
+        ["dataset", "truthful_qa"],
+        ["dataset", "gsm8k"],
+        ["masking", "low [5%, 25%]"],
+        ["total", "all conditions"],
+    ]
+    assert compact["n_conditions"].tolist() == [1, 1, 2, 2]
+    assert compact["n_items_per_condition"].tolist() == [4, 4, 4, 4]
+    assert (compact["entropy_advantage"] > 1.0).all()

@@ -323,7 +323,7 @@ def summarize(points: pd.DataFrame) -> pd.DataFrame:
                 "n_items": len(group),
                 "mc_samples": LEGACY_MC_SAMPLES,
                 "batch_size": LEGACY_BATCH_SIZE,
-                "masking": "mixed_answer_relative_1_to_100pct",
+                "masking": "answer_relative_range_sweep",
                 "score_scope": "all_answer_positions",
                 "normalization": "within_item_per_batch_minmax",
                 "entropy_spearman_rho_vs_ar_ll": float(entropy.statistic),
@@ -333,6 +333,48 @@ def summarize(points: pd.DataFrame) -> pd.DataFrame:
                 "entropy_advantage": float(entropy.statistic - self_certainty.statistic),
             },
         )
+    return pd.DataFrame(rows)
+
+
+def _fisher_mean(values: pd.Series) -> float:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return float("nan")
+    clipped = np.clip(finite, -1.0 + 1e-7, 1.0 - 1e-7)
+    return float(np.tanh(np.arctanh(clipped).mean()))
+
+
+def build_compact_report(summary: pd.DataFrame) -> pd.DataFrame:
+    """Fisher-average condition correlations by dataset, then mask range."""
+
+    def compact_row(group_type: str, label: str, group: pd.DataFrame) -> dict[str, object]:
+        entropy_rho = _fisher_mean(cast(pd.Series, group["entropy_spearman_rho_vs_ar_ll"]))
+        self_rho = _fisher_mean(cast(pd.Series, group["self_certainty_spearman_rho_vs_ar_ll"]))
+        advantages = cast(pd.Series, group["entropy_advantage"]).to_numpy(dtype=float)
+        item_counts = cast(pd.Series, group["n_items"]).to_numpy(dtype=int)
+        return {
+            "group": group_type,
+            "value": label,
+            "n_conditions": len(group),
+            "n_items_per_condition": int(item_counts.min()),
+            "entropy_rho": entropy_rho,
+            "self_certainty_rho": self_rho,
+            "entropy_advantage": entropy_rho - self_rho,
+            "entropy_wins": f"{int(np.sum(advantages > 0.0))}/{len(group)}",
+        }
+
+    rows: list[dict[str, object]] = []
+    for dataset, group in summary.groupby("dataset", sort=False):
+        rows.append(compact_row("dataset", str(dataset), group))
+    for group_key, group in summary.groupby(
+        ["mask_bucket", "mask_ratio_low", "mask_ratio_high"],
+        sort=False,
+    ):
+        bucket, low, high = cast(tuple[str, float, float], group_key)
+        label = f"{bucket} [{low:.0%}, {high:.0%}]"
+        rows.append(compact_row("masking", label, group))
+    rows.append(compact_row("total", "all conditions", summary))
     return pd.DataFrame(rows)
 
 
@@ -375,7 +417,7 @@ def _load_models(
     return llada, llada_tokenizer, ar_model, ar_tokenizer
 
 
-def main() -> None:  # noqa: C901, PLR0915
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     settings, remaining = parse_legacy_settings(sys.argv[1:])
     config = config_from_remaining_args(remaining)
     configure_runtime(config)
@@ -395,6 +437,7 @@ def main() -> None:  # noqa: C901, PLR0915
     output_root = Path(config.results_dir)
     points_path = output_root / f"{settings.output_prefix}_points.csv"
     summary_path = output_root / f"{settings.output_prefix}_correlations.csv"
+    compact_path = output_root / f"{settings.output_prefix}_compact.csv"
     npz_path = output_root / f"{settings.output_prefix}.npz"
     existing = _load_existing_points(points_path, signature)
     point_rows = existing.to_dict("records") if not existing.empty else []
@@ -402,6 +445,8 @@ def main() -> None:  # noqa: C901, PLR0915
         (str(row["dataset"]), str(row["item_id"]), str(row["mask_bucket"]))
         for row in point_rows
     }
+    if completed:
+        print(f"Loaded {len(completed)} saved item/bucket points from {points_path}")
 
     print("Legacy January 2026 score baseline")
     for dataset in datasets:
@@ -506,6 +551,8 @@ def main() -> None:  # noqa: C901, PLR0915
     _atomic_write_csv(points, points_path)
     summary = summarize(points)
     _atomic_write_csv(summary, summary_path)
+    compact = build_compact_report(summary)
+    _atomic_write_csv(compact, compact_path)
     np.savez(
         npz_path,
         entropy_scores=points["entropy_score"].to_numpy(),
@@ -516,22 +563,12 @@ def main() -> None:  # noqa: C901, PLR0915
         mask_buckets=points["mask_bucket"].to_numpy(),
     )
 
-    print("\nLegacy correlation results")
-    display_columns = [
-        "dataset",
-        "task_family",
-        "mask_bucket",
-        "mask_ratio_low",
-        "mask_ratio_high",
-        "n_items",
-        "entropy_spearman_rho_vs_ar_ll",
-        "self_certainty_spearman_rho_vs_ar_ll",
-        "entropy_advantage",
-    ]
-    display = cast(pd.DataFrame, summary.loc[:, display_columns]).round(6)
+    print("\nCompact legacy correlation report (Fisher-z macro correlations)")
+    display = compact.round(6)
     print(display.to_string(index=False))
     print(f"Saved points: {points_path}")
-    print(f"Saved summary: {summary_path}")
+    print(f"Saved condition summary: {summary_path}")
+    print(f"Saved compact report: {compact_path}")
     print(f"Saved NPZ: {npz_path}")
 
 
