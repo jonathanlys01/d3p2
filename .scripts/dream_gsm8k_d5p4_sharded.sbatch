@@ -30,6 +30,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
+#SBATCH --mem-per-cpu=4G
 #SBATCH --output=/Brain/private/j21lys/logs/%x-%A_%a.out
 #SBATCH --error=/Brain/private/j21lys/logs/%x-%A_%a.err
 #SBATCH --array=0-7%8
