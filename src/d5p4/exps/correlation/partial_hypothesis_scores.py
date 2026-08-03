@@ -3,7 +3,7 @@
 The experiment treats a benchmark reference completion as a hypothesis, keeps
 its prompt visible, and replaces an exact fraction of completion tokens with
 the scorer's mask token.  It compares two properties of the raw conditional
-token distribution at masked positions:
+token distribution across answer positions:
 
 * entropy certainty: ``KL(p || uniform) / log(V)``;
 * self-certainty: ``KL(uniform || p) / log(V)``.
@@ -13,6 +13,9 @@ becomes concentrated.  Entropy weights tokens according to the model's own
 probability mass, whereas self-certainty weights every vocabulary token
 equally and is therefore much more sensitive to tiny tail probabilities.
 
+The prompt is always observed. Mask ratios are defined over answer tokens only,
+and each proxy is averaged over the full answer region (visible and masked
+answer positions), matching the scope used when ranking partial hypotheses.
 Sixteen independently masked versions of one item are evaluated as one batch.
 Their scores are averaged before computing task-level Spearman correlations,
 so the 128 benchmark items -- not the mask draws -- are the independent points.
@@ -246,15 +249,15 @@ def build_mask_draws(  # noqa: PLR0913
 
 def certainty_scores_from_logits(
     logits: torch.Tensor,
-    masked_positions: torch.Tensor,
+    scored_positions: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return one entropy-certainty and self-certainty score per batch row."""
-    if logits.shape[:-1] != masked_positions.shape:
+    if logits.shape[:-1] != scored_positions.shape:
         raise ValueError(
-            f"Logit positions {tuple(logits.shape[:-1])} do not match mask {tuple(masked_positions.shape)}",
+            f"Logit positions {tuple(logits.shape[:-1])} do not match score mask {tuple(scored_positions.shape)}",
         )
-    if not torch.all(masked_positions.sum(dim=1) > 0):
-        raise ValueError("Every row must contain at least one masked position")
+    if not torch.all(scored_positions.sum(dim=1) > 0):
+        raise ValueError("Every row must contain at least one scored position")
 
     log_probs = F.log_softmax(logits.float(), dim=-1)
     probs = log_probs.exp()
@@ -263,7 +266,7 @@ def certainty_scores_from_logits(
     entropy_certainty = 1.0 + (probs * log_probs).sum(dim=-1) / log_vocab
     self_certainty = -log_probs.mean(dim=-1) / log_vocab - 1.0
 
-    weights = masked_positions.to(dtype=log_probs.dtype)
+    weights = scored_positions.to(dtype=log_probs.dtype)
     denominator = weights.sum(dim=1)
     entropy_per_row = (entropy_certainty * weights).sum(dim=1) / denominator
     self_certainty_per_row = (self_certainty * weights).sum(dim=1) / denominator
@@ -273,11 +276,11 @@ def certainty_scores_from_logits(
 def score_llada_mask_batch(
     model: LLaDAModelLM,
     masked_ids: torch.Tensor,
-    completion_masks: torch.Tensor,
     *,
     prompt_length: int,
+    completion_length: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Score LLaDA logits aligned with the same completion positions."""
+    """Score LLaDA over every answer position with the prompt observed."""
     with torch.inference_mode():
         output = model(
             cast(torch.LongTensor, masked_ids),
@@ -287,17 +290,25 @@ def score_llada_mask_batch(
             logits_slice=slice(prompt_length, None),
         )
     assert isinstance(output, CausalLMOutputWithPast) and output.logits is not None
-    return certainty_scores_from_logits(output.logits, completion_masks)
+    if output.logits.shape[1] != completion_length:
+        raise ValueError(
+            f"LLaDA returned {output.logits.shape[1]} answer positions for {completion_length} answer tokens",
+        )
+    answer_positions = torch.ones(
+        (masked_ids.size(0), completion_length),
+        dtype=torch.bool,
+        device=masked_ids.device,
+    )
+    return certainty_scores_from_logits(output.logits, answer_positions)
 
 
 def score_dream_mask_batch(
     model: DreamModel,
     masked_ids: torch.Tensor,
-    completion_masks: torch.Tensor,
     *,
     completion_length: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Score Dream's token-i distribution from predictor position i-1."""
+    """Score every answer token from Dream's predictor position i-1."""
     with torch.inference_mode():
         output = model(
             cast(torch.LongTensor, masked_ids),
@@ -313,7 +324,12 @@ def score_dream_mask_batch(
         raise ValueError(
             f"Dream returned {aligned_logits.shape[1]} aligned positions for {completion_length} completion tokens",
         )
-    return certainty_scores_from_logits(aligned_logits, completion_masks)
+    answer_positions = torch.ones(
+        (masked_ids.size(0), completion_length),
+        dtype=torch.bool,
+        device=masked_ids.device,
+    )
+    return certainty_scores_from_logits(aligned_logits, answer_positions)
 
 
 def _reference_config(config: Config, **changes: Any) -> Config:
@@ -499,7 +515,9 @@ def _experiment_signature(  # noqa: PLR0913
     selected: dict[str, list[ReferenceItem]],
 ) -> str:
     payload = {
-        "version": 1,
+        "version": 2,
+        "mask_ratio_scope": "completion_tokens",
+        "score_scope": "all_completion_positions",
         "seed": config.seed,
         "models": models,
         "datasets": datasets,
@@ -634,6 +652,8 @@ def summarize_correlations(
                 "dataset": dataset,
                 "task_family": task_family,
                 "mask_ratio": float(mask_ratio),
+                "mask_ratio_scope": str(group["mask_ratio_scope"].iloc[0]),
+                "score_scope": str(group["score_scope"].iloc[0]),
                 "n_items": len(group),
                 "mask_draws": int(group["mask_draws"].iloc[0]),
                 "source_items": int(group["source_items"].iloc[0]),
@@ -652,10 +672,54 @@ def summarize_correlations(
                 "mean_realized_mask_ratio": float(
                     np.mean(group["realized_mask_ratio"].to_numpy(dtype=float)),
                 ),
+                "mean_whole_sequence_mask_ratio": float(
+                    np.mean(group["whole_sequence_mask_ratio"].to_numpy(dtype=float)),
+                ),
                 "status": status,
                 **bootstrap,
             },
         )
+    return pd.DataFrame(rows)
+
+
+def build_diagnostic_table(correlations: pd.DataFrame) -> pd.DataFrame:
+    """Build the compact mask/dataset/overall comparison printed after a run."""
+
+    def fisher_macro(group: pd.DataFrame, column: str) -> float:
+        rho = np.clip(group[column].to_numpy(dtype=float), -0.999999, 0.999999)
+        weights = np.maximum(group["n_items"].to_numpy(dtype=float) - 3.0, 1.0)
+        return float(np.tanh(np.average(np.arctanh(rho), weights=weights)))
+
+    def row(section: str, group_name: str, group: pd.DataFrame) -> dict[str, Any]:
+        entropy = fisher_macro(group, "entropy_quality_rho")
+        self_certainty = fisher_macro(group, "self_certainty_quality_rho")
+        entropy_wins = int((group["entropy_quality_advantage"] > 0.0).sum())
+        return {
+            "section": section,
+            "group": group_name,
+            "conditions": len(group),
+            "entropy_rho": entropy,
+            "self_certainty_rho": self_certainty,
+            "entropy_minus_self": entropy - self_certainty,
+            "entropy_wins": f"{entropy_wins}/{len(group)}",
+        }
+
+    mask_names = {0.15: "low (15%)", 0.50: "mid (50%)", 0.85: "high (85%)"}
+    dataset_names = {
+        "truthful_qa": "TruthfulQA",
+        "ai2_arc": "ARC-Challenge",
+        "gsm8k": "GSM8K",
+        "mbpp": "MBPP",
+        "humaneval": "HumanEval",
+    }
+    rows: list[dict[str, Any]] = []
+    for mask_ratio in sorted(correlations["mask_ratio"].unique()):
+        mask_group = cast(pd.DataFrame, correlations[correlations["mask_ratio"] == mask_ratio])
+        rows.append(row("masking", mask_names.get(float(mask_ratio), f"{float(mask_ratio):.0%}"), mask_group))
+    for dataset in correlations["dataset"].drop_duplicates():
+        dataset_group = cast(pd.DataFrame, correlations[correlations["dataset"] == dataset])
+        rows.append(row("dataset", dataset_names.get(str(dataset), str(dataset)), dataset_group))
+    rows.append(row("overall", "all conditions", correlations))
     return pd.DataFrame(rows)
 
 
@@ -729,7 +793,7 @@ def _score_one_item(  # noqa: PLR0913
     mask_ratio: float,
     mask_token_id: int,
     device: torch.device,
-) -> tuple[list[float], list[float], int, int]:
+) -> tuple[list[float], list[float], int, int, int]:
     use_chat = model_name == "dream" or (model_name == "llada" and "instruct" in config.llada_model_path.lower())
     ids, prompt_length, completion_length = tokenize_prompt_completion(
         tokenizer,
@@ -737,7 +801,7 @@ def _score_one_item(  # noqa: PLR0913
         item.completion_text,
         use_chat_template=use_chat,
     )
-    masked_ids, completion_masks, num_masked = build_mask_draws(
+    masked_ids, _completion_masks, num_masked = build_mask_draws(
         ids,
         prompt_length=prompt_length,
         mask_token_id=mask_token_id,
@@ -750,24 +814,22 @@ def _score_one_item(  # noqa: PLR0913
     self_draws: list[float] = []
     for start in range(0, settings.mask_draws, settings.batch_size):
         batch_ids = masked_ids[start : start + settings.batch_size].to(device)
-        batch_masks = completion_masks[start : start + settings.batch_size].to(device)
         if model_name == "llada":
             entropy, self_certainty = score_llada_mask_batch(
                 cast(LLaDAModelLM, scorer),
                 batch_ids,
-                batch_masks,
                 prompt_length=prompt_length,
+                completion_length=completion_length,
             )
         else:
             entropy, self_certainty = score_dream_mask_batch(
                 cast(DreamModel, scorer),
                 batch_ids,
-                batch_masks,
                 completion_length=completion_length,
             )
         entropy_draws.extend(entropy.detach().cpu().tolist())
         self_draws.extend(self_certainty.detach().cpu().tolist())
-    return entropy_draws, self_draws, completion_length, num_masked
+    return entropy_draws, self_draws, prompt_length, completion_length, num_masked
 
 
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
@@ -789,6 +851,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     print("Partial-hypothesis score experiment")
     print("  entropy certainty = KL(p || uniform) / log(V)")
     print("  self-certainty    = KL(uniform || p) / log(V)")
+    print("  prompt is always visible; mask ratios are answer-relative; all answer positions are scored")
     print("  higher proxy scores are better; lower Llama PPL is better")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -863,7 +926,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     key = (model_name, dataset, item.item_id, float(mask_ratio))
                     if key in completed_keys:
                         continue
-                    entropy_draws, self_draws, completion_tokens, num_masked = _score_one_item(
+                    entropy_draws, self_draws, prompt_tokens, completion_tokens, num_masked = _score_one_item(
                         config=config,
                         settings=settings,
                         scorer=scorer,
@@ -883,8 +946,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         "item_id": item.item_id,
                         "dataset_index": item.dataset_index,
                         "mask_ratio": mask_ratio,
+                        "mask_ratio_scope": "completion_tokens",
+                        "score_scope": "all_completion_positions",
                         "realized_mask_ratio": num_masked / completion_tokens,
+                        "whole_sequence_mask_ratio": num_masked / (prompt_tokens + completion_tokens),
                         "mask_draws": settings.mask_draws,
+                        "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "masked_tokens_per_draw": num_masked,
                         "llama_completion_tokens": llama_tokens,
@@ -931,6 +998,18 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     _atomic_write_csv(correlations, correlations_path)
     print(f"Saved {len(points)} independent points to {points_path}")
     print(f"Saved {len(correlations)} condition summaries to {correlations_path}")
+    diagnostic = build_diagnostic_table(correlations)
+    print("\nMacro comparison (quality rho; higher is better, positive delta favors entropy)")
+    print(
+        diagnostic.to_string(
+            index=False,
+            formatters={
+                "entropy_rho": lambda value: f"{value:.3f}",
+                "self_certainty_rho": lambda value: f"{value:.3f}",
+                "entropy_minus_self": lambda value: f"{value:+.3f}",
+            },
+        ),
+    )
 
 
 if __name__ == "__main__":

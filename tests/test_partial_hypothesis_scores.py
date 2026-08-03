@@ -16,6 +16,7 @@ from d5p4.exps.correlation import partial_hypothesis_scores as experiment
 from d5p4.exps.correlation.partial_hypothesis_scores import (
     ExperimentSettings,
     ReferenceItem,
+    build_diagnostic_table,
     build_mask_draws,
     certainty_scores_from_logits,
     compute_conditional_llama_ppl_batch,
@@ -120,10 +121,10 @@ def test_llada_and_dream_alignment_use_expected_logit_positions():
     llada_scores = score_llada_mask_batch(
         cast(LLaDAModelLM, _LLaDA()),
         masked_ids,
-        completion_masks,
         prompt_length=1,
+        completion_length=2,
     )
-    expected = certainty_scores_from_logits(llada_logits, completion_masks)
+    expected = certainty_scores_from_logits(llada_logits, torch.ones_like(completion_masks))
     assert torch.equal(llada_scores[0], expected[0])
     assert seen_llada["logits_slice"] == slice(1, None)
 
@@ -138,7 +139,6 @@ def test_llada_and_dream_alignment_use_expected_logit_positions():
     dream_scores = score_dream_mask_batch(
         cast(DreamModel, _Dream()),
         masked_ids,
-        completion_masks,
         completion_length=2,
     )
     assert torch.equal(dream_scores[0], expected[0])
@@ -239,6 +239,8 @@ def _point_rows(signature: str = "signature") -> pd.DataFrame:
                 "task_family": "qa",
                 "item_id": f"item:{index}",
                 "mask_ratio": 0.5,
+                "mask_ratio_scope": "completion_tokens",
+                "score_scope": "all_completion_positions",
                 "mask_draws": 16,
                 "source_items": 10,
                 "eligible_items": 8,
@@ -247,6 +249,7 @@ def _point_rows(signature: str = "signature") -> pd.DataFrame:
                 "entropy_certainty_sd": 0.1,
                 "self_certainty_sd": 0.2,
                 "realized_mask_ratio": 0.5,
+                "whole_sequence_mask_ratio": 0.25,
                 "llama_ppl": ppl,
             },
         )
@@ -266,6 +269,34 @@ def test_aggregation_averages_points_and_bootstrap_is_deterministic():
     assert row["self_certainty_spearman_rho_vs_ppl"] == pytest.approx(1.0)
     assert row["entropy_quality_advantage"] == pytest.approx(2.0)
     assert row["status"] == "ok"
+
+
+def test_diagnostic_table_orders_mask_dataset_and_overall_groups():
+    base = summarize_correlations(_point_rows(), bootstrap_samples=10, seed=42)
+    correlations = pd.concat(
+        [
+            base.assign(mask_ratio=0.15, dataset="truthful_qa"),
+            base.assign(mask_ratio=0.50, dataset="truthful_qa"),
+            base.assign(mask_ratio=0.85, dataset="gsm8k", task_family="math"),
+        ],
+        ignore_index=True,
+    )
+
+    table = build_diagnostic_table(correlations)
+
+    assert table[["section", "group"]].to_records(index=False).tolist() == [
+        ("masking", "low (15%)"),
+        ("masking", "mid (50%)"),
+        ("masking", "high (85%)"),
+        ("dataset", "TruthfulQA"),
+        ("dataset", "GSM8K"),
+        ("overall", "all conditions"),
+    ]
+    overall = table.iloc[-1]
+    assert overall["entropy_rho"] == pytest.approx(1.0, abs=2e-6)
+    assert overall["self_certainty_rho"] == pytest.approx(-1.0, abs=2e-6)
+    assert overall["entropy_minus_self"] == pytest.approx(2.0, abs=4e-6)
+    assert overall["entropy_wins"] == "3/3"
 
 
 def test_resume_rejects_mismatched_signature_and_duplicate_keys(tmp_path):
