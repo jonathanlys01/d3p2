@@ -5,7 +5,7 @@
 #   .jz_waves/submit.sh [options] WAVE
 #
 # Options:
-#   --smoke             every run on SMOKE_LIMIT questions (default 2), dev QoS, separate <wave>_smoke root
+#   --smoke             every run on SMOKE_LIMIT questions (default 2), 1 h limit, separate <wave>_smoke root
 #   --missing           only submit runs without a completion marker
 #   --indices LIST      only submit these array indices, e.g. 0-3,7
 #   --max-parallel N    concurrent array tasks (default 16)
@@ -55,7 +55,8 @@ WAVE_LIMIT=""
 if ((SMOKE)); then
   WAVE_ROOT="${WAVES_ROOT}/${WAVE}_smoke"
   WAVE_LIMIT="${SMOKE_LIMIT:-2}"
-  EXTRA_SBATCH=(--qos=qos_gpu_h100-dev --time=00:45:00)
+  # The dev QoS caps a user at 10 submitted jobs, too few for a wave array; short t3 jobs backfill quickly.
+  EXTRA_SBATCH=(--time=01:00:00)
 fi
 
 cd "${D5P4_ROOT}"

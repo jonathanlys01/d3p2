@@ -33,7 +33,7 @@ with an offline preflight (`python -m d5p4.waves check`) that builds every run's
 ## Running a wave
 
 ```bash
-.jz_waves/submit.sh --smoke m0          # every run on 2 questions, dev QoS, root m0_smoke
+.jz_waves/submit.sh --smoke m0          # every run on 2 questions, 1 h jobs, root m0_smoke
 .jz_waves/submit.sh m0                  # the real wave
 python -m d5p4.waves status --wave m0 --root "$WORK_ejh/projects/d3p2_waves/m0"
 .jz_waves/submit.sh --missing m0        # resubmit failed or timed-out runs, chaining a new evaluation
