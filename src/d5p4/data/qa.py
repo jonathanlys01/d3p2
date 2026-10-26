@@ -4,13 +4,10 @@ from datasets.dataset_dict import DatasetDict
 
 from d5p4.config import Config
 from d5p4.data.math_ds import gsm8k
+from d5p4.data.splits import EVAL_SPLITS, shuffle_seed, split_name
 
 
-QA_DATASET_SPLITS = {
-    "truthful_qa": "validation",
-    "commonsense_qa": "validation",
-    "ai2_arc": "test",
-}
+QA_DATASET_SPLITS = {name: EVAL_SPLITS[name] for name in ("truthful_qa", "commonsense_qa", "ai2_arc")}
 
 _DATASET_PATH_FIELDS = {
     "truthful_qa": "truthful_qa_path",
@@ -111,10 +108,9 @@ def _format_few_shot_prefix(examples: list[dict]) -> str:
 
 def truthful_qa(cfg: Config) -> pd.DataFrame:
     assert cfg.qa_n_shots == 0, "TruthfulQA does not support n_shots"
-    dataset = _load_dataset_with_default_fallback(cfg, "truthful_qa", cfg.truthful_qa_path, "generation")[
-        QA_DATASET_SPLITS["truthful_qa"]
-    ]
-    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
+    split = split_name(cfg, "truthful_qa")
+    dataset = _load_dataset_with_default_fallback(cfg, "truthful_qa", cfg.truthful_qa_path, "generation")[split]
+    dataset = dataset.shuffle(seed=shuffle_seed(cfg))  # type: ignore
     questions = [item["question"] for item in dataset]
     good = [item["correct_answers"] for item in dataset]
     bad = [item["incorrect_answers"] for item in dataset]
@@ -125,7 +121,8 @@ def truthful_qa(cfg: Config) -> pd.DataFrame:
 
 def _multiple_choice_qa(cfg: Config, dataset_path: str, dataset_name: str, subset: str | None = None) -> pd.DataFrame:
     dataset_splits = _load_dataset_with_default_fallback(cfg, dataset_name, dataset_path, subset)
-    dataset = dataset_splits[QA_DATASET_SPLITS[dataset_name]].shuffle(seed=cfg.seed)  # type: ignore
+    split = split_name(cfg, dataset_name, cfg.qa_n_shots)
+    dataset = dataset_splits[split].shuffle(seed=shuffle_seed(cfg))  # type: ignore
 
     questions = []
     good = []

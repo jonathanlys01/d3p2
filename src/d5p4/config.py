@@ -57,6 +57,7 @@ LLADA_DECODER_CHOICES = {"diffusion", "classic_beam"}
 DREAM_ALG_CHOICES = {"origin", "maskgit_plus", "topk_margin", "entropy"}
 EVAL_SELECTION_METRIC_CHOICES = {"ppl", "f1", "int"}
 CODE_DATASET_CHOICES = {"humaneval", "mbpp"}
+DATASET_SPLIT_CHOICES = {"eval", "dev"}
 
 CONFIG_FLAGS = ("--config", "-c", "config", "cfg")
 
@@ -195,6 +196,10 @@ class Config:
     ai2_arc_path: str = "allenai/ai2_arc"
     ai2_arc_subset: str = "ARC-Challenge"
     gsm8k_path: str = "openai/gsm8k"
+    # Shared by the QA, math, and code loaders. "eval" keeps each benchmark's reported split; "dev" selects a
+    # tuning split disjoint from it (see d5p4.data.splits).
+    dataset_split: str = "eval"
+    dataset_shuffle_seed: int = -1  # -1 shuffles with `seed`; >= 0 fixes question order and subsets across seeds
 
     # Code generation evaluation
     code_dataset: str = "humaneval"  # "humaneval" or "mbpp"
@@ -283,6 +288,9 @@ class Config:
             f"code_dataset must be one of {sorted(CODE_DATASET_CHOICES)}, got {self.code_dataset!r}"
         )
         assert self.code_n_shots >= 0, "code_n_shots must be non-negative"
+        assert self.dataset_split in DATASET_SPLIT_CHOICES, (
+            f"dataset_split must be one of {sorted(DATASET_SPLIT_CHOICES)}, got {self.dataset_split!r}"
+        )
         assert self.code_timeout_s > 0.0, "code_timeout_s must be positive"
         assert self.qa_num_shards > 0, "qa_num_shards must be positive"
         assert 0 <= self.qa_shard_index < self.qa_num_shards, (

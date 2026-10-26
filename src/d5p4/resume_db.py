@@ -69,6 +69,11 @@ LEFT_TO_RIGHT_CONFIG_DEFAULTS = {
     "classic_beam_branching_factor": None,
     "force_left_to_right": False,
 }
+DATASET_SELECTION_CONFIG_DEFAULTS = {
+    "dataset_split": "eval",
+    "dataset_shuffle_seed": -1,
+}
+POST_SCHEMA_CONFIG_DEFAULTS = LEFT_TO_RIGHT_CONFIG_DEFAULTS | DATASET_SELECTION_CONFIG_DEFAULTS
 
 
 class ResumeLockError(RuntimeError):
@@ -163,7 +168,7 @@ def semantic_config_dict(config: Any) -> dict[str, Any]:
     if config_dict.get("legacy_config", False):
         excluded_keys = excluded_keys | DREAM_CONFIG_KEYS
     at_legacy_default = {
-        key for key, legacy in LEFT_TO_RIGHT_CONFIG_DEFAULTS.items() if config_dict.get(key, legacy) == legacy
+        key for key, legacy in POST_SCHEMA_CONFIG_DEFAULTS.items() if config_dict.get(key, legacy) == legacy
     }
     if config_dict.get("llada_decoder", "diffusion") == "diffusion":
         # An unused branching factor cannot change a diffusion run.

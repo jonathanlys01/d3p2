@@ -9,9 +9,12 @@ import pandas as pd
 from datasets import load_dataset
 
 from d5p4.config import Config
+from d5p4.data.splits import shuffle_seed, split_name
 
 
 CODE_DATASETS = {"humaneval", "mbpp"}
+# The sanitized MBPP config only has 43 validation tasks; the dev split uses the full config's 90.
+MBPP_DEV_SUBSET = "full"
 
 
 def _as_list(value: Any) -> list[str]:
@@ -48,8 +51,9 @@ def _format_mbpp_few_shot_prefix(examples: list[Any]) -> str:
 def humaneval(cfg: Config) -> pd.DataFrame:
     """Load HumanEval test tasks with a normalized code-eval schema."""
     assert cfg.code_n_shots == 0, "HumanEval paper evaluation uses 0-shot prompting"
-    dataset = cast(Any, load_dataset(cfg.humaneval_path, cache_dir=cfg.cache_dir)["test"])
-    dataset = dataset.shuffle(seed=cfg.seed)
+    split = split_name(cfg, "humaneval")
+    dataset = cast(Any, load_dataset(cfg.humaneval_path, cache_dir=cfg.cache_dir)[split])
+    dataset = dataset.shuffle(seed=shuffle_seed(cfg))
 
     rows = []
     for item in dataset:
@@ -68,17 +72,26 @@ def humaneval(cfg: Config) -> pd.DataFrame:
 
 
 def mbpp(cfg: Config) -> pd.DataFrame:
-    """Load MBPP sanitized test tasks with a normalized code-eval schema."""
+    """Load MBPP tasks with a normalized code-eval schema.
+
+    The eval split is the sanitized test split. The dev split is the full config's validation split; few-shot
+    examples always come from the sanitized train split, which is disjoint from both.
+    """
+    split = split_name(cfg, "mbpp", cfg.code_n_shots)
     dataset_splits = cast(Any, load_dataset(cfg.mbpp_path, cfg.mbpp_subset, cache_dir=cfg.cache_dir))
-    dataset = cast(Any, dataset_splits["test"])
-    dataset = dataset.shuffle(seed=cfg.seed)
-    train_dataset = cast(Any, dataset_splits["train"].shuffle(seed=cfg.seed)) if cfg.code_n_shots > 0 else None
+    if cfg.dataset_split == "dev":
+        dataset = cast(Any, load_dataset(cfg.mbpp_path, MBPP_DEV_SUBSET, cache_dir=cfg.cache_dir)[split])
+    else:
+        dataset = cast(Any, dataset_splits[split])
+    dataset = dataset.shuffle(seed=shuffle_seed(cfg))
+    train_dataset = cast(Any, dataset_splits["train"].shuffle(seed=shuffle_seed(cfg))) if cfg.code_n_shots > 0 else None
 
     rows = []
     for i, item in enumerate(dataset):
-        test_imports = _as_list(item.get("test_imports"))
+        # The full config names the prompt "text" and has setup code instead of test imports.
+        test_imports = _as_list(item.get("test_imports")) + _as_list(item.get("test_setup_code"))
         tests = [*test_imports, *_as_list(item.get("test_list"))]
-        prompt_text = str(item["prompt"])
+        prompt_text = str(item["prompt"] if "prompt" in item else item["text"])
         prompt = _format_mbpp_docstring(prompt_text, tests)
         if cfg.code_n_shots > 0:
             assert train_dataset is not None

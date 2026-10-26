@@ -5,6 +5,7 @@ import pandas as pd
 from datasets import load_dataset
 
 from d5p4.config import Config
+from d5p4.data.splits import shuffle_seed, split_name
 
 
 # GSM8K stores the numeric answer after "####" in the answer string
@@ -54,7 +55,7 @@ def _format_dream_gsm8k_query(question: str) -> str:
 
 
 def gsm8k(cfg: Config) -> pd.DataFrame:
-    """Load the GSM8K test split as a DataFrame.
+    """Load the GSM8K split selected by ``cfg.dataset_split`` (test by default) as a DataFrame.
 
     Columns
     -------
@@ -65,15 +66,16 @@ def gsm8k(cfg: Config) -> pd.DataFrame:
     answer_number : str
         The numeric answer extracted from ``answer_str`` (commas removed).
     """
-    dataset: Any = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["test"]
-    dataset = dataset.shuffle(seed=cfg.seed)  # type: ignore
+    split = split_name(cfg, "gsm8k", cfg.qa_n_shots)
+    dataset: Any = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)[split]
+    dataset = dataset.shuffle(seed=shuffle_seed(cfg))  # type: ignore
 
     few_shot_prefix = ""
     if cfg.model == "dream" and cfg.qa_n_shots != 0:
         raise ValueError("Dream GSM8K uses the official zero-shot instruct profile; set qa_n_shots=0.")
     if cfg.qa_n_shots > 0:
         train_dataset: Any = load_dataset(cfg.gsm8k_path, "main", cache_dir=cfg.cache_dir)["train"]
-        train_dataset = train_dataset.shuffle(seed=cfg.seed)  # type: ignore
+        train_dataset = train_dataset.shuffle(seed=shuffle_seed(cfg))  # type: ignore
         few_shot_examples: list[dict] = [train_dataset[idx] for idx in range(cfg.qa_n_shots)]  # type: ignore
         few_shot_prefix = _format_gsm8k_few_shot_prefix(few_shot_examples)
 

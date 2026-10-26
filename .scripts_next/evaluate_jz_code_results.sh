@@ -20,8 +20,9 @@ set -euo pipefail
 #
 # This uses existing validation rows in the result JSONs; it does not rerun code tests.
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="${D5P4_ROOT:-$(git rev-parse --show-toplevel)}"
 SRC_ROOT="${ROOT}/src/d5p4"
+EVAL_CONFIG="${EVAL_CONFIG:-${SRC_ROOT}/_default.yaml}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   sed -n '4,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -114,7 +115,7 @@ OVERSAMPLE_CODE_BASELINE_METRICS="${CODE_METRICS}" \
 OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K="${CODE_BASELINE_K}" \
 OVERSAMPLE_CODE_BASELINE_GENERATION_METRICS="${CODE_GENERATION_METRICS}" \
 uv run python -m d5p4._oversample_code_baseline \
-  config="${SRC_ROOT}/_default.yaml" \
+  config="${EVAL_CONFIG}" \
   cache_dir="${ROOT}/.cache" \
   results_dir="${tmp_src_root}" \
   method="${CODE_BASELINE_METHOD}" \
@@ -132,7 +133,7 @@ for method in "${subsample_methods[@]}"; do
   OVERSAMPLE_CODE_BASELINE_EXPECTED_SELECTED_K="${CODE_BASELINE_K}" \
   OVERSAMPLE_CODE_BASELINE_GENERATION_METRICS="${CODE_GENERATION_METRICS}" \
   uv run python -m d5p4._oversample_code_baseline \
-    config="${SRC_ROOT}/_default.yaml" \
+    config="${EVAL_CONFIG}" \
     cache_dir="${ROOT}/.cache" \
     results_dir="${tmp_src_root}" \
     method="${CODE_BASELINE_METHOD}" \

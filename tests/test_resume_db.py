@@ -12,6 +12,7 @@ from d5p4.resume_db import (
     DREAM_CONFIG_KEYS,
     HASH_EXCLUDED_CONFIG_KEYS,
     LEFT_TO_RIGHT_CONFIG_DEFAULTS,
+    POST_SCHEMA_CONFIG_DEFAULTS,
     ResumableRunStore,
     ResumeDistributedContext,
     ResumeLockError,
@@ -91,7 +92,7 @@ def test_legacy_config_hash_matches_pre_dream_schema():
         for key, value in asdict(cfg).items()
         if key not in HASH_EXCLUDED_CONFIG_KEYS
         and key not in DREAM_CONFIG_KEYS
-        and key not in LEFT_TO_RIGHT_CONFIG_DEFAULTS
+        and key not in POST_SCHEMA_CONFIG_DEFAULTS
     }
 
     assert semantic_config_dict(cfg) == expected
@@ -257,6 +258,29 @@ def test_diffusion_hash_matches_config_dictionary_from_before_classic_beam_field
     assert experiment_hash("math_generation:llada", current, work_hash) == experiment_hash(
         "math_generation:llada",
         pre_classic_beam,
+        work_hash,
+    )
+
+
+def test_dataset_selection_keys_only_enter_hash_when_changed():
+    items = make_work_items(1, prefix="prompt", prompts=["hello"])
+    work_hash = manifest_hash(items)
+    current = _cfg("tmpdir")
+    pre_dataset_split = asdict(current)
+    pre_dataset_split.pop("dataset_split")
+    pre_dataset_split.pop("dataset_shuffle_seed")
+
+    assert experiment_hash("math_generation:llada", current, work_hash) == experiment_hash(
+        "math_generation:llada",
+        pre_dataset_split,
+        work_hash,
+    )
+    dev = _cfg("tmpdir", dataset_split="dev", dataset_shuffle_seed=0)
+    assert semantic_config_dict(dev)["dataset_split"] == "dev"
+    assert semantic_config_dict(dev)["dataset_shuffle_seed"] == 0
+    assert experiment_hash("math_generation:llada", dev, work_hash) != experiment_hash(
+        "math_generation:llada",
+        current,
         work_hash,
     )
 

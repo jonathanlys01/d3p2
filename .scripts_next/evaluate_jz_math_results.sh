@@ -21,8 +21,9 @@ set -euo pipefail
 # Non-baselines select one candidate per contiguous subgroup of MATH_GROUP_SIZE,
 # giving 4 final proposals per question for the current GSM8K sweep.
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="${D5P4_ROOT:-$(git rev-parse --show-toplevel)}"
 SRC_ROOT="${ROOT}/src/d5p4"
+EVAL_CONFIG="${EVAL_CONFIG:-${SRC_ROOT}/_default.yaml}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   sed -n '4,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -143,7 +144,7 @@ while IFS= read -r dir; do
   OVERSAMPLE_MATH_BASELINE_TRANSVERSAL="false" \
   OVERSAMPLE_MATH_BASELINE_EXPECTED_SELECTED_K="${MATH_BASELINE_K}" \
   uv run python -m d5p4._oversample_baseline_math \
-    config="${SRC_ROOT}/_default.yaml" \
+    config="${EVAL_CONFIG}" \
     cache_dir="${ROOT}/.cache" \
     results_dir="${tmp_src_dir}" \
     method=baseline \
@@ -170,7 +171,7 @@ while IFS= read -r dir; do
   OVERSAMPLE_MATH_BASELINE_GROUP_SIZE="${MATH_GROUP_SIZE}" \
   OVERSAMPLE_MATH_BASELINE_EXPECTED_SELECTED_K="${MATH_BASELINE_K}" \
   uv run python -m d5p4._oversample_baseline_math \
-    config="${SRC_ROOT}/_default.yaml" \
+    config="${EVAL_CONFIG}" \
     cache_dir="${ROOT}/.cache" \
     results_dir="${tmp_src_dir}" \
     ppl_model_id="${PPL_MODEL_ID}" \
