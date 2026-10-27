@@ -3,7 +3,7 @@
 Each method's diversity parameter is swept on a split disjoint from the reported benchmark split, so every
 method's operating point for the main tables is picked by the same rule:
 
-- GSM8K: 200 questions from the train split (4 groups x 4, independent pool of 16).
+- GSM8K: 500 questions from the train split (4 groups x 4, independent pool of 16).
 - ARC-Challenge: the 299-question validation split (3 x 3, pool of 9). TruthfulQA has no disjoint split.
 - MBPP: the full config's 90-task validation split, 4-shot (3 x 3, pool of 9). HumanEval has no disjoint split.
 
@@ -57,7 +57,7 @@ GSM8K = Task(
         **LLADA_NO_CFG,
         **_length(256),
         "qa_dataset": "gsm8k",
-        "qa_dataset_len": 200,
+        "qa_dataset_len": 500,
         "qa_n_shots": 0,
         "confidence_eos_eot_inf": False,
         "skip_eval": False,
