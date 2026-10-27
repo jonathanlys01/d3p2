@@ -18,6 +18,7 @@ import torch
 from d5p4.code_eval import CodeEvaluator, CodeValidationResult, validation_results_to_json
 from d5p4.config import Config
 from d5p4.data.code_ds import get_code_dataset
+from d5p4.data.splits import shard_rows
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import (
@@ -120,7 +121,9 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
 
     dataset = get_code_dataset(config)
     limit = config.code_dataset_len if config.code_dataset_len > 0 else len(dataset)
-    rows: list[Any] = list(dataset.itertuples())[:limit]
+    indexed_rows = shard_rows(list(dataset.itertuples())[:limit], config)
+    dataset_indices = [index for index, _ in indexed_rows]
+    rows: list[Any] = [row for _, row in indexed_rows]
 
     evaluator = CodeEvaluator(timeout_s=config.code_timeout_s)
 
@@ -274,6 +277,7 @@ def run(config: Config | None = None, *, result_prefix: str = "code") -> None:  
         experiment_id=str(unique_id),
         extra={
             "results": results,
+            "dataset_indices": dataset_indices,
             "overall_accuracy": overall_acc,
             "code_metrics": code_metrics,
         },

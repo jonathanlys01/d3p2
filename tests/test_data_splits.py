@@ -144,3 +144,22 @@ def test_mbpp_dev_uses_full_validation_split(mock_load_dataset):
     assert record["prompt"].startswith('"""\nDouble a number.')
     assert record["prompt"].endswith('"""\nAdd two numbers.\nimport math\n"""')
     assert [call.args[1] for call in mock_load_dataset.call_args_list] == ["sanitized", "full"]
+
+
+def test_shard_rows_partitions_questions_and_keeps_global_indices():
+    from d5p4.data.splits import shard_rows
+
+    rows = list("abcdefg")
+    shards = [shard_rows(rows, Config(disable_sys_args=True, qa_num_shards=3, qa_shard_index=i)) for i in range(3)]
+
+    assert shards[0] == [(0, "a"), (3, "d"), (6, "g")]
+    assert shards[2] == [(2, "c"), (5, "f")]
+    assert sorted(index for shard in shards for index, _ in shard) == list(range(len(rows)))
+    assert shard_rows(rows, Config(disable_sys_args=True)) == list(enumerate(rows))
+
+
+def test_shard_rows_rejects_an_empty_shard():
+    from d5p4.data.splits import shard_rows
+
+    with pytest.raises(ValueError, match="empty"):
+        shard_rows(["a"], Config(disable_sys_args=True, qa_num_shards=2, qa_shard_index=1))

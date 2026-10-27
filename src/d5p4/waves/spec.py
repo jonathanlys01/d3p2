@@ -128,6 +128,20 @@ def greedy_beam(task: Task, temperature: float = 1.0) -> Run:
     )
 
 
+def sharded(run: Run, index: int, count: int) -> Run:
+    """Question shard `index` of `count` of a run (strided; see d5p4.data.splits.shard_rows).
+
+    Shards of one run share its tag up to the `_s{index}of{count}` suffix, so a draft on one shard can be extended
+    with the others later without regenerating it.
+    """
+    return Run(
+        task=run.task,
+        tag=f"{run.tag}_s{index}of{count}",
+        method=run.method,
+        overrides={**run.overrides, "qa_num_shards": count, "qa_shard_index": index},
+    )
+
+
 def check_unique_tags(runs: list[Run]) -> list[Run]:
     seen: set[tuple[str, str]] = set()
     for run in runs:

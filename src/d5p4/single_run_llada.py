@@ -10,6 +10,7 @@ import torch
 
 from d5p4.config import Config
 from d5p4.data import get_qa_dataset
+from d5p4.data.splits import shard_rows
 from d5p4.diffusion_llada import LLADASampler
 from d5p4.eval_core import Evaluator
 from d5p4.result_schema import build_generation_result_payload
@@ -60,7 +61,9 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     dataset = get_qa_dataset(config)
     limit = config.qa_dataset_len if config.qa_dataset_len > 0 else len(dataset)
-    rows = list(dataset.itertuples())[:limit]
+    indexed_rows = shard_rows(list(dataset.itertuples())[:limit], config)
+    dataset_indices = [index for index, _ in indexed_rows]
+    rows = [row for _, row in indexed_rows]
     prompts: list[str] = [row.question for row in rows]  # type: ignore
     references_all: list[list[str]] = [row.correct_answers for row in rows]  # type: ignore
 
@@ -225,6 +228,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
         internal_score_metadata=LLADA_INTERNAL_SCORE_METADATA if internal_scores_all else None,
         metrics=metrics,
         experiment_id=str(unique_id),
+        extra={"dataset_indices": dataset_indices},
     )
 
     name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(unique_id)}"

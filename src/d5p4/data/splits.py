@@ -6,7 +6,12 @@ split that shares no questions with it, so hyperparameters picked on dev can be 
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 from d5p4.config import Config
+
+
+T = TypeVar("T")
 
 
 EVAL_SPLITS = {
@@ -51,3 +56,15 @@ def split_name(cfg: Config, dataset_name: str, n_shots: int = 0) -> str:
             f"The {dataset_name} dev split is the train split that few-shot examples come from; use n_shots=0.",
         )
     return DEV_SPLITS[dataset_name]
+
+
+def shard_rows(rows: list[T], cfg: Config) -> list[tuple[int, T]]:
+    """Return question shard `qa_shard_index` of `qa_num_shards`, keeping each row's index in the full list.
+
+    Shards are strided (shard i takes rows i, i + n, ...), so they partition a run's questions: a draft on shard 0 can
+    be extended with the other shards later without regenerating it.
+    """
+    indexed = list(enumerate(rows))[cfg.qa_shard_index :: cfg.qa_num_shards]
+    if not indexed:
+        raise ValueError(f"Question shard {cfg.qa_shard_index}/{cfg.qa_num_shards} is empty for {len(rows)} rows.")
+    return indexed

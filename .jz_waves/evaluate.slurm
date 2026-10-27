@@ -3,7 +3,7 @@
 # Evaluation for one wave, chained after its generation array by submit.sh (afterany).
 # It refuses to evaluate an incomplete wave unless ALLOW_PARTIAL=1, printing the array indices to resubmit.
 # Each task's results are evaluated by the existing .scripts_next evaluator for its family, then
-# `python -m d5p4.waves summarize` writes WAVE_ROOT/summary.csv.
+# `python -m d5p4.waves summarize` writes WAVE_ROOT/summary.csv and `fronts` the paired summaries in WAVE_ROOT/fronts/.
 #
 # Expected exports: WAVE, WAVE_ROOT, and optionally ALLOW_PARTIAL=1.
 
@@ -75,4 +75,5 @@ while read -r TASK FAMILY K GROUP_SIZE; do
 done < <(python -m d5p4.waves tasks --wave "${WAVE}")
 
 python -m d5p4.waves summarize --wave "${WAVE}" --root "${WAVE_ROOT}"
+python -m d5p4.waves fronts --wave "${WAVE}" --root "${WAVE_ROOT}"
 echo "Evaluation ended at $(date)"

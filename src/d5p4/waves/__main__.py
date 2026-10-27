@@ -27,7 +27,7 @@ from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.data.code_ds import get_code_dataset
 from d5p4.data.math_ds import gsm8k
-from d5p4.waves import get_wave
+from d5p4.waves import fronts, get_wave
 from d5p4.waves.spec import DONE_MARKER, Run, Task
 
 
@@ -229,6 +229,21 @@ def cmd_summarize(args: argparse.Namespace, runs: list[Run]) -> int:
     return 0
 
 
+def cmd_fronts(args: argparse.Namespace, runs: list[Run]) -> int:
+    """Per-question metrics and paired bootstrap summaries, written to ROOT/fronts/."""
+    records = fronts.per_question(runs, args.root)
+    if not records:
+        print(f"No generation results under {args.root / 'results'}", file=sys.stderr)
+        return 1
+    out = args.root / "fronts"
+    fronts.write_csv(out / "per_question.csv", records, fronts.PER_QUESTION_FIELDS)
+    points, front_rows = fronts.summarize(records, runs)
+    fronts.write_csv(out / "points.csv", points)
+    fronts.write_csv(out / "fronts.csv", front_rows)
+    print(f"Wrote {len(records)} per-question rows, {len(points)} points and {len(front_rows)} fronts to {out}")
+    return 0
+
+
 def cmd_count(_args: argparse.Namespace, runs: list[Run]) -> int:
     print(len(runs))
     return 0
@@ -255,6 +270,7 @@ COMMANDS = {
     "run": cmd_run,
     "status": cmd_status,
     "summarize": cmd_summarize,
+    "fronts": cmd_fronts,
 }
 
 
@@ -284,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--missing", action="store_true", help="Print not-done indices as a Slurm array list.")
     p = add("summarize", root=True)
     p.add_argument("--output", type=Path, default=None)
+    add("fronts", root=True)
     args = parser.parse_args(argv)
     # Generation runs from the repository root, so relative paths must not depend on the caller's cwd.
     for name in ("root", "config", "cache_dir", "output"):
