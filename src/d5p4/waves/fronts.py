@@ -162,13 +162,20 @@ def _point_matrix(records: list[dict[str, Any]]) -> tuple[list[tuple[str, str, s
     return points, quality, self_bleu
 
 
-def interpolate_at(x_target: float, xs: np.ndarray, ys: np.ndarray) -> float:
-    """Linear interpolation of a front at x_target; NaN outside the measured range (never extrapolated)."""
+def hypervolume(self_bleu: np.ndarray, quality: np.ndarray, x_ref: float, y_ref: float) -> float:
+    """Area of the (Self-BLEU, quality) region the points dominate, bounded by the reference corner.
+
+    Lower Self-BLEU and higher quality are better, so a point (x, y) dominates [x, x_ref] x [y_ref, y]. Points beyond
+    the corner add nothing.
+    """
+    keep = (self_bleu < x_ref) & (quality > y_ref)
+    xs, ys = self_bleu[keep], quality[keep]
+    if len(xs) == 0:
+        return 0.0
     order = np.argsort(xs)
-    xs, ys = xs[order], ys[order]
-    if len(xs) == 0 or x_target < xs[0] or x_target > xs[-1]:
-        return float("nan")
-    return float(np.interp(x_target, xs, ys))
+    xs, ys = xs[order], np.maximum.accumulate(ys[order])
+    widths = np.diff(np.append(xs, x_ref))
+    return float((widths * (ys - y_ref)).sum())
 
 
 def summarize(
@@ -178,11 +185,16 @@ def summarize(
     samples: int = BOOTSTRAP_SAMPLES,
     seed: int = 0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Paired bootstrap summaries per task: one row per point, and one row per front at matched diversity.
+    """Paired bootstrap summaries per task: one row per point and one row per front.
 
     Points: mean quality and Self-BLEU, and quality minus the reference point (independent sampling at T = 1.0,
-    random k of N) on the same questions, with 95% intervals. Fronts: each (method, selection) front's quality,
-    interpolated at the reference point's Self-BLEU, minus the reference quality.
+    random k of N) on the same questions, with 95% intervals.
+
+    Fronts: each (method, selection) front's hypervolume, the share of the task's (Self-BLEU, quality) box that it
+    dominates, and its difference to the independent-sampling front and to the D5P4 front, with paired intervals. The
+    box spans every point of the task: from the most diverse point to the least diverse one in Self-BLEU, and from
+    the lowest quality to the highest. Hypervolume needs no shared Self-BLEU range, unlike quality at matched
+    diversity: the search fronts sit entirely at lower Self-BLEU than independent sampling on GSM8K and MBPP.
     """
     params = {}
     for run in runs:
@@ -227,30 +239,38 @@ def summarize(
                     "diff_hi": 100 * hi,
                 },
             )
-        for method, selection in sorted({(m, s) for m, s, _ in points}):
+        x_ref, y_ref = float(s_mean.max()), float(q_mean.min())
+        area = (x_ref - float(s_mean.min())) * (float(q_mean.max()) - y_ref)
+        fronts_of_task = sorted({(m, s) for m, s, _ in points})
+        hv_boot = {}
+        for method, selection in fronts_of_task:
             members = [i for i, (m, s, _) in enumerate(points) if (m, s) == (method, selection)]
-            if len(members) < 2:
-                continue
-            estimate = interpolate_at(s_mean[reference], s_mean[members], q_mean[members]) - q_mean[reference]
-            boot_values = np.array(
-                [
-                    interpolate_at(s_boot[reference, b], s_boot[members, b], q_boot[members, b]) - q_boot[reference, b]
-                    for b in range(samples)
-                ],
+            hv_boot[(method, selection)] = (
+                hypervolume(s_mean[members], q_mean[members], x_ref, y_ref) / area,
+                np.array(
+                    [hypervolume(s_boot[members, b], q_boot[members, b], x_ref, y_ref) / area for b in range(samples)],
+                ),
             )
-            lo, hi = ci(boot_values)
-            front_rows.append(
-                {
-                    "task": task,
-                    "method": method,
-                    "selection": selection,
-                    "reference_self_bleu": s_mean[reference],
-                    "matched_quality_delta": 100 * estimate,
-                    "delta_lo": 100 * lo,
-                    "delta_hi": 100 * hi,
-                    "reached_share": float(np.isfinite(boot_values).mean()),
-                },
-            )
+        baselines = {"independent": ("baseline", REFERENCE_SELECTION), "d5p4": ("greedy_map", "internal score")}
+        for key in fronts_of_task:
+            value, boot_values = hv_boot[key]
+            row = {
+                "task": task,
+                "method": key[0],
+                "selection": key[1],
+                "points": sum(1 for m, s, _ in points if (m, s) == key),
+                "hypervolume": value,
+                "hv_lo": ci(boot_values)[0],
+                "hv_hi": ci(boot_values)[1],
+            }
+            for name, other in baselines.items():
+                if other in hv_boot:
+                    other_value, other_boot = hv_boot[other]
+                    lo, hi = ci(boot_values - other_boot)
+                    row.update(
+                        {f"hv_minus_{name}": value - other_value, f"hv_minus_{name}_lo": lo, f"hv_minus_{name}_hi": hi},
+                    )
+            front_rows.append(row)
     return point_rows, front_rows
 
 

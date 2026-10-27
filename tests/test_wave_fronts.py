@@ -22,10 +22,11 @@ def test_expected_max_is_unbiased_pass_at_k():
     assert fronts.expected_max_of_subset(correct, 4) == pytest.approx(1 - math.comb(13, 4) / math.comb(16, 4))
 
 
-def test_interpolate_at_never_extrapolates():
-    xs, ys = np.array([80.0, 70.0, 75.0]), np.array([0.6, 0.8, 0.7])
-    assert fronts.interpolate_at(72.5, xs, ys) == pytest.approx(0.75)
-    assert math.isnan(fronts.interpolate_at(85.0, xs, ys))
+def test_hypervolume_of_a_staircase():
+    xs, ys = np.array([70.0, 80.0, 90.0]), np.array([0.8, 0.9, 0.5])
+    # dominated region below the corner (100, 0.5): [70,80]x0.3 + [80,100]x0.4; the third point adds nothing
+    assert fronts.hypervolume(xs, ys, 100.0, 0.5) == pytest.approx(10 * 0.3 + 20 * 0.4)
+    assert fronts.hypervolume(xs, ys, 60.0, 0.5) == 0.0
 
 
 def test_sharded_runs_share_a_base_tag():
@@ -121,8 +122,11 @@ def test_summarize_reports_paired_differences_and_matched_diversity():
     assert d5["param_value"] == 10.0
 
     front = {(f["method"], f["selection"]): f for f in front_rows}
-    assert front[("greedy_map", "internal score")]["matched_quality_delta"] == pytest.approx(10.0)
-    assert front[("baseline", "random k of N")]["matched_quality_delta"] == pytest.approx(0.0)
+    d5p4_front = front[("greedy_map", "internal score")]
+    assert d5p4_front["hv_minus_independent"] > 0
+    assert d5p4_front["hv_minus_independent_lo"] > 0
+    assert d5p4_front["hv_minus_d5p4"] == 0.0
+    assert front[("baseline", "random k of N")]["hv_minus_independent"] == 0.0
 
 
 def test_fronts_command_writes_outputs(tmp_path):
@@ -139,5 +143,5 @@ def test_fronts_command_writes_outputs(tmp_path):
 
     out = tmp_path / "fronts"
     assert (out / "per_question.csv").read_text().count("\n") == 1 + 2 * 2 * 2 + 2 * 2
-    assert "matched_quality_delta" in (out / "fronts.csv").read_text()
+    assert "hypervolume" in (out / "fronts.csv").read_text()
     assert "diff_vs_ref" in (out / "points.csv").read_text()
