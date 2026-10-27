@@ -8,6 +8,9 @@ method's operating point for the main tables is picked by the same rule:
 - MBPP: the full config's 90-task validation split, 4-shot (3 x 3, pool of 9). HumanEval has no disjoint split.
 
 One seed. The dev questions are fixed by `dataset_shuffle_seed` so later seeds see the same questions.
+
+Runs 45 onward extend the grid past its first edge: Diverse Beam Search was still improving at alpha=80 on GSM8K and
+MBPP, and D5P4 was flat from beta=80 on GSM8K. They are appended so the original array indices stay valid.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from d5p4.waves.spec import Run, Task, check_unique_tags, d5p4, diverse_beam, gr
 W_INTERACTIONS = (5.0, 10.0, 20.0, 40.0, 80.0, 160.0)
 DIVERSITY_ALPHAS = (5.0, 10.0, 20.0, 40.0, 80.0)
 INDEPENDENT_TEMPERATURES = (0.7, 1.0, 1.3)
+EDGE_DIVERSITY_ALPHAS = (160.0, 320.0)
+EDGE_W_INTERACTIONS = (320.0,)
 
 # LLaDA-8B-Instruct, pure diffusion (one block), one token unmasked per step, no guidance in the original LLaDA
 # convention (cfg_scale=0 with llada_reference_cfg=true skips the unconditional pass).
@@ -110,4 +115,7 @@ def runs() -> list[Run]:
         result.append(greedy_beam(task))
         result.extend(diverse_beam(task, alpha) for alpha in DIVERSITY_ALPHAS)
         result.extend(d5p4(task, w) for w in W_INTERACTIONS)
+    for task in TASKS:
+        result.extend(diverse_beam(task, alpha) for alpha in EDGE_DIVERSITY_ALPHAS)
+    result.extend(d5p4(GSM8K, w) for w in EDGE_W_INTERACTIONS)
     return check_unique_tags(result)

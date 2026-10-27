@@ -16,14 +16,23 @@ DEFAULT_CONFIG = REPO_ROOT / "src" / "d5p4" / "_default.yaml"
 def test_m0_order_is_stable():
     runs = get_wave("m0")
 
-    assert len(runs) == 45
+    assert len(runs) == 52
     assert [(run.task.name, run.tag) for run in runs[:4]] == [
         ("gsm8k", "ind_t0p7"),
         ("gsm8k", "ind_t1"),
         ("gsm8k", "ind_t1p3"),
         ("gsm8k", "gbs_t1"),
     ]
-    assert (runs[-1].task.name, runs[-1].tag) == ("mbpp", "d5p4_w160_t1")
+    assert (runs[44].task.name, runs[44].tag) == ("mbpp", "d5p4_w160_t1")
+    assert [(run.task.name, run.tag) for run in runs[45:]] == [
+        ("gsm8k", "dbs_a160_t1"),
+        ("gsm8k", "dbs_a320_t1"),
+        ("ai2_arc", "dbs_a160_t1"),
+        ("ai2_arc", "dbs_a320_t1"),
+        ("mbpp", "dbs_a160_t1"),
+        ("mbpp", "dbs_a320_t1"),
+        ("gsm8k", "d5p4_w320_t1"),
+    ]
 
 
 def test_m0_pools_match_across_methods():
