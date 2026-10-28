@@ -178,6 +178,66 @@ def hypervolume(self_bleu: np.ndarray, quality: np.ndarray, x_ref: float, y_ref:
     return float((widths * (ys - y_ref)).sum())
 
 
+def _interval(values: np.ndarray) -> tuple[float, float]:
+    """95% percentile interval, or NaNs when most bootstrap samples are undefined."""
+    finite = values[np.isfinite(values)]
+    if len(finite) < 0.5 * len(values):
+        return float("nan"), float("nan")
+    lo, hi = np.percentile(finite, [2.5, 97.5])
+    return float(lo), float(hi)
+
+
+def _front_rows(
+    task: str,
+    point_fronts: list[tuple[str, str, str]],
+    means: tuple[np.ndarray, np.ndarray],
+    boots: tuple[np.ndarray, np.ndarray],
+) -> list[dict[str, Any]]:
+    """Hypervolume of each front of one task, and its paired differences to the reference fronts."""
+    (s_mean, q_mean), (s_boot, q_boot) = means, boots
+    x_ref, y_ref = float(s_mean.max()), float(q_mean.min())
+    area = (x_ref - float(s_mean.min())) * (float(q_mean.max()) - y_ref)
+    fronts_of_task = sorted(set(point_fronts))
+    hv = {}
+    for key in fronts_of_task:
+        members = [i for i, front in enumerate(point_fronts) if front == key]
+        hv[key] = (
+            hypervolume(s_mean[members], q_mean[members], x_ref, y_ref) / area,
+            np.array(
+                [
+                    hypervolume(s_boot[members, b], q_boot[members, b], x_ref, y_ref) / area
+                    for b in range(s_boot.shape[1])
+                ],
+            ),
+        )
+    references = {
+        "independent": ("baseline", REFERENCE_SELECTION, ""),
+        "d5p4": ("greedy_map", "internal score", "1"),
+    }
+    rows = []
+    for key in fronts_of_task:
+        value, boot_values = hv[key]
+        row = {
+            "task": task,
+            "method": key[0],
+            "selection": key[1],
+            "temperature": key[2],
+            "points": point_fronts.count(key),
+            "hypervolume": value,
+            "hv_lo": _interval(boot_values)[0],
+            "hv_hi": _interval(boot_values)[1],
+        }
+        for name, other in references.items():
+            if other in hv:
+                other_value, other_boot = hv[other]
+                lo, hi = _interval(boot_values - other_boot)
+                row.update(
+                    {f"hv_minus_{name}": value - other_value, f"hv_minus_{name}_lo": lo, f"hv_minus_{name}_hi": hi},
+                )
+        rows.append(row)
+    return rows
+
+
 def summarize(
     records: list[dict[str, Any]],
     runs: list[Run],
@@ -190,17 +250,20 @@ def summarize(
     Points: mean quality and Self-BLEU, and quality minus the reference point (independent sampling at T = 1.0,
     random k of N) on the same questions, with 95% intervals.
 
-    Fronts: each (method, selection) front's hypervolume, the share of the task's (Self-BLEU, quality) box that it
-    dominates, and its difference to the independent-sampling front and to the D5P4 front, with paired intervals. The
-    box spans every point of the task: from the most diverse point to the least diverse one in Self-BLEU, and from
-    the lowest quality to the highest. Hypervolume needs no shared Self-BLEU range, unlike quality at matched
-    diversity: the search fronts sit entirely at lower Self-BLEU than independent sampling on GSM8K and MBPP.
+    Fronts: each front's hypervolume, the share of the task's (Self-BLEU, quality) box that it dominates, and its
+    difference to the independent-sampling front and to the D5P4 front at T = 1.0, with paired intervals. A front is
+    a (method, selection) pair; search methods are further split by sampling temperature, since their fronts sweep
+    alpha or beta at one temperature while independent sampling's front sweeps the temperature itself. The box spans
+    every point of the task, from the most to the least diverse in Self-BLEU and from the lowest quality to the
+    highest. Hypervolume needs no shared Self-BLEU range, unlike quality at matched diversity: the search fronts sit
+    entirely at lower Self-BLEU than independent sampling on GSM8K and MBPP.
     """
-    params = {}
+    params, temperatures = {}, {}
     for run in runs:
         overrides = run.overrides
         value = overrides.get("_w_interaction", overrides.get("_diversity_alpha", overrides.get("cat_temperature")))
         params[(run.task.name, base_tag(run.tag))] = value
+        temperatures[(run.task.name, base_tag(run.tag))] = f"{run.all_overrides()['cat_temperature']:g}"
     point_rows, front_rows = [], []
     rng = np.random.default_rng(seed)
     for task in sorted({r["task"] for r in records}):
@@ -212,16 +275,8 @@ def summarize(
         s_boot = self_bleu[:, boot].mean(axis=2)
         q_mean, s_mean = quality.mean(axis=1), self_bleu.mean(axis=1)
         diff_boot = q_boot - q_boot[reference]
-
-        def ci(values: np.ndarray) -> tuple[float, float]:
-            finite = values[np.isfinite(values)]
-            if len(finite) < 0.5 * len(values):
-                return float("nan"), float("nan")
-            lo, hi = np.percentile(finite, [2.5, 97.5])
-            return float(lo), float(hi)
-
         for i, (method, selection, tag) in enumerate(points):
-            lo, hi = ci(diff_boot[i])
+            lo, hi = _interval(diff_boot[i])
             point_rows.append(
                 {
                     "task": task,
@@ -229,48 +284,22 @@ def summarize(
                     "selection": selection,
                     "tag": tag,
                     "param_value": params.get((task, tag)),
+                    "temperature": temperatures.get((task, tag), ""),
                     "questions": n,
                     "quality": 100 * q_mean[i],
                     "self_bleu": s_mean[i],
-                    "self_bleu_lo": ci(s_boot[i])[0],
-                    "self_bleu_hi": ci(s_boot[i])[1],
+                    "self_bleu_lo": _interval(s_boot[i])[0],
+                    "self_bleu_hi": _interval(s_boot[i])[1],
                     "diff_vs_ref": 100 * (q_mean[i] - q_mean[reference]),
                     "diff_lo": 100 * lo,
                     "diff_hi": 100 * hi,
                 },
             )
-        x_ref, y_ref = float(s_mean.max()), float(q_mean.min())
-        area = (x_ref - float(s_mean.min())) * (float(q_mean.max()) - y_ref)
-        fronts_of_task = sorted({(m, s) for m, s, _ in points})
-        hv_boot = {}
-        for method, selection in fronts_of_task:
-            members = [i for i, (m, s, _) in enumerate(points) if (m, s) == (method, selection)]
-            hv_boot[(method, selection)] = (
-                hypervolume(s_mean[members], q_mean[members], x_ref, y_ref) / area,
-                np.array(
-                    [hypervolume(s_boot[members, b], q_boot[members, b], x_ref, y_ref) / area for b in range(samples)],
-                ),
-            )
-        baselines = {"independent": ("baseline", REFERENCE_SELECTION), "d5p4": ("greedy_map", "internal score")}
-        for key in fronts_of_task:
-            value, boot_values = hv_boot[key]
-            row = {
-                "task": task,
-                "method": key[0],
-                "selection": key[1],
-                "points": sum(1 for m, s, _ in points if (m, s) == key),
-                "hypervolume": value,
-                "hv_lo": ci(boot_values)[0],
-                "hv_hi": ci(boot_values)[1],
-            }
-            for name, other in baselines.items():
-                if other in hv_boot:
-                    other_value, other_boot = hv_boot[other]
-                    lo, hi = ci(boot_values - other_boot)
-                    row.update(
-                        {f"hv_minus_{name}": value - other_value, f"hv_minus_{name}_lo": lo, f"hv_minus_{name}_hi": hi},
-                    )
-            front_rows.append(row)
+        point_fronts = [
+            (method, selection, "" if method == "baseline" else temperatures.get((task, tag), ""))
+            for method, selection, tag in points
+        ]
+        front_rows.extend(_front_rows(task, point_fronts, (s_mean, q_mean), (s_boot, q_boot)))
     return point_rows, front_rows
 
 

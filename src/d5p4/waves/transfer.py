@@ -6,12 +6,26 @@ whole. These runs are also the three datasets' fronts in the draft (P1) of the D
 
 Same LLaDA profile as M0 (no CFG, pure diffusion, seed 0, fixed question order). The most expensive task comes first,
 so its long runs start first.
+
+Runs 36 onward add Diverse Beam Search and D5P4 at T 1.3 on TruthfulQA, where independent sampling at T 1.3 beat every
+search point at T 1.0: they test whether search on top of temperature still helps. They are appended so the original
+array indices stay valid.
 """
 
 from __future__ import annotations
 
 from d5p4.waves.m0 import LLADA_NO_CFG
-from d5p4.waves.spec import Run, Task, check_unique_tags, front_runs, generation_length
+from d5p4.waves.spec import (
+    FRONT_DIVERSITY_ALPHAS,
+    FRONT_W_INTERACTIONS,
+    Run,
+    Task,
+    check_unique_tags,
+    d5p4,
+    diverse_beam,
+    front_runs,
+    generation_length,
+)
 
 
 EVAL_SPLIT = {**LLADA_NO_CFG, "dataset_split": "eval"}
@@ -59,7 +73,11 @@ COMMONSENSE_QA = _qa_task("commonsense_qa")
 TRUTHFUL_QA = _qa_task("truthful_qa")
 
 TASKS = (HUMANEVAL, COMMONSENSE_QA, TRUTHFUL_QA)
+HOT_TEMPERATURE = 1.3
 
 
 def runs() -> list[Run]:
-    return check_unique_tags([run for task in TASKS for run in front_runs(task)])
+    result = [run for task in TASKS for run in front_runs(task)]
+    result.extend(diverse_beam(TRUTHFUL_QA, alpha, HOT_TEMPERATURE) for alpha in FRONT_DIVERSITY_ALPHAS)
+    result.extend(d5p4(TRUTHFUL_QA, w, HOT_TEMPERATURE) for w in FRONT_W_INTERACTIONS)
+    return check_unique_tags(result)

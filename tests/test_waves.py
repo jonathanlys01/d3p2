@@ -178,7 +178,13 @@ def test_front_runs_use_the_frozen_grid():
 def test_transfer_wave_covers_the_three_new_datasets_on_eval_splits():
     runs = get_wave("transfer")
 
-    assert len(runs) == 36
+    assert len(runs) == 44
+    assert [(run.task.name, run.tag) for run in runs[36:38]] == [
+        ("truthful_qa", "dbs_a5_t1p3"),
+        ("truthful_qa", "dbs_a20_t1p3"),
+    ]
+    assert runs[-1].tag == "d5p4_w320_t1p3"
+    assert cli.build_config(runs[-1], DEFAULT_CONFIG).cat_temperature == 1.3
     assert [runs[i].task.name for i in (0, 12, 24)] == ["humaneval", "commonsense_qa", "truthful_qa"]
     for run in runs:
         config = cli.build_config(run, DEFAULT_CONFIG)

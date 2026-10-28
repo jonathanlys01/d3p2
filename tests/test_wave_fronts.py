@@ -122,6 +122,7 @@ def test_summarize_reports_paired_differences_and_matched_diversity():
     assert d5["param_value"] == 10.0
 
     front = {(f["method"], f["selection"]): f for f in front_rows}
+    assert {f["temperature"] for f in front_rows} == {"", "1"}
     d5p4_front = front[("greedy_map", "internal score")]
     assert d5p4_front["hv_minus_independent"] > 0
     assert d5p4_front["hv_minus_independent_lo"] > 0
@@ -145,3 +146,24 @@ def test_fronts_command_writes_outputs(tmp_path):
     assert (out / "per_question.csv").read_text().count("\n") == 1 + 2 * 2 * 2 + 2 * 2
     assert "hypervolume" in (out / "fronts.csv").read_text()
     assert "diff_vs_ref" in (out / "points.csv").read_text()
+
+
+def test_search_fronts_are_split_by_temperature():
+    from d5p4.waves import transfer
+
+    n = 50
+    ones, zeros = np.ones(n), np.zeros(n)
+    records = (
+        _records("truthful_qa", "baseline", "ind_t1", zeros, np.full(n, 50.0), "random k of N")
+        + _records("truthful_qa", "greedy_map", "d5p4_w5_t1", ones, np.full(n, 55.0))
+        + _records("truthful_qa", "greedy_map", "d5p4_w80_t1", ones, np.full(n, 45.0))
+        + _records("truthful_qa", "greedy_map", "d5p4_w5_t1p3", ones, np.full(n, 40.0))
+        + _records("truthful_qa", "greedy_map", "d5p4_w80_t1p3", ones, np.full(n, 35.0))
+    )
+    points, front_rows = fronts.summarize(records, transfer.runs(), samples=50)
+
+    d5p4_fronts = {f["temperature"]: f for f in front_rows if f["method"] == "greedy_map"}
+    assert set(d5p4_fronts) == {"1", "1.3"}
+    assert d5p4_fronts["1"]["points"] == 2
+    assert d5p4_fronts["1.3"]["hv_minus_d5p4"] > 0
+    assert {p["temperature"] for p in points if p["tag"].endswith("t1p3")} == {"1.3"}
