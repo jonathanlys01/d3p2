@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from d5p4.waves import m0
+from d5p4.waves import m0, transfer
 from d5p4.waves.spec import Run
 
 
 WAVES: dict[str, Callable[[], list[Run]]] = {
     "m0": m0.runs,
+    "transfer": transfer.runs,
 }
 
 

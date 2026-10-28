@@ -142,6 +142,28 @@ def sharded(run: Run, index: int, count: int) -> Run:
     )
 
 
+# Quality-diversity fronts: grid frozen on 28 October 2026 after the M0 grid-edge runs. Diverse Beam Search gains no
+# diversity past alpha 160; D5P4's knee is at beta 20 and it keeps gaining diversity up to 320 at flat quality.
+FRONT_TEMPERATURES = (0.7, 1.0, 1.3)
+FRONT_DIVERSITY_ALPHAS = (5.0, 20.0, 80.0, 320.0)
+FRONT_W_INTERACTIONS = (5.0, 20.0, 80.0, 320.0)
+
+
+def front_runs(task: Task) -> list[Run]:
+    """The 12 runs of one front: independent sampling at 3 temperatures, Greedy Beam Search, 4 DBS and 4 D5P4."""
+    return [
+        *(independent(task, temperature) for temperature in FRONT_TEMPERATURES),
+        greedy_beam(task),
+        *(diverse_beam(task, alpha) for alpha in FRONT_DIVERSITY_ALPHAS),
+        *(d5p4(task, w) for w in FRONT_W_INTERACTIONS),
+    ]
+
+
+def generation_length(tokens: int) -> dict[str, int]:
+    """LLaDA pure diffusion: one block, one token unmasked per step, the DPP window over every step."""
+    return {"gen_length": tokens, "llada_steps": tokens, "block_length": tokens, "subsample_end": tokens}
+
+
 def check_unique_tags(runs: list[Run]) -> list[Run]:
     seen: set[tuple[str, str]] = set()
     for run in runs:

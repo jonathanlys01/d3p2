@@ -15,7 +15,16 @@ MBPP, and D5P4 was flat from beta=80 on GSM8K. They are appended so the original
 
 from __future__ import annotations
 
-from d5p4.waves.spec import Run, Task, check_unique_tags, d5p4, diverse_beam, greedy_beam, independent
+from d5p4.waves.spec import (
+    Run,
+    Task,
+    check_unique_tags,
+    d5p4,
+    diverse_beam,
+    generation_length,
+    greedy_beam,
+    independent,
+)
 
 
 W_INTERACTIONS = (5.0, 10.0, 20.0, 40.0, 80.0, 160.0)
@@ -47,10 +56,6 @@ LLADA_NO_CFG = {
 }
 
 
-def _length(tokens: int) -> dict[str, int]:
-    return {"gen_length": tokens, "llada_steps": tokens, "block_length": tokens, "subsample_end": tokens}
-
-
 GSM8K = Task(
     name="gsm8k",
     entry="llada_math.py",
@@ -60,7 +65,7 @@ GSM8K = Task(
     group_size=4,
     overrides={
         **LLADA_NO_CFG,
-        **_length(256),
+        **generation_length(256),
         "qa_dataset": "gsm8k",
         "qa_dataset_len": 500,
         "qa_n_shots": 0,
@@ -78,7 +83,7 @@ ARC_CHALLENGE = Task(
     group_size=3,
     overrides={
         **LLADA_NO_CFG,
-        **_length(128),
+        **generation_length(128),
         "qa_dataset": "ai2_arc",
         "qa_dataset_len": -1,
         "qa_n_shots": 0,
@@ -96,7 +101,7 @@ MBPP = Task(
     group_size=3,
     overrides={
         **LLADA_NO_CFG,
-        **_length(256),
+        **generation_length(256),
         "code_dataset": "mbpp",
         "code_dataset_len": -1,
         "code_n_shots": 4,

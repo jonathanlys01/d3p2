@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import d5p4.waves.__main__ as cli
+from d5p4.waves import m0
 from d5p4.waves import get_wave
 from d5p4.waves.spec import DONE_MARKER, value_tag
 
@@ -152,3 +153,36 @@ def test_summarize_joins_eval_outputs_to_runs(tmp_path):
     assert gsm8k_row["tag"] == "d5p4_w20_t1"
     assert gsm8k_row["w_interaction"] == "20.0"
     assert gsm8k_row["math.pass@4"] == "0.6"
+
+
+def test_front_runs_use_the_frozen_grid():
+    from d5p4.waves.spec import front_runs
+
+    tags = [run.tag for run in front_runs(m0.GSM8K)]
+    assert tags == [
+        "ind_t0p7",
+        "ind_t1",
+        "ind_t1p3",
+        "gbs_t1",
+        "dbs_a5_t1",
+        "dbs_a20_t1",
+        "dbs_a80_t1",
+        "dbs_a320_t1",
+        "d5p4_w5_t1",
+        "d5p4_w20_t1",
+        "d5p4_w80_t1",
+        "d5p4_w320_t1",
+    ]
+
+
+def test_transfer_wave_covers_the_three_new_datasets_on_eval_splits():
+    runs = get_wave("transfer")
+
+    assert len(runs) == 36
+    assert [runs[i].task.name for i in (0, 12, 24)] == ["humaneval", "commonsense_qa", "truthful_qa"]
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.dataset_split == "eval"
+        assert config.cfg_scale == 0 and config.llada_reference_cfg
+    humaneval = cli.build_config(runs[0], DEFAULT_CONFIG)
+    assert (humaneval.code_dataset, humaneval.gen_length, humaneval.code_n_shots) == ("humaneval", 512, 0)
