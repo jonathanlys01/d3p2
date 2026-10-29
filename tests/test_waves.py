@@ -178,13 +178,18 @@ def test_front_runs_use_the_frozen_grid():
 def test_transfer_wave_covers_the_three_new_datasets_on_eval_splits():
     runs = get_wave("transfer")
 
-    assert len(runs) == 44
+    assert len(runs) == 60
     assert [(run.task.name, run.tag) for run in runs[36:38]] == [
         ("truthful_qa", "dbs_a5_t1p3"),
         ("truthful_qa", "dbs_a20_t1p3"),
     ]
-    assert runs[-1].tag == "d5p4_w320_t1p3"
-    assert cli.build_config(runs[-1], DEFAULT_CONFIG).cat_temperature == 1.3
+    assert (runs[43].task.name, runs[43].tag) == ("truthful_qa", "d5p4_w320_t1p3")
+    assert [(run.task.name, run.tag) for run in (runs[44], runs[52], runs[-1])] == [
+        ("humaneval", "dbs_a5_t1p3"),
+        ("commonsense_qa", "dbs_a5_t1p3"),
+        ("commonsense_qa", "d5p4_w320_t1p3"),
+    ]
+    assert cli.build_config(runs[43], DEFAULT_CONFIG).cat_temperature == 1.3
     assert [runs[i].task.name for i in (0, 12, 24)] == ["humaneval", "commonsense_qa", "truthful_qa"]
     for run in runs:
         config = cli.build_config(run, DEFAULT_CONFIG)
@@ -192,3 +197,25 @@ def test_transfer_wave_covers_the_three_new_datasets_on_eval_splits():
         assert config.cfg_scale == 0 and config.llada_reference_cfg
     humaneval = cli.build_config(runs[0], DEFAULT_CONFIG)
     assert (humaneval.code_dataset, humaneval.gen_length, humaneval.code_n_shots) == ("humaneval", 512, 0)
+
+
+def test_p1_covers_gsm8k_mbpp_and_arc_on_eval_splits():
+    runs = get_wave("p1")
+
+    assert len(runs) == 60
+    assert [runs[i].task.name for i in (0, 20, 40)] == ["gsm8k", "mbpp", "ai2_arc"]
+    assert [run.tag for run in runs[:2]] == ["ind_t0p7_s0of4", "ind_t1_s0of4"]
+    assert [run.tag for run in runs[20:60:20]] == ["ind_t0p7", "ind_t0p7"]
+    assert [run.tag for run in runs[52:54]] == ["dbs_a5_t1p3", "dbs_a20_t1p3"]
+    assert runs[-1].tag == "d5p4_w320_t1p3"
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.dataset_split == "eval"
+        assert config.cfg_scale == 0 and config.llada_reference_cfg
+        assert config.n_groups * config.group_size == run.task.pool_size
+    gsm8k = cli.build_config(runs[0], DEFAULT_CONFIG)
+    assert (gsm8k.qa_dataset_len, gsm8k.qa_num_shards, gsm8k.qa_shard_index) == (-1, 4, 0)
+    assert (gsm8k.n_groups, gsm8k.group_size) == (16, 1)
+    mbpp = cli.build_config(runs[20], DEFAULT_CONFIG)
+    assert (mbpp.code_dataset, mbpp.code_n_shots, mbpp.gen_length) == ("mbpp", 4, 256)
+    assert cli.build_config(runs[-1], DEFAULT_CONFIG).cat_temperature == 1.3

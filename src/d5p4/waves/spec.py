@@ -159,6 +159,14 @@ def front_runs(task: Task) -> list[Run]:
     ]
 
 
+def search_runs(task: Task, temperature: float) -> list[Run]:
+    """The search half of a front at another temperature: 4 DBS and 4 D5P4 runs."""
+    return [
+        *(diverse_beam(task, alpha, temperature) for alpha in FRONT_DIVERSITY_ALPHAS),
+        *(d5p4(task, w, temperature) for w in FRONT_W_INTERACTIONS),
+    ]
+
+
 def generation_length(tokens: int) -> dict[str, int]:
     """LLaDA pure diffusion: one block, one token unmasked per step, the DPP window over every step."""
     return {"gen_length": tokens, "llada_steps": tokens, "block_length": tokens, "subsample_end": tokens}
