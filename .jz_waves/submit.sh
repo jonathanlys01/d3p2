@@ -12,6 +12,9 @@
 #   --no-eval           do not chain the evaluation job
 #   --eval-only         only submit the evaluation job (e.g. after fixing an evaluator)
 #   --allow-partial     evaluate even if some runs are missing
+#   --after JOB_ID      start generation only once job JOB_ID has ended (chains waves in order)
+#   --time HH:MM:SS     time limit of each generation task (default: generate.slurm's)
+#   --eval-time HH:MM:SS  time limit of the evaluation job (default: evaluate.slurm's)
 #   --dry-run           print the sbatch commands without submitting
 #
 # Outputs go to $WAVES_ROOT/<wave>/{results,resume,eval}/ and $WAVES_ROOT/<wave>/summary.csv.
@@ -29,6 +32,9 @@ EVAL=1
 GENERATE=1
 ALLOW_PARTIAL=0
 DRY_RUN=0
+AFTER=""
+GEN_TIME=""
+EVAL_TIME=""
 WAVE=""
 
 while (($#)); do
@@ -40,8 +46,11 @@ while (($#)); do
     --no-eval) EVAL=0 ;;
     --eval-only) GENERATE=0 ;;
     --allow-partial) ALLOW_PARTIAL=1 ;;
+    --after) AFTER="$2"; shift ;;
+    --time) GEN_TIME="$2"; shift ;;
+    --eval-time) EVAL_TIME="$2"; shift ;;
     --dry-run) DRY_RUN=1 ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "Unknown option $1" >&2; exit 2 ;;
     *) WAVE="$1" ;;
   esac
@@ -84,14 +93,21 @@ submit() {
   fi
 }
 
+GEN_SBATCH=()
+EVAL_SBATCH=()
+[[ -n "${GEN_TIME}" ]] && GEN_SBATCH+=(--time="${GEN_TIME}")
+[[ -n "${AFTER}" ]] && GEN_SBATCH+=(--dependency="afterany:${AFTER}")
+[[ -n "${EVAL_TIME}" ]] && EVAL_SBATCH+=(--time="${EVAL_TIME}")
+
 DEPENDENCY=()
 if ((GENERATE)); then
-  GEN_ID="$(submit ${EXTRA_SBATCH[@]+"${EXTRA_SBATCH[@]}"} --array="${INDICES}%${MAX_PARALLEL}" --export="${EXPORTS}" \
-    .jz_waves/generate.slurm)"
+  GEN_ID="$(submit ${EXTRA_SBATCH[@]+"${EXTRA_SBATCH[@]}"} ${GEN_SBATCH[@]+"${GEN_SBATCH[@]}"} \
+    --array="${INDICES}%${MAX_PARALLEL}" --export="${EXPORTS}" .jz_waves/generate.slurm)"
   echo "Generation: job ${GEN_ID}, wave ${WAVE}, array ${INDICES} of ${COUNT} runs, root ${WAVE_ROOT}"
   DEPENDENCY=(--dependency="afterany:${GEN_ID}")
 fi
 if ((EVAL)); then
-  EVAL_ID="$(submit ${EXTRA_SBATCH[@]+"${EXTRA_SBATCH[@]}"} ${DEPENDENCY[@]+"${DEPENDENCY[@]}"} --export="${EXPORTS}" .jz_waves/evaluate.slurm)"
+  EVAL_ID="$(submit ${EXTRA_SBATCH[@]+"${EXTRA_SBATCH[@]}"} ${EVAL_SBATCH[@]+"${EVAL_SBATCH[@]}"} \
+    ${DEPENDENCY[@]+"${DEPENDENCY[@]}"} --export="${EXPORTS}" .jz_waves/evaluate.slurm)"
   echo "Evaluation: job ${EVAL_ID}${DEPENDENCY[*]+ (starts after generation ends)}; summary at ${WAVE_ROOT}/summary.csv"
 fi

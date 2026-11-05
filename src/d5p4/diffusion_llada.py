@@ -1227,7 +1227,9 @@ class LLADASampler(nn.Module):
                             if valid_indices.numel() <= k:
                                 select_index = valid_indices
                             else:
-                                candidate_count = min(2 * k, valid_indices.numel())
+                                pool = self.config.selection_candidates
+                                available = valid_indices.numel()
+                                candidate_count = available if pool == 0 else min(pool * k, available)
                                 top_vals, top_pos = torch.topk(confidence[j], k=candidate_count)
 
                                 sel_temp = self.config.selection_temperature

@@ -7,6 +7,9 @@ mdlm_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/gpt2/
 llada_model_path: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
 llada_tokenizer: ${oc.env:WORK}/models/GSAI-ML/LLaDA-8B-Instruct
 
+dream_model_path: ${oc.env:WORK}/models/Dream-org/Dream-v0-Instruct-7B
+dream_tokenizer: ${oc.env:WORK}/models/Dream-org/Dream-v0-Instruct-7B
+
 ar_model_path: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 ar_tokenizer: ${oc.env:DSDIR}/HuggingFace_Models/meta-llama/Meta-Llama-3-8B/
 

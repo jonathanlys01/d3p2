@@ -111,6 +111,9 @@ class Config:
     force_left_to_right: bool = False
     remasking: str = "low_confidence"  # "low_confidence", "selection_temperature", or "random"
     selection_temperature: float = 1.0
+    # Stochastic remasking samples the k positions to unmask among the `selection_candidates * k` most confident
+    # masked positions; 0 samples among every masked position of the block (tempered remasking, Olausson et al. 2026).
+    selection_candidates: int = 2
     logits_eos_inf: bool = False
     confidence_eos_eot_inf: bool = True
     guidance_start: int = 0  # step at which to start applying CFG (0-indexed)
@@ -360,6 +363,7 @@ class Config:
             assert self.transversal, "eval_transversal_group_representatives requires transversal=True"
             assert self.group_size > 1, "eval_transversal_group_representatives requires group_size > 1"
         assert self.selection_temperature >= 0.0, "selection_temperature must be non-negative"
+        assert self.selection_candidates >= 0, "selection_candidates must be non-negative"
         if self.llada_decoder == "diffusion":
             assert self.gen_length % self.block_length == 0, "gen_length must be divisible by block_length"
             num_blocks = self.gen_length // self.block_length

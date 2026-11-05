@@ -38,14 +38,14 @@ REFERENCE_TAG = "ind_t1"
 REFERENCE_SELECTION = "random k of N"
 SELF_BLEU_SUBSETS = 24
 BOOTSTRAP_SAMPLES = 2000
-SHARD_SUFFIX = re.compile(r"_s\d+of\d+$")
+RUN_SUFFIX = re.compile(r"(_seed\d+)?(_s\d+of\d+)?$")
 
 PER_QUESTION_FIELDS = ["task", "tag", "method", "selection", "question", "quality", "individual", "self_bleu"]
 
 
 def base_tag(tag: str) -> str:
-    """Tag shared by every question shard of one run."""
-    return SHARD_SUFFIX.sub("", tag)
+    """Tag shared by every seed and question shard of one run."""
+    return RUN_SUFFIX.sub("", tag)
 
 
 def expected_max_of_subset(values: Iterable[float], k: int) -> float:
@@ -148,17 +148,21 @@ def per_question(runs: list[Run], root: Path) -> list[dict[str, Any]]:
 
 
 def _point_matrix(records: list[dict[str, Any]]) -> tuple[list[tuple[str, str, str]], np.ndarray, np.ndarray]:
-    """Points (method, selection, tag) as rows and the questions every point answered as columns."""
-    by_point: dict[tuple[str, str, str], dict[int, tuple[float, float]]] = {}
+    """Points (method, selection, tag) as rows and the questions every point answered as columns.
+
+    Seeds of a run share its base tag; their values are averaged per question, so the bootstrap resamples questions
+    with seeds nested inside them.
+    """
+    by_point: dict[tuple[str, str, str], dict[int, list[tuple[float, float]]]] = {}
     for r in records:
-        by_point.setdefault((r["method"], r["selection"], r["tag"]), {})[int(r["question"])] = (
-            float(r["quality"]),
-            float(r["self_bleu"]),
+        by_point.setdefault((r["method"], r["selection"], r["tag"]), {}).setdefault(int(r["question"]), []).append(
+            (float(r["quality"]), float(r["self_bleu"])),
         )
     points = sorted(by_point)
     shared = sorted(set.intersection(*(set(v) for v in by_point.values())))
-    quality = np.array([[by_point[p][q][0] for q in shared] for p in points])
-    self_bleu = np.array([[by_point[p][q][1] for q in shared] for p in points])
+    means = {p: {q: np.mean(by_point[p][q], axis=0) for q in shared} for p in points}
+    quality = np.array([[means[p][q][0] for q in shared] for p in points])
+    self_bleu = np.array([[means[p][q][1] for q in shared] for p in points])
     return points, quality, self_bleu
 
 
@@ -268,6 +272,9 @@ def summarize(
     rng = np.random.default_rng(seed)
     for task in sorted({r["task"] for r in records}):
         points, quality, self_bleu = _point_matrix([r for r in records if r["task"] == task])
+        if ("baseline", REFERENCE_SELECTION, REFERENCE_TAG) not in points:
+            print(f"Skipping {task}: no independent-sampling run at T = 1.0 to compare against.")
+            continue
         reference = points.index(("baseline", REFERENCE_SELECTION, REFERENCE_TAG))
         n = quality.shape[1]
         boot = rng.integers(0, n, size=(samples, n))

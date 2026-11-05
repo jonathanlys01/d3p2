@@ -142,6 +142,27 @@ def sharded(run: Run, index: int, count: int) -> Run:
     )
 
 
+def seeded(run: Run, seed: int) -> Run:
+    """Generation seed `seed` of a run, on the same questions in the same order (`dataset_shuffle_seed` is fixed).
+
+    Seeds of one run share its tag up to the `_seed{seed}` suffix; the front summaries average them per question.
+    """
+    return Run(task=run.task, tag=f"{run.tag}_seed{seed}", method=run.method, overrides={**run.overrides, "seed": seed})
+
+
+def variant(task: Task, name: str, entry: str | None = None, family: str | None = None, **overrides: Any) -> Task:
+    """A copy of `task` under another name (its own results directory and fronts), with config overrides."""
+    return Task(
+        name=name,
+        entry=entry or task.entry,
+        family=family or task.family,
+        limit_key=task.limit_key,
+        n_groups=task.n_groups,
+        group_size=task.group_size,
+        overrides={**task.overrides, **overrides},
+    )
+
+
 # Quality-diversity fronts: grid frozen on 28 October 2026 after the M0 grid-edge runs. Diverse Beam Search gains no
 # diversity past alpha 160; D5P4's knee is at beta 20 and it keeps gaining diversity up to 320 at flat quality.
 FRONT_TEMPERATURES = (0.7, 1.0, 1.3)

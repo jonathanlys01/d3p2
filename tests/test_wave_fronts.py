@@ -7,7 +7,7 @@ import pytest
 
 import d5p4.waves.__main__ as cli
 from d5p4.waves import fronts, m0
-from d5p4.waves.spec import d5p4, diverse_beam, independent, sharded
+from d5p4.waves.spec import d5p4, diverse_beam, independent, seeded, sharded
 
 
 def test_expected_max_of_subset_matches_brute_force():
@@ -35,6 +35,32 @@ def test_sharded_runs_share_a_base_tag():
     assert run.overrides["qa_num_shards"] == 4
     assert run.overrides["qa_shard_index"] == 1
     assert fronts.base_tag(run.tag) == "d5p4_w20_t1"
+
+
+def test_seeds_and_shards_share_a_base_tag():
+    run = sharded(seeded(d5p4(m0.GSM8K, 20.0), 1), 0, 4)
+    assert run.tag == "d5p4_w20_t1_seed1_s0of4"
+    assert run.overrides["seed"] == 1
+    assert fronts.base_tag(run.tag) == "d5p4_w20_t1"
+    assert fronts.base_tag("ind_t1_tau0p3_seed0") == "ind_t1_tau0p3"
+
+
+def test_point_matrix_averages_seeds_per_question():
+    records = [
+        {
+            "method": "baseline",
+            "selection": "random k of N",
+            "tag": "ind_t1",
+            "question": q,
+            "quality": v,
+            "self_bleu": s,
+        }
+        for q, v, s in [(0, 1.0, 50.0), (0, 0.0, 70.0), (1, 0.5, 60.0)]
+    ]
+    points, quality, self_bleu = fronts._point_matrix(records)
+    assert points == [("baseline", "random k of N", "ind_t1")]
+    assert quality.tolist() == [[0.5, 0.5]]
+    assert self_bleu.tolist() == [[60.0, 60.0]]
 
 
 def _math_payload(correct_per_question, internal_per_question, indices=None):

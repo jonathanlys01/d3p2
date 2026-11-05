@@ -219,3 +219,60 @@ def test_p1_covers_gsm8k_mbpp_and_arc_on_eval_splits():
     mbpp = cli.build_config(runs[20], DEFAULT_CONFIG)
     assert (mbpp.code_dataset, mbpp.code_n_shots, mbpp.gen_length) == ("mbpp", 4, 256)
     assert cli.build_config(runs[-1], DEFAULT_CONFIG).cat_temperature == 1.3
+
+
+@pytest.mark.parametrize("wave", ["s1", "e1", "e2", "b1"])
+def test_side_waves_build_valid_configs_with_two_seeds(wave):
+    runs = get_wave(wave)
+    seeds = {cli.build_config(run, DEFAULT_CONFIG).seed for run in runs}
+    assert seeds == {0, 1}
+    half = len(runs) // 2
+    assert all(run.tag.split("_seed")[1].startswith("0") for run in runs[:half])
+    assert all(run.tag.split("_seed")[1].startswith("1") for run in runs[half:])
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.dataset_shuffle_seed == 0
+        assert config.n_groups * config.group_size == run.task.pool_size
+
+
+def test_s1_maps_paper_cfg_levels_to_the_reference_convention():
+    from d5p4.diffusion_llada import cfg_is_active
+
+    runs = get_wave("s1")
+    assert len(runs) == 112
+    assert (runs[0].task.name, runs[0].tag) == ("gsm8k_cfg1p5", "ind_t1_seed0_s0of4")
+    configs = {run.task.name: cli.build_config(run, DEFAULT_CONFIG) for run in runs}
+    assert configs["gsm8k_cfg1p5"].cfg_scale == 0.5
+    assert configs["truthful_qa_cfg3"].cfg_scale == 2.0
+    assert all(cfg_is_active(c.cfg_scale, reference_convention=c.llada_reference_cfg) for c in configs.values())
+    assert configs["gsm8k_cfg2p5"].qa_num_shards == 4
+
+
+def test_e1_decodes_in_blocks_of_32():
+    for run in get_wave("e1"):
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert (config.block_length, config.llada_steps, config.gen_length) == (32, 256, 256)
+
+
+def test_e2_runs_dream_with_a_dev_grid_check():
+    runs = get_wave("e2")
+    assert len(runs) == 66
+    assert [run.task.name for run in runs[:10]] == ["dream_gsm8k_dev"] * 9 + ["dream_gsm8k"]
+    dev = cli.build_config(runs[0], DEFAULT_CONFIG)
+    assert (dev.model, dev.dataset_split, dev.qa_dataset_len, dev.dream_steps) == ("dream", "dev", 200, 256)
+    qa = cli.build_config(runs[32], DEFAULT_CONFIG)
+    assert (runs[32].task.entry, qa.qa_dataset, qa.dream_steps) == ("single_run_dream.py", "truthful_qa", 128)
+
+
+def test_b1_tempered_remasking_samples_over_every_masked_position():
+    runs = get_wave("b1")
+    by_tag = {(run.task.name, run.tag): cli.build_config(run, DEFAULT_CONFIG) for run in runs}
+    stochastic = by_tag[("gsm8k_stochastic", "d5p4_w20_t1_seed0_s0of4")]
+    assert (stochastic.remasking, stochastic.selection_temperature, stochastic.selection_candidates) == (
+        "selection_temperature",
+        0.1,
+        2,
+    )
+    tempered = by_tag[("truthful_qa_tempered", "ind_t1_tau0p3_seed1")]
+    assert (tempered.selection_temperature, tempered.selection_candidates) == (0.3, 0)
+    assert by_tag[("truthful_qa_tempered", "ind_t1_seed1")].remasking == "low_confidence"

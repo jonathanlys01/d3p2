@@ -19,28 +19,16 @@ comes first, so its long runs start first.
 from __future__ import annotations
 
 from d5p4.waves import m0
-from d5p4.waves.spec import Run, Task, check_unique_tags, front_runs, search_runs, sharded
+from d5p4.waves.spec import Run, Task, check_unique_tags, front_runs, search_runs, sharded, variant
 
 
 HOT_TEMPERATURE = 1.3
 GSM8K_SHARDS = 4
 
 
-def _eval_split(task: Task, **overrides: object) -> Task:
-    return Task(
-        name=task.name,
-        entry=task.entry,
-        family=task.family,
-        limit_key=task.limit_key,
-        n_groups=task.n_groups,
-        group_size=task.group_size,
-        overrides={**task.overrides, "dataset_split": "eval", **overrides},
-    )
-
-
-GSM8K = _eval_split(m0.GSM8K, qa_dataset_len=-1)
-MBPP = _eval_split(m0.MBPP)
-ARC_CHALLENGE = _eval_split(m0.ARC_CHALLENGE)
+GSM8K = variant(m0.GSM8K, "gsm8k", dataset_split="eval", qa_dataset_len=-1)
+MBPP = variant(m0.MBPP, "mbpp", dataset_split="eval")
+ARC_CHALLENGE = variant(m0.ARC_CHALLENGE, "ai2_arc", dataset_split="eval")
 
 TASKS = (GSM8K, MBPP, ARC_CHALLENGE)
 
