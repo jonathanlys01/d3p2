@@ -165,3 +165,52 @@ def test_single_run_dream_routes_direct_prompt(monkeypatch):
     single_run_dream.main()
 
     assert seen["prompt"] == "Direct prompt"
+
+
+def test_single_run_dream_selects_one_representative_per_group(monkeypatch):
+    import json
+    import os
+
+    from d5p4 import single_run_dream
+
+    class _Sampler:
+        distributed_utils = None
+        tokenizer = _Tokenizer()
+
+        def __init__(self, config):
+            self.model = object()
+            self.config = config
+
+        def _preprocess_prompt(self, prompt):
+            return torch.tensor([[1, 2]])
+
+        def sample(self, prompt, return_internal_scores=False):
+            tokens = torch.tensor([[1, 2, ord(c), ord(c)] for c in "abcd"])
+            return tokens, torch.tensor([0.1, 0.9, 0.8, 0.2])
+
+    config = Config(
+        disable_sys_args=True,
+        model="dream",
+        prompt="Grouped prompt",
+        gen_length=2,
+        n_groups=2,
+        group_size=2,
+        skip_eval=True,
+        resume_runs=False,
+        results_dir=tempfile.mkdtemp(),
+        standalone_job=True,
+    )
+
+    monkeypatch.setattr(single_run_dream, "Config", lambda: config)
+    monkeypatch.setattr(single_run_dream, "DreamSampler", _Sampler)
+    monkeypatch.setattr(single_run_dream, "compile_model", lambda model, _config, dynamic=False: model)
+    monkeypatch.setattr(single_run_dream, "seed_all", lambda _seed: None)
+    monkeypatch.setattr(single_run_dream, "print", lambda *_args, **_kwargs: None)
+
+    single_run_dream.main()
+
+    (output,) = [f for f in os.listdir(config.results_dir) if f.startswith("exp-")]
+    with open(os.path.join(config.results_dir, output)) as f:
+        payload = json.load(f)
+    assert payload["eval_selected_indices"] == [[1, 2]]
+    assert payload["eval_text_samples"] == [[payload["text_samples"][0][1], payload["text_samples"][0][2]]]

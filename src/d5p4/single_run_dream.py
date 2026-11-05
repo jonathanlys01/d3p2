@@ -13,6 +13,7 @@ from d5p4.diffusion_dream import DreamSampler
 from d5p4.eval_core import Evaluator
 from d5p4.result_schema import build_generation_result_payload
 from d5p4.resume_db import prepare_resumable_run, release_resumable_run, sync_resume_item
+from d5p4.single_run_llada import _select_group_representatives
 from d5p4.utils import compile_model, print, seed_all
 
 
@@ -174,6 +175,23 @@ def main():  # noqa: C901, PLR0912, PLR0915
             model.distributed_utils.cleanup()
         return
 
+    # Grouped methods are evaluated on one representative per group, the one with the best final internal score.
+    use_internal_representatives = config.group_size > 1
+    eval_texts = eval_selected_indices = eval_selection = None
+    if use_internal_representatives:
+        picked = [
+            _select_group_representatives(decoded, scores, config.group_size)
+            for decoded, scores in zip(texts, internal_scores_all, strict=True)
+        ]
+        eval_texts = [selected_texts for selected_texts, _ in picked]
+        eval_selected_indices = [indices for _, indices in picked]
+        eval_selection = {
+            "method": "final_internal_signal",
+            "score_key": "internal_scores",
+            "score_method": DREAM_INTERNAL_SCORE_METADATA["method"],
+            "group_size": config.group_size,
+        }
+
     metrics = None
     if references_all is None:
         print("Skipping evaluation because prompt mode has no dataset references.")
@@ -186,13 +204,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
             ppl_model_id=config.ppl_model_id,
             cos_model_id=config.cos_model_id,
         )
-        metrics = evaluator.evaluate(texts, references=references_all)
+        metrics = evaluator.evaluate(eval_texts or texts, references=references_all)
         print(f"Evaluation complete: {metrics['metrics_summary']}")
 
     payload = build_generation_result_payload(
         text_samples=texts,
         config=config,
         references=references_all,
+        eval_text_samples=eval_texts,
+        eval_selected_indices=eval_selected_indices,
+        eval_selection=eval_selection,
         internal_scores=internal_scores_all,
         internal_score_metadata=DREAM_INTERNAL_SCORE_METADATA,
         metrics=metrics,
