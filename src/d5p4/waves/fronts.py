@@ -201,6 +201,9 @@ def _front_rows(
     (s_mean, q_mean), (s_boot, q_boot) = means, boots
     x_ref, y_ref = float(s_mean.max()), float(q_mean.min())
     area = (x_ref - float(s_mean.min())) * (float(q_mean.max()) - y_ref)
+    if area <= 0:
+        print(f"Skipping the hypervolume of {task}: its points span no Self-BLEU x quality box.")
+        return []
     fronts_of_task = sorted(set(point_fronts))
     hv = {}
     for key in fronts_of_task:

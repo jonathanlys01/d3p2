@@ -193,3 +193,14 @@ def test_search_fronts_are_split_by_temperature():
     assert d5p4_fronts["1"]["points"] == 2
     assert d5p4_fronts["1.3"]["hv_minus_d5p4"] > 0
     assert {p["temperature"] for p in points if p["tag"].endswith("t1p3")} == {"1.3"}
+
+
+def test_front_rows_skip_a_task_whose_points_span_no_box():
+    s, q = np.array([50.0, 60.0]), np.array([0.5, 0.5])
+    rows = fronts._front_rows(
+        "t",
+        [("baseline", "random k of N", ""), ("greedy_map", "internal score", "1")],
+        (s, q),
+        (s[:, None], q[:, None]),
+    )
+    assert rows == []
