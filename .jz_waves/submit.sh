@@ -12,7 +12,8 @@
 #   --no-eval           do not chain the evaluation job
 #   --eval-only         only submit the evaluation job (e.g. after fixing an evaluator)
 #   --allow-partial     evaluate even if some runs are missing
-#   --after JOB_ID      start generation only once job JOB_ID has ended (chains waves in order)
+#   --after JOB_ID      start generation (or, with --eval-only, evaluation) once job JOB_ID has ended
+#   --eval-tasks LIST   only re-evaluate these tasks, colon-separated (e.g. after an evaluation timed out)
 #   --time HH:MM:SS     time limit of each generation task (default: generate.slurm's)
 #   --eval-time HH:MM:SS  time limit of the evaluation job (default: evaluate.slurm's)
 #   --dry-run           print the sbatch commands without submitting
@@ -35,6 +36,7 @@ DRY_RUN=0
 AFTER=""
 GEN_TIME=""
 EVAL_TIME=""
+EVAL_TASKS=""
 WAVE=""
 
 while (($#)); do
@@ -49,8 +51,9 @@ while (($#)); do
     --after) AFTER="$2"; shift ;;
     --time) GEN_TIME="$2"; shift ;;
     --eval-time) EVAL_TIME="$2"; shift ;;
+    --eval-tasks) EVAL_TASKS="$2"; shift ;;
     --dry-run) DRY_RUN=1 ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "Unknown option $1" >&2; exit 2 ;;
     *) WAVE="$1" ;;
   esac
@@ -81,7 +84,7 @@ if ((MISSING)); then
 fi
 INDICES="${INDICES:-0-$((COUNT - 1))}"
 
-EXPORTS="ALL,WAVE=${WAVE},WAVE_ROOT=${WAVE_ROOT},WAVE_LIMIT=${WAVE_LIMIT},ALLOW_PARTIAL=${ALLOW_PARTIAL}"
+EXPORTS="ALL,WAVE=${WAVE},WAVE_ROOT=${WAVE_ROOT},WAVE_LIMIT=${WAVE_LIMIT},ALLOW_PARTIAL=${ALLOW_PARTIAL},EVAL_TASKS=${EVAL_TASKS}"
 
 submit() {
   if ((DRY_RUN)); then
@@ -100,6 +103,9 @@ EVAL_SBATCH=()
 [[ -n "${EVAL_TIME}" ]] && EVAL_SBATCH+=(--time="${EVAL_TIME}")
 
 DEPENDENCY=()
+if ((!GENERATE)) && [[ -n "${AFTER}" ]]; then
+  DEPENDENCY=(--dependency="afterany:${AFTER}")
+fi
 if ((GENERATE)); then
   GEN_ID="$(submit ${EXTRA_SBATCH[@]+"${EXTRA_SBATCH[@]}"} ${GEN_SBATCH[@]+"${GEN_SBATCH[@]}"} \
     --array="${INDICES}%${MAX_PARALLEL}" --export="${EXPORTS}" .jz_waves/generate.slurm)"

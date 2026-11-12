@@ -5,7 +5,8 @@
 # Each task's results are evaluated by the existing .scripts_next evaluator for its family, then
 # `python -m d5p4.waves summarize` writes WAVE_ROOT/summary.csv and `fronts` the paired summaries in WAVE_ROOT/fronts/.
 #
-# Expected exports: WAVE, WAVE_ROOT, and optionally ALLOW_PARTIAL=1.
+# Expected exports: WAVE, WAVE_ROOT, and optionally ALLOW_PARTIAL=1 and EVAL_TASKS (colon-separated task names: only
+# those are re-evaluated and the others keep their metrics, e.g. to finish an evaluation that timed out).
 
 #SBATCH --account=ejh@h100
 #SBATCH --constraint=h100
@@ -48,6 +49,10 @@ while read -r TASK FAMILY K GROUP_SIZE; do
   EVAL_OUTPUT_ROOT="${WAVE_ROOT}/eval/${TASK}"
   if [[ ! -d "${RESULTS_ROOT}" ]]; then
     echo "No results for ${TASK}; skipping."
+    continue
+  fi
+  if [[ -n "${EVAL_TASKS:-}" && ":${EVAL_TASKS}:" != *":${TASK}:"* ]]; then
+    echo "Keeping the existing evaluation of ${TASK}."
     continue
   fi
   # Re-evaluation replaces the previous metrics rather than mixing old and new files.
