@@ -46,8 +46,19 @@ if [[ -n "${WAVE_LIMIT:-}" ]]; then
   RUN_ARGS+=(--limit "${WAVE_LIMIT}")
 fi
 
+# Large pools approach the memory of one GPU: fragmentation should not be what tips a run into an OOM.
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
 echo "Job started at $(date) on $(hostname): wave=${WAVE} index=${TASK_ID} root=${WAVE_ROOT}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+# GPU memory and utilization every 5 s, to size later runs; the peak is `sort -t, -k2 -n | tail -1`.
+GPU_LOG="${WAVE_ROOT}/gpu_mem/${TASK_ID}-${JOB_ID}.csv"
+mkdir -p "$(dirname "${GPU_LOG}")"
+nvidia-smi --query-gpu=timestamp,memory.used,utilization.gpu --format=csv,noheader,nounits -l 5 > "${GPU_LOG}" &
+GPU_SAMPLER=$!
+trap 'kill "${GPU_SAMPLER}" 2>/dev/null || true' EXIT
+
 cd "${D5P4_ROOT}"
 python -m d5p4.waves run "${RUN_ARGS[@]}"
 echo "Job ended at $(date)"

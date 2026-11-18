@@ -276,3 +276,18 @@ def test_b1_tempered_remasking_samples_over_every_masked_position():
     tempered = by_tag[("truthful_qa_tempered", "ind_t1_tau0p3_seed1")]
     assert (tempered.selection_temperature, tempered.selection_candidates) == (0.3, 0)
     assert by_tag[("truthful_qa_tempered", "ind_t1_seed1")].remasking == "low_confidence"
+
+
+def test_scale_pilot_keeps_the_pool_per_shape_and_puts_heavy_pools_first():
+    runs = get_wave("scale")
+    pools = [run.task.pool_size for run in runs]
+    assert pools == sorted(pools, reverse=True)
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.n_groups * config.group_size == run.task.pool_size
+        assert (config.qa_dataset, config.qa_num_shards, config.qa_shard_index, config.seed) == ("truthful_qa", 4, 0, 0)
+        assert config.dataset_split == "eval" and config.cfg_scale == 0
+    by_task = {}
+    for run in runs:
+        by_task.setdefault(run.task.name, set()).add(run.method)
+    assert all(methods == {"greedy_map", "diverse_beam", "baseline"} for methods in by_task.values())
