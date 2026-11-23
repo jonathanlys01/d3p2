@@ -291,3 +291,35 @@ def test_scale_pilot_keeps_the_pool_per_shape_and_puts_heavy_pools_first():
     for run in runs:
         by_task.setdefault(run.task.name, set()).add(run.method)
     assert all(methods == {"greedy_map", "diverse_beam", "baseline"} for methods in by_task.values())
+
+
+def test_b2_pairs_tempered_search_with_b1_tempered_independent_runs():
+    b1_configs = {
+        run.tag: cli.build_config(run, DEFAULT_CONFIG) for run in get_wave("b1") if run.task.name == "gsm8k_tempered"
+    }
+    runs = get_wave("b2")
+    assert [run.tag for run in runs] == [
+        "dbs_a80_t1_tau0p1_seed0_s0of4",
+        "d5p4_w20_t1_tau0p1_seed0_s0of4",
+        "dbs_a80_t1_tau0p3_seed0_s0of4",
+        "d5p4_w20_t1_tau0p3_seed0_s0of4",
+    ]
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        baseline = b1_configs[f"ind_t1_tau{run.tag.split('_tau')[1]}"]
+        assert run.task.name == "gsm8k_tempered"
+        for key in (
+            "remasking",
+            "selection_temperature",
+            "selection_candidates",
+            "seed",
+            "qa_num_shards",
+            "qa_shard_index",
+            "dataset_split",
+            "dataset_shuffle_seed",
+            "cfg_scale",
+            "gen_length",
+            "cat_temperature",
+        ):
+            assert getattr(config, key) == getattr(baseline, key), key
+        assert config.n_groups * config.group_size == baseline.n_groups * baseline.group_size

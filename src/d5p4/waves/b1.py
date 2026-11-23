@@ -26,9 +26,13 @@ TRUTHFUL_QA_TEMPERED = variant(transfer.TRUTHFUL_QA, "truthful_qa_tempered")
 
 
 def tempered(task: Task, tau: float) -> Run:
-    run = independent(task, 1.0)
+    return tempered_remasking(independent(task, 1.0), tau)
+
+
+def tempered_remasking(run: Run, tau: float) -> Run:
+    """Any run with its unmasking order sampled from every masked position's confidence at temperature tau."""
     return Run(
-        task=task,
+        task=run.task,
         tag=f"{run.tag}_tau{value_tag(tau)}",
         method=run.method,
         overrides={
