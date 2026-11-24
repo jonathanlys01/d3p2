@@ -323,3 +323,20 @@ def test_b2_pairs_tempered_search_with_b1_tempered_independent_runs():
         ):
             assert getattr(config, key) == getattr(baseline, key), key
         assert config.n_groups * config.group_size == baseline.n_groups * baseline.group_size
+
+
+def test_b2_full_covers_shards_1_to_3_with_the_shard_0_settings():
+    shard_0 = {run.tag: cli.build_config(run, DEFAULT_CONFIG) for run in get_wave("b1") + get_wave("b2")}
+    runs = get_wave("b2_full")
+    per_shard = [
+        f"{method}_tau{tau}_seed0" for tau in ("0p1", "0p3") for method in ("ind_t1", "dbs_a80_t1", "d5p4_w20_t1")
+    ]
+    assert [run.tag for run in runs] == [f"{tag}_s{shard}of4" for shard in (1, 2, 3) for tag in per_shard]
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        reference = shard_0[run.tag.rsplit("_s", 1)[0] + "_s0of4"]
+        assert run.task.name == "gsm8k_tempered"
+        assert config.qa_shard_index == int(run.tag.rsplit("_s", 1)[1].split("of")[0])
+        assert {k: v for k, v in vars(config).items() if k not in {"qa_shard_index", "comment"}} == {
+            k: v for k, v in vars(reference).items() if k not in {"qa_shard_index", "comment"}
+        }

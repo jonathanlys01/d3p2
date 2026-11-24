@@ -17,6 +17,7 @@ WAVES: dict[str, Callable[[], list[Run]]] = {
     "e2": e2.runs,
     "b1": b1.runs,
     "b2": b2.runs,
+    "b2_full": b2.full_runs,
     "scale": scale.runs,
 }
 
