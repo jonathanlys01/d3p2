@@ -27,14 +27,22 @@ from d5p4.config import Config
 from d5p4.data import get_qa_dataset
 from d5p4.data.code_ds import get_code_dataset
 from d5p4.data.math_ds import gsm8k
-from d5p4.waves import fronts, get_wave
+from d5p4.data.owt_heldout import load_open_chunks
+from d5p4.utils import get_tokenizer
+from d5p4.waves import fronts, get_wave, open_fronts
 from d5p4.waves.spec import DONE_MARKER, Run, Task
 
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = SRC_ROOT.parents[1]
 RUN_MANIFEST = ".wave_run"
-DATASET_LOADERS = {"math": gsm8k, "qa": get_qa_dataset, "code": get_code_dataset}
+
+
+def _open_prompts(config: Config) -> list[list[int]]:
+    return load_open_chunks(config, get_tokenizer(config, "mdlm")).prompts
+
+
+DATASET_LOADERS = {"math": gsm8k, "qa": get_qa_dataset, "code": get_code_dataset, "open": _open_prompts}
 
 
 def _format_value(value: Any) -> str:
@@ -166,9 +174,10 @@ def cmd_check(args: argparse.Namespace, runs: list[Run]) -> int:
         first = next(run for run in runs if run.task is task)
         config = build_config(first, args.config)
         dataset = DATASET_LOADERS[task.family](config)
-        model_path = Path(config.llada_model_path)
+        model_path = Path(config.mdlm_model_path if task.family == "open" else config.llada_model_path)
+        split = "held-out OpenWebText" if task.family == "open" else f"{config.dataset_split} split"
         print(
-            f"{task.name}: {len(dataset)} questions ({config.dataset_split} split); "
+            f"{task.name}: {len(dataset)} questions ({split}); "
             f"model {model_path} {'found' if model_path.is_dir() else 'MISSING'}",
         )
     return 0
@@ -231,8 +240,14 @@ def cmd_summarize(args: argparse.Namespace, runs: list[Run]) -> int:
 
 def cmd_fronts(args: argparse.Namespace, runs: list[Run]) -> int:
     """Per-question metrics and paired bootstrap summaries, written to ROOT/fronts/."""
-    records = fronts.per_question(runs, args.root)
+    open_runs = [run for run in runs if run.task.family == "open"]
+    open_records = 0
+    if open_runs:
+        open_records = open_fronts.write_outputs(open_runs, args.root, mauve_samples=args.mauve_samples)
+    records = fronts.per_question([run for run in runs if run.task.family != "open"], args.root)
     if not records:
+        if open_records:
+            return 0
         print(f"No generation results under {args.root / 'results'}", file=sys.stderr)
         return 1
     out = args.root / "fronts"
@@ -300,7 +315,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--missing", action="store_true", help="Print not-done indices as a Slurm array list.")
     p = add("summarize", root=True)
     p.add_argument("--output", type=Path, default=None)
-    add("fronts", root=True)
+    p = add("fronts", root=True)
+    p.add_argument("--mauve-samples", type=int, default=100, help="Bootstrap samples for MAUVE (open tasks).")
     args = parser.parse_args(argv)
     # Generation runs from the repository root, so relative paths must not depend on the caller's cwd.
     for name in ("root", "config", "cache_dir", "output"):

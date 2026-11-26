@@ -2,7 +2,8 @@
 
 # Evaluation for one wave, chained after its generation array by submit.sh (afterany).
 # It refuses to evaluate an incomplete wave unless ALLOW_PARTIAL=1, printing the array indices to resubmit.
-# Each task's results are evaluated by the existing .scripts_next evaluator for its family, then
+# Each task's results are evaluated by the existing .scripts_next evaluator for its family (open-ended MDLM tasks by
+# d5p4.waves.open_eval), then
 # `python -m d5p4.waves summarize` writes WAVE_ROOT/summary.csv and `fronts` the paired summaries in WAVE_ROOT/fronts/.
 #
 # Expected exports: WAVE, WAVE_ROOT, and optionally ALLOW_PARTIAL=1 and EVAL_TASKS (colon-separated task names: only
@@ -55,8 +56,11 @@ while read -r TASK FAMILY K GROUP_SIZE; do
     echo "Keeping the existing evaluation of ${TASK}."
     continue
   fi
-  # Re-evaluation replaces the previous metrics rather than mixing old and new files.
-  rm -rf "${EVAL_OUTPUT_ROOT}"
+  # Re-evaluation replaces the previous metrics rather than mixing old and new files. Open-ended tasks keep their
+  # features: open_eval recomputes those older than their result file and the reference set only if it is missing.
+  if [[ "${FAMILY}" != "open" ]]; then
+    rm -rf "${EVAL_OUTPUT_ROOT}"
+  fi
   echo "== ${TASK} (${FAMILY}, k=${K}, group size ${GROUP_SIZE})"
   case "${FAMILY}" in
     math)
@@ -71,6 +75,10 @@ while read -r TASK FAMILY K GROUP_SIZE; do
     code)
       RESULTS_ROOT="${RESULTS_ROOT}" EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT}" CODE_BASELINE_K="${K}" \
         bash .scripts_next/evaluate_jz_code_results.sh
+      ;;
+    open)
+      # GPT-2 Large perplexity and MAUVE features, Jina embeddings; the fronts step below computes MAUVE.
+      python -m d5p4.waves.open_eval --wave "${WAVE}" --root "${WAVE_ROOT}" --task "${TASK}"
       ;;
     *)
       echo "Unknown evaluation family ${FAMILY} for ${TASK}" >&2

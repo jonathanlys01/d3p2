@@ -13,7 +13,7 @@ from typing import Any
 
 
 DONE_MARKER = ".wave_done"
-EVAL_FAMILIES = {"math", "qa", "code"}
+EVAL_FAMILIES = {"math", "qa", "code", "open"}
 
 
 @dataclass(frozen=True)
@@ -27,9 +27,15 @@ class Task:
     n_groups: int
     group_size: int
     overrides: dict[str, Any] = field(default_factory=dict)
+    # Temperature of the fronts summary's references: independent sampling (random k of N) and the D5P4 front.
+    reference_temperature: float = 1.0
 
     def __post_init__(self) -> None:
         assert self.family in EVAL_FAMILIES, f"Unknown evaluation family: {self.family}"
+
+    @property
+    def reference_tag(self) -> str:
+        return f"ind_t{value_tag(self.reference_temperature)}"
 
     @property
     def k(self) -> int:
@@ -99,6 +105,24 @@ def d5p4(task: Task, w_interaction: float, temperature: float = 1.0) -> Run:
     )
 
 
+def d5p4_multiplicative(task: Task, w_interaction: float, temperature: float = 1.0) -> Run:
+    """D5P4 with the quality-diversity kernel L = diag(q) S diag(q), q = exp(w * score): the paper's D5P4x."""
+    return Run(
+        task=task,
+        tag=f"d5p4x_w{value_tag(w_interaction)}_t{value_tag(temperature)}",
+        method="greedy_map",
+        overrides={
+            "method": "greedy_map",
+            "n_groups": task.n_groups,
+            "group_size": task.group_size,
+            "cat_temperature": temperature,
+            "_kernel_type": "cosine",
+            "_kernel_method": "multiplicative",
+            "_w_interaction": w_interaction,
+        },
+    )
+
+
 def diverse_beam(task: Task, alpha: float, temperature: float = 1.0) -> Run:
     return Run(
         task=task,
@@ -160,6 +184,7 @@ def variant(task: Task, name: str, entry: str | None = None, family: str | None 
         n_groups=task.n_groups,
         group_size=task.group_size,
         overrides={**task.overrides, **overrides},
+        reference_temperature=task.reference_temperature,
     )
 
 

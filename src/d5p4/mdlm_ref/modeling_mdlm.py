@@ -4,8 +4,6 @@ import math
 import typing
 from contextlib import nullcontext
 
-import flash_attn
-import flash_attn.layers.rotary
 import torch
 import torch.nn.functional as F
 import transformers
@@ -17,7 +15,20 @@ from transformers import modeling_outputs
 from d5p4.mdlm_ref.configuration_mdlm import MDLMConfig
 
 
-SUPPORTS_FLASH = torch.cuda.get_device_properties(0).major >= 8 if torch.cuda.is_available() else False
+# flash-attn is optional: the Jean Zay environment installs it without its CUDA extension (FLASH_ATTENTION_SKIP_CUDA_BUILD),
+# so `import flash_attn` fails there. Without it, rotary embeddings run in plain torch and attention through SDPA, under
+# the same bf16 autocast; the math is the same (non-interleaved rotary on q and k, non-causal attention).
+try:
+    import flash_attn
+    import flash_attn.layers.rotary
+
+    HAS_FLASH_ATTN = True
+except ImportError:
+    flash_attn = None
+    HAS_FLASH_ATTN = False
+
+SUPPORTS_BF16 = torch.cuda.get_device_properties(0).major >= 8 if torch.cuda.is_available() else False
+SUPPORTS_FLASH = HAS_FLASH_ATTN and SUPPORTS_BF16
 
 # Flags required to enable jit fusion kernels
 torch._C._jit_set_profiling_mode(False)
@@ -114,7 +125,17 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
+def apply_rotary_pos_emb_torch(qkv, cos, sin):
+    """Rotary embedding in plain torch, as in the reference MDLM code.
+
+    `cos` and `sin` are the cached [1, seq, 3, 1, head_dim] tables of `Rotary`, whose value slot is the identity.
+    """
+    return qkv * cos + rotate_half(qkv) * sin
+
+
 def apply_rotary_pos_emb(qkv, cos, sin):
+    if not (HAS_FLASH_ATTN and qkv.is_cuda):
+        return apply_rotary_pos_emb_torch(qkv, cos, sin)
     cos = cos[0, :, 0, 0, : cos.shape[-1] // 2]
     sin = sin[0, :, 0, 0, : sin.shape[-1] // 2]
     return flash_attn.layers.rotary.apply_rotary_emb_qkv_(qkv, cos, sin)
@@ -352,7 +373,7 @@ class DITBackbone(nn.Module):
 
         ctx = (
             torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-            if SUPPORTS_FLASH
+            if SUPPORTS_BF16
             # else torch.amp.autocast(device_type="cuda", dtype=torch.float16)
             else nullcontext()
         )

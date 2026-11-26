@@ -10,7 +10,7 @@ from d5p4.config import Config
 from d5p4.data.math_ds import _format_dream_gsm8k_query
 from d5p4.diffusion_dream import DreamSampler
 from d5p4.dream_math import _shard_indexed_rows, save as save_math
-from d5p4.single_run_dream import _decode_generations
+from d5p4.single_run_dream import _decode_generations, answer_token_counts
 
 
 class _Tokenizer:
@@ -44,6 +44,18 @@ def test_dream_decode_strips_prompt_and_stops_at_end_tokens():
     decoded = _decode_generations(cast(DreamSampler, _FakeSampler()), "question", raw_samples)
 
     assert decoded == ["42", "17"]
+
+
+def test_dream_answer_token_counts_stop_at_the_first_end_token():
+    raw_samples = torch.tensor(
+        [
+            [1, 2, 5, 5, 8, 5],
+            [1, 2, 7, 5, 5, 5],
+            [1, 2, 5, 5, 5, 5],
+        ],
+    )
+
+    assert answer_token_counts(_Tokenizer(), raw_samples, prompt_len=2) == [2, 0, 4]
 
 
 def test_dream_resume_decode_uses_stored_prompt_length():
@@ -84,7 +96,8 @@ def test_dream_decode_drops_ids_the_tokenizer_cannot_map():
 
 
 def test_dream_gsm8k_prompt_matches_official_zero_shot_profile():
-    assert _format_dream_gsm8k_query("What is 40 + 2?") == "Q: What is 40 + 2?\n\nA:"
+    # lm-eval gsm8k_cot doc_to_text, as YAML parses it: one newline before "A:".
+    assert _format_dream_gsm8k_query("What is 40 + 2?") == "Q: What is 40 + 2?\nA:"
 
 
 def test_dream_question_shards_preserve_global_indices():

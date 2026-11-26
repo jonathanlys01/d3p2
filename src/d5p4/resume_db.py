@@ -44,6 +44,9 @@ HASH_EXCLUDED_CONFIG_KEYS = {
     # unsharded runs while still keeping every shard disjoint.
     "qa_num_shards",
     "qa_shard_index",
+    # Selection dumps only record what a run does, so they must not change its hash (or orphan existing databases).
+    "selection_dump",
+    "selection_dump_every",
 }
 
 # These fields were introduced by the Dream implementation.  They must be
@@ -76,8 +79,26 @@ DATASET_SELECTION_CONFIG_DEFAULTS = {
 REMASKING_CONFIG_DEFAULTS = {
     "selection_candidates": 2,
 }
+SCORE_NORMALIZATION_CONFIG_DEFAULTS = {
+    "_score_normalization": "minmax",
+}
+MATH_ANSWER_CONFIG_DEFAULTS = {
+    "math_answer_extractor": "universal",
+}
+OPEN_GENERATION_CONFIG_DEFAULTS = {
+    "open_data_path": "Skylion007/openwebtext/subsets/urlsf_subset20.tar",
+    "open_heldout_members": 32,
+    "open_prompt_tokens": 32,
+    "open_num_prompts": 128,
+    "open_num_references": 5000,
+}
 POST_SCHEMA_CONFIG_DEFAULTS = (
-    LEFT_TO_RIGHT_CONFIG_DEFAULTS | DATASET_SELECTION_CONFIG_DEFAULTS | REMASKING_CONFIG_DEFAULTS
+    LEFT_TO_RIGHT_CONFIG_DEFAULTS
+    | DATASET_SELECTION_CONFIG_DEFAULTS
+    | REMASKING_CONFIG_DEFAULTS
+    | SCORE_NORMALIZATION_CONFIG_DEFAULTS
+    | MATH_ANSWER_CONFIG_DEFAULTS
+    | OPEN_GENERATION_CONFIG_DEFAULTS
 )
 
 

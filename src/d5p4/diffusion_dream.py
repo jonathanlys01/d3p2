@@ -138,12 +138,18 @@ class DreamSampler(nn.Module):
     def _selector_needs_embeddings(self) -> bool:
         return getattr(self.selector, "needs_embeddings", True)
 
-    def _preprocess_prompt(self, prompt: str) -> torch.Tensor:
+    def _preprocess_prompt(self, prompt: str, assistant_prefix: str = "") -> torch.Tensor:
+        """Chat-template *prompt* as the user turn; *assistant_prefix* starts the assistant turn.
+
+        A prefix reproduces lm-eval's `gen_prefix` with `continue_final_message` (Dream's HumanEval protocol): with
+        Dream's Qwen template, the open assistant turn is exactly the generation prompt followed by the prefix.
+        """
         messages = [{"role": "user", "content": prompt}]
         prompt_str = cast(
             str,
             self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False),
         )
+        prompt_str += assistant_prefix
         encoded = self.tokenizer(
             [prompt_str],
             add_special_tokens=False,
@@ -304,11 +310,19 @@ class DreamSampler(nn.Module):
         token_log_probs = torch.nan_to_num(token_log_probs, nan=-1e9, neginf=-1e9, posinf=0.0)
         return token_log_probs.mean(dim=-1)
 
-    def sample(self, prompt: str, return_internal_scores: bool = False):  # noqa: C901, PLR0912, PLR0915
+    def sample(  # noqa: C901, PLR0912, PLR0915
+        self,
+        prompt: str,
+        return_internal_scores: bool = False,
+        assistant_prefix: str = "",
+    ):
         with torch.no_grad():
             sample_index = getattr(self, "_sample_call_index", 0)
             self._sample_call_index = sample_index + 1
-            prompt_tokens = self._preprocess_prompt(prompt)
+            if assistant_prefix:
+                prompt_tokens = self._preprocess_prompt(prompt, assistant_prefix)
+            else:
+                prompt_tokens = self._preprocess_prompt(prompt)
             prompt_len = prompt_tokens.size(1)
             total_length = prompt_len + self.config.gen_length
             if total_length > self.max_position_embeddings:

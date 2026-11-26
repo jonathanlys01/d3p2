@@ -5,6 +5,7 @@
 # Usage:
 #   .jz_waves/download_assets.sh            # LLaDA waves (M0 and the main benchmark tables)
 #   WITH_DREAM=1 .jz_waves/download_assets.sh
+#   WITH_MDLM=1 .jz_waves/download_assets.sh    # B4: kuleshov-group/mdlm-owt
 
 set -euo pipefail
 
@@ -33,6 +34,11 @@ download model GSAI-ML/LLaDA-8B-Instruct "${WORK}/models/GSAI-ML/LLaDA-8B-Instru
 download model jinaai/jina-embeddings-v2-base-en "${WORK}/models/jinaai/jina-embeddings-v2-base-en"
 if [[ "${WITH_DREAM:-0}" == "1" ]]; then
   download model Dream-org/Dream-v0-Instruct-7B "${WORK}/models/Dream-org/Dream-v0-Instruct-7B"
+fi
+if [[ "${WITH_MDLM:-0}" == "1" ]]; then
+  # B4 (open-ended generation). Its prompts and MAUVE references come from $DSDIR (OpenWebText), and GPT-2 / GPT-2
+  # Large from $DSDIR/HuggingFace_Models; only the MDLM checkpoint is downloaded.
+  download model kuleshov-group/mdlm-owt "${WORK}/models/kuleshov-group/mdlm-owt"
 fi
 
 for repo in \

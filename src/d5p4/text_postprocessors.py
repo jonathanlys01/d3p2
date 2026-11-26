@@ -197,6 +197,35 @@ class MathParser:
 _DEFAULT_MATH_PARSER = MathParser()
 
 
+# lm-evaluation-harness `gsm8k_cot` filters and `exact_match` normalisation, as used by Dream-Instruct's evaluation
+# (HKUNLP/Dream eval_instruct/lm_eval/tasks/gsm8k/gsm8k-cot.yaml). Flexible-extract takes the last number-like span.
+LM_EVAL_GSM8K_STRICT_RE = re.compile(r"The answer is (\-?[0-9\.\,]+).")
+LM_EVAL_GSM8K_FLEXIBLE_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
+_LM_EVAL_GSM8K_IGNORE = (re.compile(","), re.compile(r"\$"), re.compile(r"(?s).*#### "), re.compile(r"\.$"))
+LM_EVAL_INVALID = "[invalid]"
+
+
+def lm_eval_gsm8k_extract(text: str, mode: str = "flexible") -> str:
+    """Extract an answer the way lm-eval's `gsm8k_cot` strict-match or flexible-extract filter does."""
+    if mode == "strict":
+        match = LM_EVAL_GSM8K_STRICT_RE.search(text)
+        return match.group(1) if match else LM_EVAL_INVALID
+    if mode != "flexible":
+        raise ValueError(f"Unknown lm-eval GSM8K extraction mode: {mode!r}")
+    matches = LM_EVAL_GSM8K_FLEXIBLE_RE.findall(text)
+    if not matches:
+        return LM_EVAL_INVALID
+    last = matches[-1]
+    return (last[0] or last[1]).strip()
+
+
+def lm_eval_gsm8k_normalize(answer: str) -> str:
+    """lm-eval `exact_match` with `ignore_case` and the task's `regexes_to_ignore`."""
+    for pattern in _LM_EVAL_GSM8K_IGNORE:
+        answer = pattern.sub("", answer)
+    return answer.strip().lower()
+
+
 def universal_math_postprocess(text: str) -> str:
     """Extract a canonical numeric answer from mixed text/LaTeX output."""
     return _DEFAULT_MATH_PARSER.extract_universal_numeric(text)

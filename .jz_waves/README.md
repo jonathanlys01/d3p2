@@ -54,3 +54,13 @@ exact generation command.
 Define its tasks and runs in a new module under `src/d5p4/waves/` with the helpers in `spec.py`, register it in
 `src/d5p4/waves/__init__.py`, and add a test next to `tests/test_waves.py`. Each task names its generation script
 (`llada_math.py`, `single_run_llada.py`, `llada_code.py`) and evaluation family (`math`, `qa`, `code`).
+
+## Open-ended MDLM wave (`b4`)
+
+`b4` generates with MDLM (`src/d5p4/mdlm_open.py`, evaluation family `open`). It needs the `kuleshov-group/mdlm-owt`
+checkpoint in `$WORK_ejh/models` (`WITH_MDLM=1 .jz_waves/download_assets.sh`); prompts and MAUVE references are read
+from OpenWebText in `$DSDIR/HuggingFace/Skylion007`, GPT-2 and GPT-2 Large from `$DSDIR/HuggingFace_Models`. The
+evaluation job featurizes texts with `python -m d5p4.waves.open_eval` and `fronts` writes `fronts/open_*.csv`
+(perplexity, self-cosine, Self-BLEU, MAUVE per point; hypervolume and best MAUVE per front; D5P4 against every other
+front with paired bootstrap intervals and Holm-adjusted p-values).
+

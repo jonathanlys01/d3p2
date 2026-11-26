@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from d5p4.waves import b1, b2, e1, e2, m0, p1, s1, scale, transfer
+from d5p4.waves import a2, a3, b1, b2, b4, b5, b6, e1, e2, m0, p1, parallel, s1, scale, scale_gsm8k, transfer
 from d5p4.waves.spec import Run
 
 
@@ -19,6 +19,15 @@ WAVES: dict[str, Callable[[], list[Run]]] = {
     "b2": b2.runs,
     "b2_full": b2.full_runs,
     "scale": scale.runs,
+    "a3": a3.runs,
+    "a2": a2.runs,
+    "parallel": parallel.runs,
+    "b6_seed1": b6.seed_runs,
+    "b6_sweep": b6.sweep_runs,
+    "scale_gsm8k": scale_gsm8k.runs,
+    "b5": b5.runs,
+    "b5_dream": b5.dream_runs,
+    "b4": b4.runs,
 }
 
 

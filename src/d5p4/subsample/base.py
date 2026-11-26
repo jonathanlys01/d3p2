@@ -56,10 +56,8 @@ class BaseSelector(nn.Module):
         with torch.no_grad():
             assert cache.embeddings is not None
 
-        B = cache.embeddings.size(0)
-        flat = cache.embeddings.float().reshape(B, -1)
-        flat = F.normalize(flat, dim=-1, eps=1e-12)
-        scores = _compute_scores(cache, self.config._score_method)
+        flat = normalized_flat(cache.embeddings)
+        scores = _compute_scores(cache, self.config._score_method, normalization=self.config._score_normalization)
 
         if self.distributed_utils:
             flat, scores = self.distributed_utils.all_gather(flat, scores)
@@ -72,42 +70,7 @@ class BaseSelector(nn.Module):
         else:  # cosine (default)
             S = torch.matmul(flat, flat.T)
 
-        w_inter = self.config._w_interaction
-
-        # Combine similarity S with quality scores based on kernel method
-        if self.config._kernel_method == "multiplicative":
-            # Quality-Diversity: L_ij = q_i * S_ij * q_j
-            if w_inter <= 1e-5:
-                # q_i = 1, pure diversity
-                S.diagonal().add_(1e-6)
-                return S
-
-            # Numerically stable exp
-            scaled_scores = scores * w_inter
-            scaled_scores = scaled_scores - scaled_scores.max()
-            quality = torch.exp(scaled_scores)  # [B]
-
-            K = quality.unsqueeze(1) * S * quality.unsqueeze(0)
-            K.diagonal().add_(1e-6)  # small regularization
-
-        else:  # additive (default)
-            K = S if w_inter < 0 else w_inter * S + torch.diag(scores)
-
-            # _w_split is always additive (soft constraint for group separation)
-            if self.config._w_split > 0:
-                g_size = self.config.group_size
-                expansion_factor = self.config.n_groups * self.distributed_mul
-                mask = _generate_expansion_mask(g_size, expansion_factor).to(K.device)
-                K += self.config._w_split * mask
-
-            if (power := self.config._kernel_power) != 1:
-                K = (K + K.T) / 2 + 1e-6 * torch.eye(B, device=K.device)
-                eigenvalues, eigenvectors = torch.linalg.eigh(K)
-                eigenvalues_modded = torch.clamp(eigenvalues**power, min=1e-3)
-                K_modded = eigenvectors @ torch.diag(eigenvalues_modded) @ eigenvectors.T
-                K = (K_modded + K_modded.T) / 2
-
-        return K
+        return combine_kernel(S, scores, self.config, self.distributed_mul)
 
     def compute_scores(self, cache: Cache) -> torch.Tensor | None:
         """Compute scores based on entropy or self-certainty of predicted distribution."""
@@ -233,19 +196,105 @@ class BaseSelector(nn.Module):
         return fallback
 
 
+def normalized_flat(embeddings: torch.Tensor) -> torch.Tensor:
+    """Each candidate's hidden states [B, L, D] flattened to one unit vector [B, L * D] (the cosine kernel's input)."""
+    flat = embeddings.float().reshape(embeddings.size(0), -1)
+    return F.normalize(flat, dim=-1, eps=1e-12)
+
+
+def combine_kernel(S: torch.Tensor, scores: torch.Tensor, config: Config, distributed_mul: int = 1) -> torch.Tensor:
+    """The DPP kernel L from a similarity matrix S [B, B] and normalized quality scores [B] (see `compute_kernel`).
+
+    Also used by the post-hoc reranking of independent pools (`d5p4.waves.posthoc`), which stores S and the raw
+    scores per question, so both apply the same kernel.
+    """
+    B = S.size(0)
+    w_inter = config._w_interaction
+
+    # Combine similarity S with quality scores based on kernel method
+    if config._kernel_method == "multiplicative":
+        # Quality-Diversity: L_ij = q_i * S_ij * q_j
+        if w_inter <= 1e-5:
+            # q_i = 1, pure diversity
+            S.diagonal().add_(1e-6)
+            return S
+
+        # Numerically stable exp
+        scaled_scores = scores * w_inter
+        scaled_scores = scaled_scores - scaled_scores.max()
+        quality = torch.exp(scaled_scores)  # [B]
+
+        K = quality.unsqueeze(1) * S * quality.unsqueeze(0)
+        K.diagonal().add_(1e-6)  # small regularization
+
+    else:  # additive (default)
+        K = S if w_inter < 0 else w_inter * S + torch.diag(scores)
+
+        # _w_split is always additive (soft constraint for group separation)
+        if config._w_split > 0:
+            g_size = config.group_size
+            expansion_factor = config.n_groups * distributed_mul
+            mask = _generate_expansion_mask(g_size, expansion_factor).to(K.device)
+            K += config._w_split * mask
+
+        if (power := config._kernel_power) != 1:
+            K = (K + K.T) / 2 + 1e-6 * torch.eye(B, device=K.device)
+            eigenvalues, eigenvectors = torch.linalg.eigh(K)
+            eigenvalues_modded = torch.clamp(eigenvalues**power, min=1e-3)
+            K_modded = eigenvectors @ torch.diag(eigenvalues_modded) @ eigenvectors.T
+            K = (K_modded + K_modded.T) / 2
+
+    return K
+
+
 # General subsample utils
 
 
-def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | None = None) -> torch.Tensor:  # noqa: ARG001
+def _compute_scores(
+    cache: Cache,
+    score_method: str = "entropy",
+    model: str | None = None,  # noqa: ARG001
+    normalization: str = "minmax",
+) -> torch.Tensor:
+    """Quality scores of the candidates in `cache` (higher = better), normalized over them by `normalize_scores`."""
+    return normalize_scores(raw_scores(cache, score_method), normalization)
+
+
+UNIFORM_QUALITY = 0.5  # midpoint of the min-max range
+
+
+def normalize_scores(scores: torch.Tensor, normalization: str = "minmax") -> torch.Tensor:
+    """Map raw per-candidate scores r (higher = better) to the quality Q used on the DPP diagonal.
+
+    - "minmax": (r - min r) / (max r - min r) over the pool, in [0, 1]; the worst candidate always gets 0.
+    - "uniform": Q = 0.5 for every candidate, so the kernel carries no quality signal.
+    - "exp": exp(r), no pool-wise step; for the non-positive log-scale scores (mean negative entropy, mean token
+      log-probability) Q is the geometric-mean certainty, in (0, 1], on the same scale at every step.
+    - "zscore": sigmoid((r - mean r) / std r) over the pool, in (0, 1); no candidate is pinned to 0 and the scale
+      follows the pool's spread rather than its extremes.
+
+    Every option keeps Q >= 0, so the additive kernel beta * S + diag(Q) stays positive semidefinite.
+    """
+    if normalization == "minmax":
+        return (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+    if normalization == "uniform":
+        return torch.full_like(scores, UNIFORM_QUALITY)
+    if normalization == "exp":
+        return torch.exp(scores)
+    if normalization == "zscore":
+        return torch.sigmoid((scores - scores.mean()) / (scores.std(unbiased=False) + 1e-12))
+    raise ValueError(f"Unknown score normalization: {normalization}")
+
+
+def raw_scores(cache: Cache, score_method: str = "entropy") -> torch.Tensor:
     """Compute scores based on entropy or self-certainty of predicted distribution.
 
     Args:
         cache: Cache containing log_p_x0 predictions [B, L, V]
         score_method: quality score to compute from cache.log_p_x0
-        model: Model name to mask already decoded llada tokens
 
     Returns:
-        Normalized scores in [0, 1] where higher = better quality
+        Unnormalized scores [B], higher = better quality; each row depends on its own predictions only
     """
     assert cache.log_p_x0 is not None
 
@@ -292,8 +341,6 @@ def _compute_scores(cache: Cache, score_method: str = "entropy", model: str | No
     else:
         raise ValueError(f"Unknown score_method: {score_method}")
 
-    # Normalize to [0, 1]
-    scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
     return scores
 
 

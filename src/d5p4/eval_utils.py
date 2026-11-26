@@ -403,12 +403,12 @@ def _group_reference_alignment_task(args: tuple[list[str], list[str]]) -> tuple[
     return f1_scores, best_f1, best_bleu
 
 
-def _math_group_task(args: tuple[list[str], str, list[int], bool]) -> tuple[float, dict[int, float]]:
+def _math_group_task(args: tuple[list[str], str, list[int], bool, str]) -> tuple[float, dict[int, float]]:
     # Import locally to avoid circular imports when used in worker processes.
     from d5p4.eval_core import MathEvaluator  # noqa: PLC0415
 
-    generations, gold_answer, effective_ks, use_math_parser = args
-    evaluator = MathEvaluator(use_math_parser=use_math_parser)
+    generations, gold_answer, effective_ks, use_math_parser, answer_extractor = args
+    evaluator = MathEvaluator(use_math_parser=use_math_parser, answer_extractor=answer_extractor)
     scores = evaluator.score_group(generations, gold_answer)
     n = len(scores)
     c = sum(scores)

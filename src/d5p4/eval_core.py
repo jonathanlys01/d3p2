@@ -23,7 +23,7 @@ from transformers import AutoTokenizer, GPT2Model, LlamaForCausalLM, PreTrainedT
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from d5p4 import mauve
-from d5p4.config import CACHE_DIR, Config
+from d5p4.config import CACHE_DIR, MATH_ANSWER_EXTRACTOR_CHOICES, Config
 from d5p4.data import get_qa_dataset
 from d5p4.eval_utils import (
     _BATCH_SELF_BLEU_EXACT_THRESHOLD,
@@ -49,7 +49,12 @@ from d5p4.eval_utils import (
 )
 from d5p4.jina_ref.modeling_bert import JinaBertModel
 from d5p4.result_schema import get_eval_text_groups, normalize_result_payload, validate_generation_result_payload
-from d5p4.text_postprocessors import MathParser, universal_math_postprocess
+from d5p4.text_postprocessors import (
+    MathParser,
+    lm_eval_gsm8k_extract,
+    lm_eval_gsm8k_normalize,
+    universal_math_postprocess,
+)
 from d5p4.utils import print as u_print
 from d5p4.utils import process_model_args, tqdm
 
@@ -864,13 +869,14 @@ class MathEvaluator:
     0
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         use_math_parser: bool = True,
         show_timings: bool = False,
         ppl_model_id: str | None = None,
         cos_model_id: str | None = None,
         batch_size: int = 0,
+        answer_extractor: str = "universal",
     ):
         """
         Parameters
@@ -878,6 +884,9 @@ class MathEvaluator:
         use_math_parser:
             If ``True``, use the class-based universal parser. When ``False``,
             fall back to the module-level universal helper.
+        answer_extractor:
+            ``"universal"`` (the parser above) or ``"lm_eval_flexible"``: lm-eval ``gsm8k_cot`` flexible-extract
+            (last number-like span) and its ``exact_match`` normalisation, Dream-Instruct's published protocol.
         ppl_model_id:
             When provided, perplexity is computed over all generations.
         cos_model_id:
@@ -886,6 +895,9 @@ class MathEvaluator:
         batch_size:
             Batch size for perplexity forward passes.
         """
+        if answer_extractor not in MATH_ANSWER_EXTRACTOR_CHOICES:
+            raise ValueError(f"Unknown answer_extractor {answer_extractor!r}")
+        self.answer_extractor = answer_extractor
         self._use_math_parser = use_math_parser
         if use_math_parser:
             self._parser = MathParser()
@@ -918,6 +930,9 @@ class MathEvaluator:
     def check(self, generation: str, answer_number: str) -> int:
         """Return 1 if *generation* contains the correct answer, else 0."""
         answer_number = as_text(answer_number)
+        if self.answer_extractor == "lm_eval_flexible":
+            extracted = lm_eval_gsm8k_extract(as_text(generation), mode="flexible")
+            return int(lm_eval_gsm8k_normalize(extracted) == lm_eval_gsm8k_normalize(answer_number))
         extracted = self._extract(generation)
         expected = self._extract(answer_number)
         if expected == "NULL":
@@ -1016,7 +1031,9 @@ class MathEvaluator:
         valid_groups = [(gens, gold) for gens, gold in zip(generations, gold_answers) if gens]
 
         def _run_correctness() -> None:
-            tasks = [(gens, gold, effective_ks, self._use_math_parser) for gens, gold in valid_groups]
+            tasks = [
+                (gens, gold, effective_ks, self._use_math_parser, self.answer_extractor) for gens, gold in valid_groups
+            ]
             for acc, pass_at_k in _map_tasks(_math_group_task, tasks, num_workers):
                 per_question_acc.append(acc)
                 for k in effective_ks:

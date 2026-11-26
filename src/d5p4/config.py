@@ -51,6 +51,8 @@ SCORE_METHOD_CHOICES = {
     "sequence_logprob",
     "delta_confidence",
 }
+# How the raw quality r_i becomes the DPP diagonal Q_i; see `d5p4.subsample.base.normalize_scores`.
+SCORE_NORMALIZATION_CHOICES = {"minmax", "uniform", "exp", "zscore"}
 GIDD_SCHEDULE_CHOICES = {"uniform", "hybrid"}
 REMASKING_CHOICES = {"low_confidence", "selection_temperature", "random"}
 LLADA_DECODER_CHOICES = {"diffusion", "classic_beam"}
@@ -58,6 +60,7 @@ DREAM_ALG_CHOICES = {"origin", "maskgit_plus", "topk_margin", "entropy"}
 EVAL_SELECTION_METRIC_CHOICES = {"ppl", "f1", "int"}
 CODE_DATASET_CHOICES = {"humaneval", "mbpp"}
 DATASET_SPLIT_CHOICES = {"eval", "dev"}
+MATH_ANSWER_EXTRACTOR_CHOICES = {"universal", "lm_eval_flexible"}
 
 CONFIG_FLAGS = ("--config", "-c", "config", "cfg")
 
@@ -156,6 +159,14 @@ class Config:
     initial_mask_ratio: float = 1.0  # ratio of tokens to mask at start of sampling (1.0 = all tokens masked)
     single_init: bool = True  # sample a single sequence and repeat it across the batch
 
+    # Open-ended MDLM generation (d5p4.mdlm_open): prompts and MAUVE references from held-out OpenWebText chunks,
+    # see d5p4.data.owt_heldout. open_prompt_tokens = 0 is unconditional generation (only BOS is fixed).
+    open_data_path: str = "Skylion007/openwebtext/subsets/urlsf_subset20.tar"
+    open_heldout_members: int = 32  # last .xz members of the archive to read documents from
+    open_prompt_tokens: int = 32  # tokens kept from each prompt chunk after BOS
+    open_num_prompts: int = 128  # prompts per run (before question sharding)
+    open_num_references: int = 5000  # reference chunks for MAUVE
+
     # Subset selection ###################################################################################
     method: str = "random"  # subset selection method
     transversal: bool = True  # use transversal sampling
@@ -174,12 +185,21 @@ class Config:
     _temperature: float = 0.0  # temperature for any sampling
     _diversity_alpha: float = 0.0  # diversity coefficient for diverse beam search
     _score_method: str = "entropy"  # "entropy" or "self-certainty" (CE with uniform distribution)
+    # Quality term of the DPP kernel (greedy_map, dpp, exhaustive): "minmax" rescales r to [0, 1] over the pool at
+    # each step (the paper's Q); "uniform" sets Q = 0.5 for every candidate; "exp" is exp(r), in (0, 1] for the
+    # non-positive log-scale scores, with no pool-wise step; "zscore" is sigmoid((r - mean) / std) over the pool.
+    _score_normalization: str = "minmax"
     ######################################################################################################
 
     # windowing
     subsample_start: int = -1
     subsample_end: int = 1024
     subsample_k: int = 0  # if > 0 and < batch_size, subsample k best sequences from pool based on perplexity
+
+    # Opt-in dump of every selection step (kernel, raw quality, chosen rows) to <results_dir>/selection_dumps/, for
+    # the offline exact-vs-greedy and quality-proxy analyses (d5p4.selection_dump). LLaDA diffusion, single process.
+    selection_dump: bool = False
+    selection_dump_every: int = 1  # store kernels every s-th selection step; indices and scores at every step
 
     # eval
     eval_batch_size: int = 8  # batch size for evaluation (separate from inference batch_size)
@@ -188,6 +208,9 @@ class Config:
     cos_model_id: str = "jinaai/jina-embeddings-v2-base-en"
     eval_selection_metric: str = "ppl"  # "ppl", "f1", or "int" for final sequence selection
     eval_transversal_group_representatives: bool = False  # pick one final representative per transversal group
+    # GSM8K answer extraction: "universal" (MathParser, the LLaDA results) or "lm_eval_flexible" (lm-eval gsm8k_cot
+    # flexible-extract: last number in the text, the protocol behind Dream-Instruct's published GSM8K score).
+    math_answer_extractor: str = "universal"
 
     qa_dataset: str = "truthful_qa"  # "truthful_qa", "commonsense_qa", "ai2_arc", or "gsm8k"
     qa_dataset_len: int = -1  # number of samples to use from qa_dataset (-1 for all)
@@ -296,6 +319,13 @@ class Config:
         )
         assert self.code_timeout_s > 0.0, "code_timeout_s must be positive"
         assert self.qa_num_shards > 0, "qa_num_shards must be positive"
+        assert self.math_answer_extractor in MATH_ANSWER_EXTRACTOR_CHOICES, (
+            f"math_answer_extractor must be one of {sorted(MATH_ANSWER_EXTRACTOR_CHOICES)}, "
+            f"got {self.math_answer_extractor!r}"
+        )
+        assert self.open_prompt_tokens >= 0, "open_prompt_tokens must be non-negative"
+        assert self.open_num_prompts > 0, "open_num_prompts must be positive"
+        assert self.open_num_references > 0, "open_num_references must be positive"
         assert 0 <= self.qa_shard_index < self.qa_num_shards, (
             f"qa_shard_index must be in [0, {self.qa_num_shards}), got {self.qa_shard_index}"
         )
@@ -310,6 +340,13 @@ class Config:
             f"Unknown posterior_sampler: {self.posterior_sampler}"
         )
         assert self._score_method in SCORE_METHOD_CHOICES, f"Unknown _score_method: {self._score_method}"
+        assert self._score_normalization in SCORE_NORMALIZATION_CHOICES, (
+            f"Unknown _score_normalization: {self._score_normalization}"
+        )
+        if self._score_normalization == "exp":
+            assert self._score_method in {"entropy", "sequence_logprob"}, (
+                "_score_normalization=exp needs a non-positive log-scale score: entropy or sequence_logprob"
+            )
         assert self.gidd_block_length > 0, "gidd_block_length must be positive"
         assert self.gidd_schedule in GIDD_SCHEDULE_CHOICES, f"Unknown gidd_schedule: {self.gidd_schedule}"
         assert 0.0 <= self.gidd_hybrid_p_unif <= 1.0, "gidd_hybrid_p_unif must be in [0, 1]"
@@ -359,6 +396,9 @@ class Config:
                 )
 
         assert self.remasking in REMASKING_CHOICES, f"Remasking method {self.remasking} not recognized."
+        if self.selection_dump:
+            assert self.llada_decoder == "diffusion", "selection_dump records the diffusion sampler only"
+            assert self.selection_dump_every >= 1, "selection_dump_every must be >= 1"
         if self.eval_transversal_group_representatives:
             assert self.transversal, "eval_transversal_group_representatives requires transversal=True"
             assert self.group_size > 1, "eval_transversal_group_representatives requires group_size > 1"

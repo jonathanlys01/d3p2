@@ -65,6 +65,15 @@ def _safe_decode(tokenizer: Any, token_ids: list[int]) -> str:
     return cast(str, tokenizer.decode(kept, skip_special_tokens=True))
 
 
+def answer_token_counts(tokenizer: Any, raw_samples: torch.Tensor, prompt_len: int) -> list[int]:
+    """Generated tokens before the first end token, per sample: the answer length the decoder kept."""
+    stop_ids = torch.tensor(sorted(_stop_token_ids(tokenizer)), dtype=raw_samples.dtype)
+    completion = raw_samples[:, prompt_len:].cpu()
+    is_stop = torch.isin(completion, stop_ids)
+    first_stop = torch.where(is_stop.any(dim=1), is_stop.int().argmax(dim=1), completion.size(1))
+    return [int(count) for count in first_stop.tolist()]
+
+
 def _decode_generations(
     model: DreamSampler,
     prompt: str,

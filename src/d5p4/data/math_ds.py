@@ -50,8 +50,12 @@ def _format_gsm8k_query(question: str) -> str:
 
 
 def _format_dream_gsm8k_query(question: str) -> str:
-    """Match the zero-shot Dream-Instruct lm-evaluation-harness prompt."""
-    return f"Q: {question}\n\nA:"
+    """Match the zero-shot Dream-Instruct lm-evaluation-harness prompt.
+
+    `doc_to_text` of `gsm8k_cot` in HKUNLP/Dream eval_instruct is the YAML scalar 'Q: {{question}}<blank line>A:',
+    which YAML folds to a single newline. E2 used "\n\n" before this was checked.
+    """
+    return f"Q: {question}\nA:"
 
 
 def gsm8k(cfg: Config) -> pd.DataFrame:

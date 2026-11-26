@@ -16,6 +16,7 @@ from d5p4.single_run_dream import (
     DREAM_INTERNAL_SCORE_METADATA,
     DREAM_WORKFLOW_VERSION,
     _decode_generations,
+    answer_token_counts,
 )
 from d5p4.utils import compile_model, print, seed_all
 
@@ -121,7 +122,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         f"GSM8K shard {config.qa_shard_index + 1}/{config.qa_num_shards}: "
         f"{len(prompts)} of {len(rows)} rows (strided after seeded shuffle).",
     )
-    evaluator = MathEvaluator()
+    evaluator = MathEvaluator(answer_extractor=config.math_answer_extractor)
 
     metadata = [
         {
@@ -204,6 +205,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 result = generation["result"]
                 if result is None and not config.skip_eval:
                     result = score_generations(i, prompt, decoded)
+                if result is not None and "answer_tokens" not in result:
+                    prompt_len = generation["prompt_len"]
+                    result["answer_tokens"] = answer_token_counts(model.tokenizer, raw_samples, prompt_len)
                 if generation["decoded"] is None or (generation["result"] is None and result is not None):
                     store.record_decoded(item_index=i, decoded=decoded, result=result)
             else:
@@ -227,6 +231,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     )
                 decoded = _decode_generations(model, prompt, raw_samples, prompt_len)
                 result = None if config.skip_eval else score_generations(i, prompt, decoded)
+                if result is not None:
+                    # Dream can end its answer early (e.g. a bare number); keep the kept length to diagnose it.
+                    result["answer_tokens"] = answer_token_counts(model.tokenizer, raw_samples, prompt_len)
                 if store is not None:
                     store.record_decoded(item_index=i, decoded=decoded, result=result)
 

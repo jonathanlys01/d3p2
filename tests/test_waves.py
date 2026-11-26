@@ -340,3 +340,194 @@ def test_b2_full_covers_shards_1_to_3_with_the_shard_0_settings():
         assert {k: v for k, v in vars(config).items() if k not in {"qa_shard_index", "comment"}} == {
             k: v for k, v in vars(reference).items() if k not in {"qa_shard_index", "comment"}
         }
+
+
+def test_a3_dumps_the_first_50_questions_of_p1_and_transfer_with_the_same_settings():
+    reference = {
+        (run.task.name, run.tag): cli.build_config(run, DEFAULT_CONFIG) for run in get_wave("p1") + get_wave("transfer")
+    }
+    runs = get_wave("a3")
+    assert [(run.task.name, run.tag) for run in runs] == [
+        ("gsm8k_k8w4", "d5p4_w20_t1_s0of4"),
+        ("gsm8k", "d5p4_w20_t1_s0of4"),
+        ("gsm8k", "ind_t1_s0of4"),
+        ("truthful_qa", "d5p4_w20_t1"),
+        ("truthful_qa", "ind_t1"),
+    ]
+    ignored = {"qa_dataset_len", "selection_dump", "selection_dump_every", "n_groups", "group_size", "batch_size"}
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.selection_dump and config.selection_dump_every == 1
+        # 50 questions: GSM8K takes shard 0 of the first 200 rows, TruthfulQA the first 50.
+        assert config.qa_dataset_len // config.qa_num_shards == 50
+        base = reference[("gsm8k" if run.task.name == "gsm8k_k8w4" else run.task.name, run.tag)]
+        assert {k: v for k, v in vars(config).items() if k not in ignored | {"comment"}} == {
+            k: v for k, v in vars(base).items() if k not in ignored | {"comment"}
+        }
+    k8w4 = cli.build_config(runs[0], DEFAULT_CONFIG)
+    assert (k8w4.n_groups, k8w4.group_size) == (8, 4)
+
+
+def _config_without(config, keys):
+    return {k: v for k, v in vars(config).items() if k not in {"comment", *keys}}
+
+
+def _gsm8k_and_truthful_qa_references():
+    """P1's GSM8K shard 0 and the transfer wave's full-split TruthfulQA runs, keyed by unsharded tag."""
+    return {
+        (run.task.name, run.tag.removesuffix("_s0of4")): cli.build_config(run, DEFAULT_CONFIG)
+        for run in get_wave("p1") + get_wave("transfer")
+        if run.task.name in {"gsm8k", "truthful_qa"}
+    }
+
+
+def test_a2_ablations_change_one_part_of_d5p4_against_the_p1_and_transfer_references():
+    references = _gsm8k_and_truthful_qa_references()
+    runs = get_wave("a2")
+    per_task = ["d5p3_w20_t1", "d5p4_w20_t1_quniform", "d5p4_w20_t1_qexp", "d5p4_w20_t1_qzscore"]
+    checks = ["d5p4_w0_t1", "rnd_t1"]
+    assert [(run.task.name, run.tag.removesuffix("_s0of4")) for run in runs] == [
+        *(("gsm8k", tag) for tag in per_task),
+        *(("truthful_qa", tag) for tag in per_task),
+        *(("truthful_qa", tag) for tag in checks),
+        *(("gsm8k", tag) for tag in checks),
+    ]
+    varied = {
+        "d5p3_w20_t1": ("d5p4_w20_t1", {"transversal": False}),
+        "d5p4_w20_t1_quniform": ("d5p4_w20_t1", {"_score_normalization": "uniform"}),
+        "d5p4_w20_t1_qexp": ("d5p4_w20_t1", {"_score_normalization": "exp"}),
+        "d5p4_w20_t1_qzscore": ("d5p4_w20_t1", {"_score_normalization": "zscore"}),
+        "d5p4_w0_t1": ("d5p4_w20_t1", {"_w_interaction": 0.0}),
+        "rnd_t1": ("gbs_t1", {"method": "random"}),
+    }
+    sharding = {"qa_num_shards", "qa_shard_index"}
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert (config.qa_num_shards, config.qa_shard_index, config.seed) == (4, 0, 0)
+        reference_tag, changes = varied[run.tag.removesuffix("_s0of4")]
+        reference = references[(run.task.name, reference_tag)]
+        assert {key: getattr(config, key) for key in changes} == changes
+        assert _config_without(config, {*changes, *sharding}) == _config_without(reference, {*changes, *sharding})
+
+
+def test_parallel_decoding_only_changes_the_number_of_steps():
+    references = _gsm8k_and_truthful_qa_references()
+    runs = get_wave("parallel")
+    assert [run.task.name for run in runs[::3]] == ["gsm8k_tps2", "gsm8k_tps4", "truthful_qa_tps2", "truthful_qa_tps4"]
+    assert {run.tag for run in runs} == {"ind_t1_s0of4", "dbs_a80_t1_s0of4", "d5p4_w20_t1_s0of4"}
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        base_task, tokens_per_step = run.task.name.rsplit("_tps", 1)
+        reference = references[(base_task, run.tag.removesuffix("_s0of4"))]
+        assert config.gen_length == reference.gen_length == config.block_length
+        assert config.llada_steps == config.gen_length // int(tokens_per_step)
+        # The selection window is indexed by step and covers every one of them.
+        assert config.subsample_start == 0 and config.subsample_end >= config.llada_steps
+        assert (config.qa_num_shards, config.qa_shard_index) == (4, 0)
+        ignored = {"llada_steps", "guidance_end", "qa_num_shards", "qa_shard_index"}
+        assert _config_without(config, ignored) == _config_without(reference, ignored)
+
+
+def test_b6_seed1_repeats_the_b2_full_tau_0p3_runs_with_seed_1():
+    seed_0 = {
+        run.tag: cli.build_config(run, DEFAULT_CONFIG)
+        for run in get_wave("b1") + get_wave("b2") + get_wave("b2_full")
+        if run.task.name == "gsm8k_tempered"
+    }
+    runs = get_wave("b6_seed1")
+    per_shard = ["ind_t1_tau0p3", "dbs_a80_t1_tau0p3", "d5p4_w20_t1_tau0p3"]
+    expected = [f"{tag}_seed1_s{shard}of4" for shard in range(4) for tag in per_shard]
+    expected.remove("ind_t1_tau0p3_seed1_s0of4")
+    assert [run.tag for run in runs] == expected
+    # The left-out run is B1's, with the settings of the rest of the seed.
+    b1_run = cli.build_config(next(r for r in get_wave("b1") if r.tag == "ind_t1_tau0p3_seed1_s0of4"), DEFAULT_CONFIG)
+    assert _config_without(b1_run, {"seed"}) == _config_without(seed_0["ind_t1_tau0p3_seed0_s0of4"], {"seed"})
+    assert b1_run.seed == 1
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        reference = seed_0[run.tag.replace("_seed1_", "_seed0_")]
+        assert config.seed == 1 and run.task.name == "gsm8k_tempered"
+        assert _config_without(config, {"seed"}) == _config_without(reference, {"seed"})
+
+
+def test_b6_sweep_extends_the_tau_0p3_points_on_shard_0():
+    reference = {run.tag: cli.build_config(run, DEFAULT_CONFIG) for run in get_wave("b2")}
+    runs = get_wave("b6_sweep")
+    assert [run.tag for run in runs] == [
+        "dbs_a20_t1_tau0p3_seed0_s0of4",
+        "dbs_a320_t1_tau0p3_seed0_s0of4",
+        "d5p4_w5_t1_tau0p3_seed0_s0of4",
+        "d5p4_w80_t1_tau0p3_seed0_s0of4",
+    ]
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        if run.method == "diverse_beam":
+            base, key = reference["dbs_a80_t1_tau0p3_seed0_s0of4"], "_diversity_alpha"
+        else:
+            base, key = reference["d5p4_w20_t1_tau0p3_seed0_s0of4"], "_w_interaction"
+        assert _config_without(config, {key}) == _config_without(base, {key})
+
+
+def test_scale_gsm8k_keeps_the_pool_per_shape_and_the_p1_profile():
+    p1_runs = {run.tag: cli.build_config(run, DEFAULT_CONFIG) for run in get_wave("p1") if run.task.name == "gsm8k"}
+    runs = get_wave("scale_gsm8k")
+    pools = [run.task.pool_size for run in runs]
+    assert pools == sorted(pools, reverse=True)
+    assert [run.task.name for run in runs[::3]] == ["gsm8k_k8w8", "gsm8k_k16w4", "gsm8k_k4w8"]
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.n_groups * config.group_size == run.task.pool_size
+        assert (config.qa_num_shards, config.qa_shard_index, config.seed) == (4, 0, 0)
+        reference = p1_runs[run.tag.replace("_seed0_", "_")]
+        ignored = {"n_groups", "group_size", "batch_size"}
+        assert _config_without(config, ignored) == _config_without(reference, ignored)
+
+
+def test_b5_check_decodes_e2_questions_with_the_dream_instruct_protocol():
+    from d5p4.dream_math import _shard_indexed_rows
+
+    runs = get_wave("b5")
+    configs = [cli.build_config(run, DEFAULT_CONFIG) for run in runs]
+    assert [(run.task.name, run.tag) for run in runs] == [
+        ("dream_gsm8k_check_greedy", "ind_t0_s0of4"),
+        ("dream_gsm8k_check", "ind_t0p1_s0of4"),
+        ("dream_gsm8k_check", "ind_t0p3_s0of4"),
+        ("dream_gsm8k_check", "ind_t0p5_s0of4"),
+        ("dream_gsm8k_check", "ind_t1_s0of4"),
+        ("dream_humaneval_check", "ind_t0p1"),
+    ]
+    for config in configs:
+        assert (config.model, config.dream_alg, config.dream_alg_temp, config.dream_top_p) == (
+            "dream",
+            "entropy",
+            0.0,
+            0.9,
+        )
+        assert config.gen_length == config.dream_steps  # one token per step
+        assert config.math_answer_extractor == "lm_eval_flexible"
+        assert config.dataset_split == "eval"
+    greedy, *sampled, code = configs
+    assert (greedy.cat_temperature, greedy.n_groups, greedy.group_size) == (0.0, 1, 1)
+    assert [(c.cat_temperature, c.n_groups) for c in sampled] == [(0.1, 4), (0.3, 4), (0.5, 4), (1.0, 4)]
+    assert (greedy.qa_dataset_len, greedy.qa_num_shards, greedy.qa_shard_index, greedy.gen_length) == (200, 4, 0, 256)
+    # Shard 0 of the first 200 questions is the first 50 questions of E2's shard 0 of the full test split.
+    check_rows = [index for index, _ in _shard_indexed_rows(list(range(200)), shard_index=0, num_shards=4)]
+    e2_rows = [index for index, _ in _shard_indexed_rows(list(range(1319)), shard_index=0, num_shards=4)]
+    assert check_rows == e2_rows[:50]
+    assert runs[-1].task.entry == "dream_code.py"
+    assert (code.code_dataset, code.code_n_shots, code.gen_length, code.cat_temperature) == ("humaneval", 0, 768, 0.1)
+
+
+def test_b5_dream_searches_at_the_official_temperature():
+    runs = get_wave("b5_dream")
+    assert len(runs) == 36
+    assert [run.task.name for run in runs[:12]] == ["dream_humaneval"] * 12
+    for run in runs:
+        config = cli.build_config(run, DEFAULT_CONFIG)
+        assert config.n_groups * config.group_size == run.task.pool_size
+        if config.method != "baseline":
+            assert config.cat_temperature == 0.1
+        assert run.task.reference_tag == "ind_t0p1"
+    gsm8k = cli.build_config(runs[12], DEFAULT_CONFIG)
+    assert (gsm8k.qa_dataset_len, gsm8k.qa_num_shards, gsm8k.qa_shard_index, gsm8k.seed) == (-1, 4, 0, 0)
+    assert {cli.build_config(run, DEFAULT_CONFIG).seed for run in runs[24:]} == {1}

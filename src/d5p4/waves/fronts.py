@@ -196,6 +196,7 @@ def _front_rows(
     point_fronts: list[tuple[str, str, str]],
     means: tuple[np.ndarray, np.ndarray],
     boots: tuple[np.ndarray, np.ndarray],
+    reference_temperature: str = "1",
 ) -> list[dict[str, Any]]:
     """Hypervolume of each front of one task, and its paired differences to the reference fronts."""
     (s_mean, q_mean), (s_boot, q_boot) = means, boots
@@ -219,7 +220,7 @@ def _front_rows(
         )
     references = {
         "independent": ("baseline", REFERENCE_SELECTION, ""),
-        "d5p4": ("greedy_map", "internal score", "1"),
+        "d5p4": ("greedy_map", "internal score", reference_temperature),
     }
     rows = []
     for key in fronts_of_task:
@@ -265,8 +266,10 @@ def summarize(
     highest. Hypervolume needs no shared Self-BLEU range, unlike quality at matched diversity: the search fronts sit
     entirely at lower Self-BLEU than independent sampling on GSM8K and MBPP.
     """
-    params, temperatures = {}, {}
+    params, temperatures, reference_tags, reference_temperatures = {}, {}, {}, {}
     for run in runs:
+        reference_tags[run.task.name] = run.task.reference_tag
+        reference_temperatures[run.task.name] = f"{run.task.reference_temperature:g}"
         overrides = run.overrides
         value = overrides.get("_w_interaction", overrides.get("_diversity_alpha", overrides.get("cat_temperature")))
         params[(run.task.name, base_tag(run.tag))] = value
@@ -275,10 +278,11 @@ def summarize(
     rng = np.random.default_rng(seed)
     for task in sorted({r["task"] for r in records}):
         points, quality, self_bleu = _point_matrix([r for r in records if r["task"] == task])
-        if ("baseline", REFERENCE_SELECTION, REFERENCE_TAG) not in points:
-            print(f"Skipping {task}: no independent-sampling run at T = 1.0 to compare against.")
+        reference_tag = reference_tags.get(task, REFERENCE_TAG)
+        if ("baseline", REFERENCE_SELECTION, reference_tag) not in points:
+            print(f"Skipping {task}: no independent-sampling run {reference_tag} to compare against.")
             continue
-        reference = points.index(("baseline", REFERENCE_SELECTION, REFERENCE_TAG))
+        reference = points.index(("baseline", REFERENCE_SELECTION, reference_tag))
         n = quality.shape[1]
         boot = rng.integers(0, n, size=(samples, n))
         q_boot = quality[:, boot].mean(axis=2)  # points x samples
@@ -309,7 +313,15 @@ def summarize(
             (method, selection, "" if method == "baseline" else temperatures.get((task, tag), ""))
             for method, selection, tag in points
         ]
-        front_rows.extend(_front_rows(task, point_fronts, (s_mean, q_mean), (s_boot, q_boot)))
+        front_rows.extend(
+            _front_rows(
+                task,
+                point_fronts,
+                (s_mean, q_mean),
+                (s_boot, q_boot),
+                reference_temperatures.get(task, "1"),
+            ),
+        )
     return point_rows, front_rows
 
 

@@ -22,6 +22,8 @@ cos_model_id: ${oc.env:WORK}/models/jinaai/jina-embeddings-v2-base-en/
 
 # Data
 data_path: ${oc.env:WORK}/data/fineweb-edu/val.bin
+# Held-out OpenWebText (last subset archive) for open-ended MDLM prompts and MAUVE references
+open_data_path: ${oc.env:DSDIR}/HuggingFace/Skylion007/openwebtext/subsets/urlsf_subset20.tar
 initial_mask_ratio: 1.0
 single_init: true
 

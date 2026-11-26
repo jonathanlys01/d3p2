@@ -204,3 +204,25 @@ def test_front_rows_skip_a_task_whose_points_span_no_box():
         (s[:, None], q[:, None]),
     )
     assert rows == []
+
+
+def test_dream_fronts_compare_against_the_official_temperature():
+    from d5p4.waves import b5
+
+    n = 50
+    ones, zeros = np.ones(n), np.zeros(n)
+    records = (
+        _records("dream_gsm8k_official", "baseline", "ind_t0p1", zeros, np.full(n, 90.0), "random k of N")
+        + _records("dream_gsm8k_official", "baseline", "ind_t0p5", zeros, np.full(n, 60.0), "random k of N")
+        + _records("dream_gsm8k_official", "greedy_map", "d5p4_w5_t0p1", ones, np.full(n, 70.0))
+        + _records("dream_gsm8k_official", "greedy_map", "d5p4_w80_t0p1", ones, np.full(n, 50.0))
+    )
+    points, front_rows = fronts.summarize(records, b5.dream_runs(), samples=50)
+
+    by_tag = {p["tag"]: p for p in points}
+    assert by_tag["ind_t0p1"]["diff_vs_ref"] == 0.0
+    assert by_tag["d5p4_w5_t0p1"]["diff_vs_ref"] == pytest.approx(100.0)
+    d5p4_front = next(f for f in front_rows if f["method"] == "greedy_map")
+    assert d5p4_front["temperature"] == "0.1"
+    assert d5p4_front["hv_minus_d5p4"] == 0.0
+    assert d5p4_front["hv_minus_independent"] > 0

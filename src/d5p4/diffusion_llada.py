@@ -21,6 +21,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from d5p4.config import Cache, Config
 from d5p4.data import get_qa_dataset
 from d5p4.llada_ref.modeling_llada import LLaDAConfig, LLaDAModelLM
+from d5p4.selection_dump import SelectionDumpRecorder
 from d5p4.subsample import get_subsample_selector
 from d5p4.subsample.base import BaseSelector
 from d5p4.subsample.greedy_map import GreedyMAPKernelSelector
@@ -1043,6 +1044,13 @@ class LLADASampler(nn.Module):
 
             prompt_tokens = self._preprocess_prompt(prompt)
             prompt_len = prompt_tokens.shape[1]
+            recorder = SelectionDumpRecorder.create(
+                self.config,
+                prompt,
+                prompt_len,
+                self.selector,
+                distributed=self.distributed_utils is not None,
+            )
 
             # Setup generation buffer
             x = torch.full(
@@ -1161,6 +1169,8 @@ class LLADASampler(nn.Module):
                     subsample_step, slice_idx = self._get_slice(step, cache)
 
                     assert slice_idx is not None
+                    if recorder is not None:
+                        recorder.record(cache, slice_idx, subsample_step, x, self.mask_index)
 
                     # Capture logits for sampling BEFORE expansion
                     logits_to_sample = torch.index_select(block_log_p_x0, 0, slice_idx)
@@ -1254,6 +1264,8 @@ class LLADASampler(nn.Module):
                     final_internal_scores = gathered_scores.squeeze(1)
 
             self.last_forward_count = self._forward_call_count
+            if recorder is not None:
+                recorder.save(x, final_internal_scores)
             if return_internal_scores:
                 assert final_internal_scores is not None
                 return x, final_internal_scores

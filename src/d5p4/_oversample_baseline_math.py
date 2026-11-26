@@ -303,7 +303,9 @@ if __name__ == "__main__":
         ppl_model_id=config.ppl_model_id,
         cos_model_id=config.cos_model_id,
     )
-    math_evaluator = MathEvaluator()
+    # A result file's own `math_answer_extractor` wins; files written before that field existed use the one given on
+    # the command line (default "universal"), so old runs can be re-scored under another protocol.
+    math_evaluators: dict[str, MathEvaluator] = {}
 
     save_raw = _env_flag("OVERSAMPLE_MATH_BASELINE_SAVE_RAW", default=True)
     method_filters = _env_list("OVERSAMPLE_MATH_BASELINE_METHOD")
@@ -343,6 +345,8 @@ if __name__ == "__main__":
 
         for output_stem, file_config_dict, results in grouped_sources:
             current_config = _config_from_dict(config, file_config_dict)
+            extractor = str(file_config_dict.get("math_answer_extractor", config.math_answer_extractor))
+            math_evaluator = math_evaluators.setdefault(extractor, MathEvaluator(answer_extractor=extractor))
 
             if method_filters is not None and current_config.method not in method_filters:
                 print(
