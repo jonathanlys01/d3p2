@@ -133,7 +133,8 @@ def flatten_run(data: dict[str, Any]) -> tuple[list[str], np.ndarray, np.ndarray
 
 
 def run_config(data: dict[str, Any]) -> Config:
-    valid = {f.name for f in fields(Config)}
+    # Saved configs carry disable_sys_args themselves, so it is dropped here and set once below.
+    valid = {f.name for f in fields(Config)} - {"disable_sys_args"}
     return Config(**{k: v for k, v in data["config"].items() if k in valid}, disable_sys_args=True)
 
 

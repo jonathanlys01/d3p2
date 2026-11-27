@@ -15,7 +15,7 @@ from d5p4.data import owt_heldout
 from d5p4.data.owt_heldout import build_open_chunks, iter_documents, pack_chunks
 from d5p4.mdlm_open import copy_mismatches, initial_state, kept_rows, prompt_seed
 from d5p4.waves import b4, get_wave, open_fronts
-from d5p4.waves.open_eval import FEATURES, REFERENCE_DIR, flatten_run, token_entropy
+from d5p4.waves.open_eval import FEATURES, REFERENCE_DIR, flatten_run, run_config, token_entropy
 from d5p4.waves.spec import DONE_MARKER
 
 
@@ -347,3 +347,9 @@ def test_fronts_command_writes_open_summaries_and_comparisons(tmp_path, monkeypa
     cos_vs_dbs = next(c for c in comparisons if c["statistic"] == "hv_cos" and c["baseline"] == "dbs")
     assert float(cos_vs_dbs["difference"]) > 0
     assert float(cos_vs_dbs["p_holm"]) >= float(cos_vs_dbs["p_bootstrap"])
+
+
+def test_run_config_accepts_a_saved_config_that_carries_disable_sys_args():
+    config = run_config({"config": {"disable_sys_args": False, "seed": 3, "not_a_field": 1}})
+    assert config.disable_sys_args is True
+    assert config.seed == 3
